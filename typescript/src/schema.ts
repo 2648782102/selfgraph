@@ -394,7 +394,7 @@ export function canonicalRelationType(rtype: string, schema: ParsedSchema | null
 }
 
 /**
- * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. Explicit entity ids accept the same type prefixes while retaining their name part.
+ * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. An explicit entity id prefixed with its own schema type or one of its aliases is rewritten the same way, and references through the type's other forms follow it, keeping the explicit name part.
  *
  * @param facts (ParsedExtraction): the facts.
  * @param schema (ParsedSchema | null): the active schema.
@@ -408,9 +408,12 @@ export function canonicalizeTypes(facts: ParsedExtraction, schema: ParsedSchema 
     const etype = cleanText(ent.type);
     const canonical = canonicalEntityType(etype, schema);
     const next = canonical === etype ? ent : { ...ent, type: canonical };
-    const name = ent.id === null ? cleanText(ent.name) : ent.id.slice(ent.id.indexOf(":") + 1);
-    const target = ent.id === null ? entityId(canonical, name) : canonicalEntityRef(ent.id, etype, schema);
-    for (const form of [etype, ...(forms.get(canonical) ?? [])]) {
+    const target =
+      ent.id === null ? entityId(canonical, cleanText(ent.name)) : canonicalEntityRef(ent.id, etype, schema);
+    const cut = target.indexOf(":");
+    const name = ent.id === null ? cleanText(ent.name) : target.slice(cut + 1);
+    const own = ent.id === null || target.slice(0, cut) === slug(normalizeText(canonical));
+    for (const form of own ? [etype, ...(forms.get(canonical) ?? [])] : []) {
       const alt = ent.id === null ? entityId(form, name) : canonicalId(`${form}:${name}`);
       if (alt !== target && !moved.has(alt)) moved.set(alt, target);
     }
