@@ -1949,6 +1949,25 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
       v.invalidated_at ? jsonIso(v.invalidated_at) : null,
     ]);
   }
+  await graph.insert.facts({
+    entities: [{ type: "Person", name: "Kim" }, ...["Massive", "Nakatomi"].map((name) => ({ type: "Company", name }))],
+  });
+  for (const [company, year] of [
+    ["massive", 2020],
+    ["nakatomi", 2022],
+  ] as const) {
+    await graph.insert.facts({ relations: [link("kim", company, year)] });
+  }
+  const nakatomi = ids.relationId("person:kim", "WORKS_AT", "company:nakatomi");
+  await graph.relations.update(nakatomi, {
+    set_properties: { role: "lead" },
+    event_time: new Date(Date.UTC(2025, 0, 1)),
+  });
+  const moved_later = (await graph.relations.versions(ids.relationId("person:kim", "WORKS_AT", "company:massive"))).map(
+    (v) => [v.revision, v.is_current, v.invalidated_by, v.invalidated_at ? jsonIso(v.invalidated_at) : null],
+  );
+  const held = await graph.retrieve("Kim", { as_of: new Date(Date.UTC(2023, 0, 1)) });
+  const moved_later_valid = held.subgraph.relations.map((r) => r.id).sort();
   return {
     warnings,
     versions,
@@ -1959,5 +1978,7 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     subms,
     undated_correction,
     certified_update,
+    moved_later,
+    moved_later_valid,
   };
 }

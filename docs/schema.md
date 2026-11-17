@@ -228,7 +228,10 @@ way, under `supersede` and `llm`. That covers `relations.update` with a new
 one. A relation the moved one retired comes back when fewer than `max_count`
 newer facts remain at every endpoint that caps it, and the moved relation is
 retired when it is now the older fact. `relations.update` then returns it
-retired. The other modes leave the endpoint as it is.
+retired. A move to a later `event_time` keeps the relations the moved one
+retired as they were: its earlier revision stays valid until the new time (see
+[as of a point in time](retrieval.md#as-of-a-point-in-time)), so it displaced
+them from the same time. The other modes leave the endpoint as it is.
 
 ```python
 graph = SelfGraph(store, schema=schema, contradiction="supersede")
@@ -284,7 +287,7 @@ A retired relation keeps its revision and gains four fields:
 |-------|-------|
 | `is_current` | `False` |
 | `invalidated_by` | The fact that displaced it in time order: the `max_count`-th newer fact at that endpoint, retired history included. With `max_count` 1, that is the next newer one. |
-| `invalidated_at` | That fact's effective time. |
+| `invalidated_at` | That fact's effective time. If that fact was moved to a later `event_time`, it is when its earlier revision took effect, as long as that came after the retired relation took effect. |
 | `invalidated_known_at` | When the retirement was written. A [`known_at`](retrieval.md#as-the-graph-knew-it) read before it shows the relation as current. |
 
 Example: with facts from 2019, 2020, and 2022, the 2019 one is invalidated by the

@@ -1830,13 +1830,19 @@ def _reasserts(prev: Relation, effective: datetime) -> bool:
     return not prev.is_current and (prev.invalidated_at is None or effective >= prev.invalidated_at)
 
 
-def _rank(rel: Relation) -> tuple[datetime, int, datetime]:
-    """Order a relation among others at one endpoint: by effective time, then revision, then creation time.
+def _run_start(versions: Iterable[Relation]) -> datetime:
+    """When a relation's latest unbroken stretch of validity began; a reassertion after a retirement starts a new one.
 
-    @param rel (Relation): the relation version.
-    @return (tuple[datetime, int, datetime]): the sort key, newer last.
+    @param versions (Iterable[Relation]): versions of one relation.
+    @return (datetime): the start of the newest version's stretch.
     """
-    return effective_time(rel), rel.revision, aware(rel.created_at)
+    ordered = sorted(versions, key=lambda v: v.revision, reverse=True)
+    start = effective_time(ordered[0])
+    for older, newer in zip(ordered[1:], ordered, strict=False):
+        if older.invalidated_at is not None and effective_time(newer) >= aware(older.invalidated_at):
+            break
+        start = min(start, effective_time(older))
+    return start
 
 
 def _cap_slots(
@@ -1863,6 +1869,7 @@ class Contradictions:
         mode: str,
         current: Iterable[Relation],
         history: Iterable[Relation] = (),
+        versions: Mapping[str, Iterable[Relation]] | None = None,
     ) -> None:
         """Track the current relations at every endpoint a schema max_count constrains.
 
@@ -1871,9 +1878,12 @@ class Contradictions:
             raises ValidationError.
         @param current (Iterable[Relation]): the stored current relations at the constrained endpoints.
         @param history (Iterable[Relation]): the newest version of each relation a contradiction retired there.
+        @param versions (Mapping[str, Iterable[Relation]] | None): every stored version of those relations by id.
         """
         self._caps = caps
         self._mode = mode
+        self._versions = {rid: list(found) for rid, found in (versions or {}).items()}
+        self._starts: dict[str, datetime] = {}
         self._groups: dict[tuple[str, str, str], dict[str, tuple]] = {}
         self._past: dict[tuple[str, str, str], dict[str, tuple]] = {}
         self._ended: dict[str, tuple[str, datetime]] = {}
@@ -1885,10 +1895,34 @@ class Contradictions:
             if rel.invalidated_by is not None and rel.invalidated_at is not None:
                 self._ended[rel.id] = (rel.invalidated_by, rel.invalidated_at)
             for key, _ in _cap_slots(self._caps, rel.type, rel.from_entity, rel.to_entity):
-                self._past.setdefault(key, {})[rel.id] = _rank(rel)
+                self._past.setdefault(key, {})[rel.id] = self.rank(rel)
         for rel in current:
             for key, _ in _cap_slots(self._caps, rel.type, rel.from_entity, rel.to_entity):
-                self._seat(key, rel.id, _rank(rel))
+                self._seat(key, rel.id, self.rank(rel))
+
+    def rank(self, version: Relation) -> tuple[datetime, int, datetime]:
+        """Order a relation at an endpoint by effective time, revision, and creation time, and record when it began.
+
+        @param version (Relation): the relation version.
+        @return (tuple[datetime, int, datetime]): the sort key, newer last.
+        """
+        found = [v for v in self._versions.get(version.id, ()) if v.revision < version.revision] + [version]
+        self._versions[version.id] = found
+        self._starts[version.id] = _run_start(found)
+        return effective_time(version), version.revision, aware(version.created_at)
+
+    def _displaced_at(self, by: str, old: str, rank: tuple) -> datetime:
+        """When a newer relation displaced an older one: its stretch start if after the older one's, else its time.
+
+        @param by (str): the newer relation's id.
+        @param old (str): the displaced relation's id.
+        @param rank (tuple): the newer relation's rank.
+        @return (datetime): the displacement time.
+        """
+        start, since = self._starts.get(by), self._starts.get(old)
+        if start is not None and since is not None and since < start < rank[0]:
+            return start
+        return rank[0]
 
     def _seat(self, key: tuple[str, str, str], rid: str, rank: tuple) -> None:
         self._groups.setdefault(key, {})[rid] = rank
@@ -1917,7 +1951,7 @@ class Contradictions:
         @param rtype (str): the normalized relation type.
         @param from_entity (str): the source entity id.
         @param to_entity (str): the destination entity id.
-        @param rank (tuple): the relation's rank, from _rank.
+        @param rank (tuple): the relation's rank, from rank.
         @param certified (bool): whether the version becoming current is certified, which spares it in settle.
         @return (list[InsertWarning]): the warn-mode contradiction warnings.
         """
@@ -1960,7 +1994,7 @@ class Contradictions:
         revision, then creation time, and all but the newest max_count are retired, except a certified relation,
         which stays current with a "certified_kept" warning. A retired relation is invalidated by the fact that
         displaced it in time order, the max_count-th newer fact at the endpoint with retired history counted, at
-        that fact's effective time. Each retired relation gets one warning:
+        the time it displaced it (see _displaced_at). Each retired relation gets one warning:
         "contradiction_out_of_order" when it was written by this write after that fact was current, else
         "relation_superseded".
 
@@ -1988,7 +2022,8 @@ class Contradictions:
                         )
                     )
                     continue
-                (at, _, _), by = newer[limit - 1]
+                rank, by = newer[limit - 1]
+                at = self._displaced_at(by, old, rank)
                 if old not in retired:
                     slots.append(old)
                 if old not in retired or at < retired[old][1]:
@@ -1999,7 +2034,8 @@ class Contradictions:
                 ended = retired.get(rid, self._ended.get(rid))
                 if ended is None or len(newer) < limit:
                     continue
-                (at, _, _), by = newer[limit - 1]
+                rank, by = newer[limit - 1]
+                at = self._displaced_at(by, rid, rank)
                 if (by, at) != ended and (ended[0] in facts or at < ended[1]):
                     retired[rid] = self._ended[rid] = (by, at)
         warnings: list[InsertWarning] = []
@@ -2098,7 +2134,11 @@ def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
 
 
 async def _endpoint_edges(
-    runner: Any, ns: str, caps: Mapping[str, RelationCap], ends: Iterable[tuple[str, str, str]]
+    runner: Any,
+    ns: str,
+    caps: Mapping[str, RelationCap],
+    ends: Iterable[tuple[str, str, str]],
+    every: dict[str, list[dict]] | None = None,
 ) -> dict[str, dict]:
     """Read the newest version of every relation at the constrained endpoints of some relations.
 
@@ -2106,6 +2146,7 @@ async def _endpoint_edges(
     @param ns (str): namespace.
     @param caps (Mapping[str, RelationCap]): the schema's max_count limits by relation type.
     @param ends (Iterable[tuple[str, str, str]]): (normalized type, source id, destination id) of each relation.
+    @param every (dict[str, list[dict]] | None): receives every version read, by relation id, when given.
     @return (dict[str, dict]): each relation's newest edge row by id, in read order.
     """
     found: dict[str, dict] = {}
@@ -2122,6 +2163,8 @@ async def _endpoint_edges(
                 fetch = partial(runner.match_edges, ns, from_label=L_ENTITY, to_label=L_ENTITY, type=stored)
                 for edge in await _paged(partial(fetch, **anchor), page=_BATCH):
                     _keep_newest(found, edge)
+                    if every is not None:
+                        every.setdefault(edge["props"]["id"], []).append(edge)
     return found
 
 
@@ -2144,7 +2187,8 @@ async def _contradiction_check(
     """
     if contradiction == "off" or not caps:
         return None, {}
-    found = await _endpoint_edges(runner, ns, caps, ends)
+    every: dict[str, list[dict]] = {}
+    found = await _endpoint_edges(runner, ns, caps, ends, every)
     current = [_relation_of(e) for e in found.values() if e["props"]["is_current"]]
     history = [
         _relation_of(e)
@@ -2153,7 +2197,8 @@ async def _contradiction_check(
         and e["props"].get("invalidated_at")
         and not (e["props"].get("invalidated_by") or "").startswith("sv:")
     ]
-    return Contradictions(caps, contradiction, current, history), found
+    versions = {rid: [_relation_of(e) for e in edges] for rid, edges in every.items()}
+    return Contradictions(caps, contradiction, current, history, versions), found
 
 
 async def rival_relations(
@@ -2263,7 +2308,7 @@ async def resettle_endpoints(
     tracker, found = await _contradiction_check(runner, ns, "supersede", caps, ends)
     for edge in stale:
         rel = _relation_of(edge)
-        tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, _rank(rel))
+        tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker.rank(rel))
     ended, _ = tracker.settle()
     rows = []
     for edge in stale:
@@ -2435,7 +2480,12 @@ async def upsert_relations(
         if tracker is not None and props["is_current"]:
             version = _relation_of(edge)
             found = tracker.admit(
-                rid, rtype, rel.from_entity, rel.to_entity, _rank(version), certified=version.certified_at is not None
+                rid,
+                rtype,
+                rel.from_entity,
+                rel.to_entity,
+                tracker.rank(version),
+                certified=version.certified_at is not None,
             )
             if warnings is not None:
                 warnings.extend(found)
@@ -2553,7 +2603,7 @@ async def create_relation(
     retires = []
     if tracker is not None:
         edge = {"props": props, "from_id": from_entity, "to_id": to_entity, "type": rtype}
-        found = tracker.admit(rid, rtype, from_entity, to_entity, _rank(_relation_of(edge)))
+        found = tracker.admit(rid, rtype, from_entity, to_entity, tracker.rank(_relation_of(edge)))
         ended, settled = tracker.settle()
         if warnings is not None:
             warnings.extend([*found, *settled])
@@ -2686,7 +2736,7 @@ async def _settle_uncertified(
     )
     if tracker is None:
         return
-    tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, _rank(rel))
+    tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker.rank(rel))
     ended, _ = tracker.settle()
     await retire_relations(runner, ns, [(found[old], by, when) for old, (by, when) in ended.items()], at)
 

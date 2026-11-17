@@ -1795,6 +1795,24 @@ type Rank = readonly [number, number, number];
 const rankOf = (rel: Relation): Rank => [epochMicros(effectiveTime(rel)), rel.revision, epochMicros(rel.created_at)];
 
 /**
+ * When a relation's latest unbroken stretch of validity began; a reassertion after a retirement starts a new one.
+ *
+ * @param versions (readonly Relation[]): versions of one relation.
+ * @return (Date): the start of the newest version's stretch.
+ */
+function runStart(versions: readonly Relation[]): Date {
+  const ordered = [...versions].sort((a, b) => b.revision - a.revision);
+  let start = effectiveTime(ordered[0]!);
+  for (let i = 1; i < ordered.length; i++) {
+    const older = ordered[i]!;
+    const newer = ordered[i - 1]!;
+    if (older.invalidated_at !== null && epochMicros(effectiveTime(newer)) >= epochMicros(older.invalidated_at)) break;
+    if (epochMicros(effectiveTime(older)) < epochMicros(start)) start = effectiveTime(older);
+  }
+  return start;
+}
+
+/**
  * Compare two (rank, id) pairs, older first.
  *
  * @param a (readonly [Rank, string]): the first pair.
@@ -1835,6 +1853,8 @@ export class Contradictions {
   private readonly order = new Map<string, number>();
   private readonly dirty = new Map<string, number>();
   private readonly certified = new Set<string>();
+  private readonly versions = new Map<string, Relation[]>();
+  private readonly starts = new Map<string, Date>();
 
   /**
    * Track the current relations at every endpoint a schema max_count constrains.
@@ -1843,13 +1863,16 @@ export class Contradictions {
    * @param mode (string): "warn" keeps both relations of a conflict, "supersede" retires the older ones, "strict" throws ValidationError.
    * @param current (Iterable<Relation>): the stored current relations at the constrained endpoints.
    * @param history (Iterable<Relation>): the newest version of each relation a contradiction retired there.
+   * @param versions (ReadonlyMap<string, readonly Relation[]>): every stored version of those relations by id.
    */
   constructor(
     private readonly caps: ReadonlyMap<string, RelationCap>,
     private readonly mode: string,
     current: Iterable<Relation>,
     history: Iterable<Relation> = [],
+    versions: ReadonlyMap<string, readonly Relation[]> = new Map(),
   ) {
+    for (const [rid, found] of versions) this.versions.set(rid, [...found]);
     for (const rel of history) {
       this.times.set(rel.id, effectiveTime(rel));
       if (rel.invalidated_by !== null && rel.invalidated_at !== null) {
@@ -1857,15 +1880,44 @@ export class Contradictions {
       }
       for (const [slot] of capSlots(this.caps, rel.type, rel.from_entity, rel.to_entity)) {
         const key = JSON.stringify(slot);
-        this.past.set(key, (this.past.get(key) ?? new Map<string, Rank>()).set(rel.id, rankOf(rel)));
+        this.past.set(key, (this.past.get(key) ?? new Map<string, Rank>()).set(rel.id, this.rank(rel)));
       }
     }
     for (const rel of current) {
       if (rel.certified_at !== null) this.certified.add(rel.id);
       for (const [slot] of capSlots(this.caps, rel.type, rel.from_entity, rel.to_entity)) {
-        this.seat(slot, rel.id, rankOf(rel), effectiveTime(rel));
+        this.seat(slot, rel.id, this.rank(rel), effectiveTime(rel));
       }
     }
+  }
+
+  /**
+   * Order a relation at an endpoint by effective time, revision, and creation time, and record when it began.
+   *
+   * @param version (Relation): the relation version.
+   * @return (Rank): the sort key, newer last.
+   */
+  rank(version: Relation): Rank {
+    const found = [...(this.versions.get(version.id) ?? []).filter((v) => v.revision < version.revision), version];
+    this.versions.set(version.id, found);
+    this.starts.set(version.id, runStart(found));
+    return rankOf(version);
+  }
+
+  /**
+   * When a newer relation displaced an older one: its stretch start if after the older one's, else its time.
+   *
+   * @param by (string): the newer relation's id.
+   * @param old (string): the displaced relation's id.
+   * @return (Date): the displacement time.
+   */
+  private displacedAt(by: string, old: string): Date {
+    const effective = this.times.get(by)!;
+    const start = this.starts.get(by);
+    const since = this.starts.get(old);
+    if (start === undefined || since === undefined) return effective;
+    const at = epochMicros(start);
+    return epochMicros(since) < at && at < epochMicros(effective) ? start : effective;
   }
 
   private seat(slot: Slot, rid: string, rank: Rank, effective: Date): void {
@@ -1906,7 +1958,7 @@ export class Contradictions {
    * @param rtype (string): the normalized relation type.
    * @param fromEntity (string): the source entity id.
    * @param toEntity (string): the destination entity id.
-   * @param rank (Rank): the relation's rank, from rankOf.
+   * @param rank (Rank): the relation's rank, from rank.
    * @param effective (Date): the relation's effective time.
    * @param certified (boolean): whether the version becoming current is certified, which spares it in settle.
    * @return (InsertWarning[]): the warn-mode contradiction warnings.
@@ -1960,8 +2012,8 @@ export class Contradictions {
    * The current relations at an endpoint, the ones just written included, rank by effective time, then revision,
    * then creation time, and all but the newest max_count are retired, except a certified relation, which stays
    * current with a "certified_kept" warning. A retired relation is invalidated by the fact that displaced it in time
-   * order, the max_count-th newer fact at the endpoint with retired history counted, at
-   * that fact's effective time. Each retired relation gets one warning: "contradiction_out_of_order" when it was
+   * order, the max_count-th newer fact at the endpoint with retired history counted, at the time it displaced it
+   * (see displacedAt). Each retired relation gets one warning: "contradiction_out_of_order" when it was
    * written by this write after that fact was current, else "relation_superseded".
    *
    * @return ([Map<string, [string, Date]>, InsertWarning[]]): each retired relation id with the id that invalidated it and when, and the warnings.
@@ -1989,7 +2041,7 @@ export class Contradictions {
           continue;
         }
         const by = newer[limit - 1]![1];
-        const at = this.times.get(by)!;
+        const at = this.displacedAt(by, old);
         if (!retired.has(old)) slots.push(old);
         if (!retired.has(old) || epochMicros(at) < epochMicros(retired.get(old)![1])) {
           retired.set(old, [by, at]);
@@ -2001,7 +2053,7 @@ export class Contradictions {
         const ended = retired.get(rid) ?? this.ended.get(rid);
         if (ended === undefined || newer.length < limit) continue;
         const by = newer[limit - 1]![1];
-        const at = this.times.get(by)!;
+        const at = this.displacedAt(by, rid);
         if (
           (by !== ended[0] || epochMicros(at) !== epochMicros(ended[1])) &&
           (facts.has(ended[0]) || epochMicros(at) < epochMicros(ended[1]))
@@ -2051,6 +2103,7 @@ export class Contradictions {
  * @param ns (string): the namespace.
  * @param caps (ReadonlyMap<string, RelationCap>): the max_count limits by normalized relation type and alias.
  * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) of each write.
+ * @param every (Map<string, EdgeRow[]> | undefined): receives every version read, by relation id, when given.
  * @return ([Map<string, EdgeRow>, Map<string, EdgeRow>]): each current relation's edge row by id, in read order, and the newest version of each relation a contradiction retired there by id.
  */
 async function constrainedCurrent(
@@ -2058,8 +2111,9 @@ async function constrainedCurrent(
   ns: string,
   caps: ReadonlyMap<string, RelationCap>,
   ends: Iterable<readonly [string, string, string]>,
+  every?: Map<string, EdgeRow[]>,
 ): Promise<[Map<string, EdgeRow>, Map<string, EdgeRow>]> {
-  const rows = [...(await endpointEdges(runner, ns, caps, ends)).values()];
+  const rows = [...(await endpointEdges(runner, ns, caps, ends, every)).values()];
   return [
     new Map(rows.filter((e) => e.props.is_current).map((e) => [idOf(e.props), e])),
     new Map(
@@ -2082,6 +2136,7 @@ async function constrainedCurrent(
  * @param ns (string): the namespace.
  * @param caps (ReadonlyMap<string, RelationCap>): the schema's max_count limits by relation type.
  * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) of each relation.
+ * @param every (Map<string, EdgeRow[]> | undefined): receives every version read, by relation id, when given.
  * @return (Map<string, EdgeRow>): each relation's newest edge row by id, in read order.
  */
 async function endpointEdges(
@@ -2089,6 +2144,7 @@ async function endpointEdges(
   ns: string,
   caps: ReadonlyMap<string, RelationCap>,
   ends: Iterable<readonly [string, string, string]>,
+  every?: Map<string, EdgeRow[]>,
 ): Promise<Map<string, EdgeRow>> {
   const found = new Map<string, EdgeRow>();
   const seen = new Set<string>();
@@ -2102,7 +2158,13 @@ async function endpointEdges(
         seen.add(key);
         const anchor = side === "from" ? { from_id: endpoint } : { to_id: endpoint };
         const filter = { from_label: L_ENTITY, to_label: L_ENTITY, type: stored, ...anchor };
-        for (const edge of await allEdges(runner, ns, filter)) keepNewest(found, edge);
+        for (const edge of await allEdges(runner, ns, filter)) {
+          keepNewest(found, edge);
+          if (every !== undefined) {
+            const id = idOf(edge.props);
+            every.set(id, [...(every.get(id) ?? []), edge]);
+          }
+        }
       }
     }
   }
@@ -2207,12 +2269,14 @@ async function contradictionCheck(
 ): Promise<[Contradictions | null, Map<string, EdgeRow>]> {
   const { contradiction = "off", caps } = options;
   if (contradiction === "off" || !caps?.size) return [null, new Map()];
-  const [existing, history] = await constrainedCurrent(runner, ns, caps, ends);
+  const every = new Map<string, EdgeRow[]>();
+  const [existing, history] = await constrainedCurrent(runner, ns, caps, ends, every);
   const tracker = new Contradictions(
     caps,
     contradiction,
     [...existing.values()].map(relationOf),
     [...history.values()].map(relationOf),
+    new Map([...every].map(([rid, edges]) => [rid, edges.map(relationOf)])),
   );
   return [tracker, new Map([...history, ...existing])];
 }
@@ -2344,7 +2408,7 @@ export async function resettleEndpoints(
   );
   for (const edge of stale) {
     const rel = relationOf(edge);
-    tracker!.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, rankOf(rel), effectiveTime(rel));
+    tracker!.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker!.rank(rel), effectiveTime(rel));
   }
   const [ended] = tracker!.settle();
   const rows: EdgeWrite[] = [];
@@ -2534,7 +2598,7 @@ export async function upsertRelations(
           rtype,
           rel.from_entity,
           rel.to_entity,
-          rankOf(version),
+          tracker.rank(version),
           effectiveTime(version),
           version.certified_at !== null,
         ),
@@ -2662,7 +2726,14 @@ export async function createRelation(
   if (tracker !== null) {
     const edge = { props, from_id: args.from_entity, to_id: args.to_entity, type: rtype };
     const version = relationOf(edge);
-    const found = tracker.admit(rid, rtype, args.from_entity, args.to_entity, rankOf(version), effectiveTime(version));
+    const found = tracker.admit(
+      rid,
+      rtype,
+      args.from_entity,
+      args.to_entity,
+      tracker.rank(version),
+      effectiveTime(version),
+    );
     const [ended, settled] = tracker.settle();
     options.warnings?.push(...found, ...settled);
     retires = [...ended]
@@ -2839,7 +2910,7 @@ async function settleUncertified(
     [rel.type, rel.from_entity, rel.to_entity],
   ]);
   if (tracker === null) return;
-  tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, rankOf(rel), effectiveTime(rel));
+  tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, tracker.rank(rel), effectiveTime(rel));
   const [ended] = tracker.settle();
   await retireRelations(
     runner,

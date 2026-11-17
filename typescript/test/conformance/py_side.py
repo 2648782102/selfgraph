@@ -1524,6 +1524,19 @@ async def supersede(graph):
         ]
         for rid in (stark, ids.relation_id("person:judy", "WORKS_AT", "company:wonka"))
     }
+    kim = [{"type": "Person", "name": "Kim"}, *({"type": "Company", "name": n} for n in ("Massive", "Nakatomi"))]
+    await graph.insert.facts({"entities": kim})
+    for company, year in (("massive", 2020), ("nakatomi", 2022)):
+        await graph.insert.facts({"relations": [link("kim", company, year)]})
+    later = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    nakatomi = ids.relation_id("person:kim", "WORKS_AT", "company:nakatomi")
+    await graph.relations.update(nakatomi, set_properties={"role": "lead"}, event_time=later)
+    out["moved_later"] = [
+        [v.revision, v.is_current, v.invalidated_by, _serde.json_iso(v.invalidated_at) if v.invalidated_at else None]
+        for v in await graph.relations.versions(ids.relation_id("person:kim", "WORKS_AT", "company:massive"))
+    ]
+    held = await graph.retrieve("Kim", as_of=datetime(2023, 1, 1, tzinfo=timezone.utc))
+    out["moved_later_valid"] = sorted(r.id for r in held.subgraph.relations)
     return out
 
 
