@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildGraph } from "../src/client.js";
 import { toOssie } from "../src/export.js";
+import { relationId } from "../src/ids.js";
 import { FalkorDBStore, KuzuStore, type LLMClient, SelfGraph, toNeo4jOntology, ValidationError } from "../src/index.js";
 import { runStdio } from "../src/mcp.js";
 import { EntityInput, Extraction, parseOrThrow } from "../src/models.js";
@@ -70,6 +71,51 @@ const PERSON = { id: "person:p", type: "Person", name: "P", properties: { age: 1
 const COMPANY = { id: "company:c", type: "Company", name: "C" };
 
 const check = (schema: unknown, facts: unknown) => validateAgainstSchema(Extraction.parse(facts), Schema.parse(schema));
+
+describe("explicit entity alias references", () => {
+  const fresh = freshGraphs(KUZU_SPEC, "explicit_alias_refs");
+  it.each(["company", "org", "business"])("explicit %s ids accept all schema alias references", async (prefix) => {
+    const graph = fresh({
+      schema: { entities: [{ name: "Company", aliases: ["org", "business"] }] },
+      resolver: "exact",
+    });
+    await graph.initialize();
+    const result = await graph.insert.facts({
+      entities: [{ id: `${prefix}:42`, type: "Company", name: "Acme" }],
+      relations: [{ from_entity: "business:42", type: "PARTNERS", to_entity: "org:42" }],
+      preferences: [
+        {
+          subject_entity: "org:42",
+          key: "partner",
+          value_entity: "business:42",
+          about_entity: "company:42",
+        },
+      ],
+      decisions: [
+        {
+          title: "Partner",
+          actor_entity: "business:42",
+          outcome_entity: "org:42",
+          alternative_entities: ["business:42"],
+          steps: [relationId("business:42", "PARTNERS", "org:42")],
+        },
+      ],
+    });
+    expect(result.entities.map((e) => e.id)).toEqual(["company:42"]);
+    const relation = result.relations[0]!;
+    expect([relation.from_entity, relation.to_entity]).toEqual(["company:42", "company:42"]);
+    const preference = (await graph.preferences.get(result.preferences[0]!.id))!;
+    expect([preference.subject_entity, preference.value_entity, preference.about_entity]).toEqual([
+      "company:42",
+      "company:42",
+      "company:42",
+    ]);
+    const decision = (await graph.decisions.get(result.decisions[0]!.id))!;
+    expect([decision.actor_entity, decision.outcome_entity]).toEqual(["company:42", "company:42"]);
+    expect(decision.alternative_entities).toEqual(["company:42"]);
+    expect(decision.steps.map((s) => s.relation_id)).toEqual([relation.id]);
+  });
+});
 
 describe("endpoint types", () => {
   it("resolve like entity types and are only checked when the schema has entities", () => {
