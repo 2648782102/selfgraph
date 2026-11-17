@@ -367,6 +367,23 @@ def test_embedding_seeding_fuses_with_bm25_and_embeds_each_entity_once():
         fresh_graph("tier", embedder=object())
 
 
+def test_embedding_seeding_rejects_mismatched_dimensions_and_can_retry():
+    class ChangingEmbedder:
+        valid = False
+
+        async def embed(self, texts):
+            return [[1.0, 0.0] if self.valid or text == "unrelated" else [1.0] for text in texts]
+
+    embedder = ChangingEmbedder()
+    g = fresh_graph("tier", embedder=embedder, seeds="embeddings")
+    run(g.insert.facts({"entities": [{"type": "Thing", "name": "Match"}]}))
+    with pytest.raises(ValidationError, match="embedding vectors must have the same dimensions"):
+        run(g.retrieve("unrelated"))
+    assert not g._embeddings
+    embedder.valid = True
+    assert [seed.id for seed in run(g.retrieve("unrelated")).seeds] == ["thing:match"]
+
+
 def test_from_tables_drafts_types_properties_relations_and_mappings():
     schema = Schema.from_tables(
         [

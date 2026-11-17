@@ -331,6 +331,7 @@ async function* entityPages(
  * @return (number): the similarity.
  */
 function cosine(a: readonly number[], b: readonly number[]): number {
+  if (a.length !== b.length) throw new ValidationError("embedding vectors must have the same dimensions");
   const dot = (x: readonly number[], y: readonly number[]): number => {
     let sum = 0;
     for (let i = 0; i < Math.min(x.length, y.length); i++) sum += x[i]! * y[i]!;
@@ -391,13 +392,13 @@ async function embeddingSeeds(
         found.set(eid, [...vectors[i]!]);
       });
     }
-    if (cache.size + stale.length > EMBED_CACHE) cache.clear();
-    for (const eid of stale) cache.set(key(eid), [texts.get(eid)!, found.get(eid)!]);
     const scored: Array<[Entity, number]> = [];
     for (const e of page) {
       const score = cosine(target!, found.get(e.id)!);
       if (score > 0) scored.push([e, score]);
     }
+    if (cache.size + stale.length > EMBED_CACHE) cache.clear();
+    for (const eid of stale) cache.set(key(eid), [texts.get(eid)!, found.get(eid)!]);
     best = bestSeeds([...best, ...scored], k);
   }
   return best;

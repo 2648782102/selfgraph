@@ -370,6 +370,18 @@ function suite(spec: StoreSpec): void {
     expect(() => open({ embedder: {} as never })).toThrow(/embedder must have an embed method/);
   });
 
+  it("embedding seeding rejects mismatched dimensions and can retry", async () => {
+    let valid = false;
+    const embedder: Embedder = {
+      embed: async (texts) => texts.map((text) => (valid || text === "unrelated" ? [1, 0] : [1])),
+    };
+    const g = open({ embedder, seeds: "embeddings" });
+    await g.insert.facts({ entities: [{ type: "Thing", name: "Match" }] });
+    await expect(g.retrieve("unrelated")).rejects.toThrow("embedding vectors must have the same dimensions");
+    valid = true;
+    expect((await g.retrieve("unrelated")).seeds.map((seed) => seed.id)).toEqual(["thing:match"]);
+  });
+
   it("stem singularizes -es plurals and keeps status and analysis", async () => {
     const singular: Record<string, string> = {
       addresses: "address",
