@@ -336,6 +336,19 @@ function suite(spec: StoreSpec): void {
     }
   });
 
+  it("BM25 seed ranking counts repeated document words", async () => {
+    const g = open();
+    await g.insert.facts({
+      entities: [
+        { type: "Thing", name: "Zebra", properties: { text: "alpha alpha beta" } },
+        { type: "Thing", name: "Mango", properties: { text: "alpha beta beta" } },
+      ],
+    });
+    const found = await g.retrieve("alpha", { seeds: "bm25" });
+    expect(found.seeds.slice(0, 2).map((seed) => seed.id)).toEqual(["thing:zebra", "thing:mango"]);
+    expect(found.seeds[0]!.score).toBeGreaterThan(found.seeds[1]!.score);
+  });
+
   it("embedding seeding fuses with BM25 and embeds each entity once", async () => {
     const embedder = new FakeEmbedder();
     const g = open({ embedder, seeds: "embeddings" });

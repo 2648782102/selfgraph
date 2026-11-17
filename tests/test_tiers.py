@@ -308,6 +308,23 @@ def test_synonym_seeding_finds_entities_by_a_type_synonym():
     assert run(fresh_graph("tier").retrieve("which employers")).tiers["seeds"] == "bm25"
 
 
+def test_bm25_seed_ranking_counts_repeated_document_words():
+    g = fresh_graph("tier")
+    run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {"type": "Thing", "name": "Zebra", "properties": {"text": "alpha alpha beta"}},
+                    {"type": "Thing", "name": "Mango", "properties": {"text": "alpha beta beta"}},
+                ]
+            }
+        )
+    )
+    found = run(g.retrieve("alpha", seeds="bm25"))
+    assert [seed.id for seed in found.seeds[:2]] == ["thing:zebra", "thing:mango"]
+    assert found.seeds[0].score > found.seeds[1].score
+
+
 def test_synonym_seeding_expands_parent_types_and_definitions_to_subtypes():
     hierarchy = {
         "entities": [
