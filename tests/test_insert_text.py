@@ -403,3 +403,16 @@ def test_llm_year_event_time_is_stored_and_an_unparseable_one_keeps_its_relation
     assert res.warnings == []
     assert {r.type: r.event_time for r in res.relations} == {"JOINED": utc(2021), "KNOWS": None, "MET": None}
     assert run(g.retrieve("Ann Acme", as_of="2000-01-01")).subgraph.relations == []
+
+
+def test_custom_extractor_rejects_proto_properties():
+    class Extractor:
+        async def extract(self, document):
+            entity = EntityInput(type="Person", name="Ann")
+            entity.properties = {"nested": [{"__proto__": "x"}]}
+            return Extraction(entities=[entity])
+
+    g = fresh_graph("proto_ext", extractor=Extractor())
+    with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
+        run(g.insert.text("Ann is a person."))
+    assert run(g.entities.list()).items == []

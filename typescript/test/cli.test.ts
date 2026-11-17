@@ -34,6 +34,18 @@ describe("built CLI against Kuzu", () => {
     for (const name of names) cli([...kuzu, ...ns, "entity", "create", "--name", name, "--type", "T"]);
   };
 
+  it("rejects proto keys supplied through property and external-id flags", () => {
+    for (const flags of [
+      ["--prop", "__proto__=1"],
+      ["--prop", 'nested={"items":[{"__proto__":"x"}]}'],
+      ["--external-id", "__proto__=x"],
+    ]) {
+      const result = cli([...kuzu, "entity", "create", "--name", "Proto", "--type", "Person", ...flags]);
+      expect(result.code).toBe(2);
+      expect(result.err).toContain("property and external id keys cannot be '__proto__'");
+    }
+  });
+
   it("prints diff summaries and JSON", () => {
     const ns = ["--namespace", "cli_diff"];
     seed(ns, "Ann");

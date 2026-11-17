@@ -36,7 +36,7 @@ import {
 } from "./runtime.js";
 import { CONTRADICTION_MODES, SCHEMA_MODES, type Schema } from "./schema.js";
 import type { SeedTier } from "./tiers.js";
-import { checkOptions, parseTime } from "./validate.js";
+import { checkOptions, parseTime, rejectProtoKeys } from "./validate.js";
 
 const WB_START = `(?<![${PY_WORD_CLASS}])`;
 const WB_END = `(?![${PY_WORD_CLASS}])`;
@@ -777,6 +777,9 @@ export async function callTool(
   try {
     if (t === undefined) throw new ValidationError(`unknown tool ${pyRepr(target)}`);
     checkOptions(t.name, args, Object.keys(t.input));
+    for (const field of ["properties", "set_properties", "external_ids"]) {
+      if (field in t.input) rejectProtoKeys(args[field]);
+    }
   } catch (exc) {
     return { result: { error: (exc as Error).message, error_type: "ValidationError" }, isError: true };
   }

@@ -386,3 +386,24 @@ describe("MCP tools over Kuzu", () => {
     expect(await mcpOk("get_schema", {})).toBeNull();
   });
 });
+
+it("rejects proto keys before MCP argument parsing drops them", async () => {
+  await configure({ namespace: "proto_rejection" });
+  for (const [name, args] of [
+    ["create_entity", { name: "Ann", type: "Person", properties: JSON.parse('{"__proto__":"x"}') }],
+    ["create_entity", { name: "Ann", type: "Person", external_ids: JSON.parse('{"__proto__":"x"}') }],
+    [
+      "insert_facts",
+      {
+        facts: {
+          entities: [{ name: "Ann", type: "Person", properties: JSON.parse('{"nested":[{"__proto__":"x"}]}') }],
+        },
+      },
+    ],
+  ] as const) {
+    expect(await callTool(name, args)).toEqual({
+      isError: true,
+      result: { error: "property and external id keys cannot be '__proto__'", error_type: "ValidationError" },
+    });
+  }
+});

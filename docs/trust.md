@@ -141,8 +141,11 @@ replaces the mark. Each mark is kept in the version's `certifications`, as
 
 The mark belongs to the version: a change to its properties or event time
 writes a new revision that starts uncertified, and an insert that does so warns
-`certified_dropped`. Restating the same fact, or adding evidence, keeps the
-mark. Only a current relation can be certified.
+`certified_dropped`. Under `supersede`, that revision is ranked again at its
+`max_count` endpoints, by an insert or by `relations.update`, so a relation the
+mark had kept current is retired when newer facts fill the endpoint. Restating
+the same fact, or adding evidence, keeps the mark. Only a current relation can
+be certified.
 
 ## Cypher notes
 

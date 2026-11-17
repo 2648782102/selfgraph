@@ -20,6 +20,7 @@ import {
   ValidationError,
 } from "../src/index.js";
 import { childEdgeId, LABELS } from "../src/labels.js";
+import { Extraction, parseOrThrow } from "../src/models.js";
 import { HUB_DEGREE } from "../src/retrieval.js";
 import { boltError, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
@@ -66,6 +67,37 @@ function suite(spec: StoreSpec) {
   let other: SelfGraph;
   const ns = uniqueNs(`ts_${spec.name}`);
   const fresh = freshGraphs(spec, "fresh");
+
+  it("rejects proto properties from a custom extractor", async () => {
+    const g = fresh({
+      extractor: {
+        extract: async () => ({
+          entities: [{ type: "Person", name: "Ann", properties: JSON.parse('{"nested":[{"__proto__":"x"}]}') }],
+        }),
+      },
+    });
+    await expect(g.insert.text("Ann is a person.")).rejects.toThrow(
+      "property and external id keys cannot be '__proto__'",
+    );
+    expect((await g.entities.list()).items).toEqual([]);
+  });
+
+  it("rejects proto keys before writes without rejecting other keys", async () => {
+    const g = fresh();
+    for (const properties of [JSON.parse('{"__proto__":"x"}'), JSON.parse('{"nested":[{"__proto__":"x"}]}')]) {
+      for (const fields of [{ properties }, { external_ids: JSON.parse('{"__proto__":"x"}') }]) {
+        await expect(g.entities.create("Ann", "Person", fields)).rejects.toThrow(
+          "property and external id keys cannot be '__proto__'",
+        );
+        await expect(g.insert.facts({ entities: [{ type: "Person", name: "Ann", ...fields }] })).rejects.toThrow(
+          "property and external id keys cannot be '__proto__'",
+        );
+      }
+    }
+    expect((await g.entities.list()).items).toEqual([]);
+    const good = { constructor: "x", prototype: "y", value: "__proto__" };
+    expect((await g.entities.create("Ann", "Person", { properties: good })).properties).toEqual(good);
+  });
 
   beforeAll(async () => {
     graph = new SelfGraph(spec.make(), { namespace: ns });
@@ -1956,4 +1988,22 @@ describe("property values", () => {
     for (const given of ["person", "HUMAN"])
       expect(await listed(s, given)).toEqual(["human:cy", "person:ann", "person:bob"]);
   });
+});
+
+it.each([JSON.parse('{"__proto__":1}'), JSON.parse('{"nested":[{"__proto__":1}]}')])(
+  "rejects proto keys before value type validation: %j",
+  (external_ids) => {
+    expect(() =>
+      parseOrThrow(Extraction, { entities: [{ type: "Person", name: "Ann", external_ids }] }, "facts"),
+    ).toThrowError(new ValidationError("property and external id keys cannot be '__proto__'"));
+  },
+);
+
+it.each([
+  [JSON.parse('{"a":9007199254740993}'), "a"],
+  [{ "\x01": 1 }, "\x01"],
+] as const)("keeps other external id value type errors: %j", (external_ids, key) => {
+  expect(() =>
+    parseOrThrow(Extraction, { entities: [{ type: "Person", name: "Ann", external_ids }] }, "facts"),
+  ).toThrowError(new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`));
 });

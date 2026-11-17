@@ -458,3 +458,16 @@ def test_evidence_commands_and_parity_flags(capsys, tmp_path):
         _metadata(["nope"])
     args = build_parser().parse_args(["preference", "list", "--key", "db", "--stance", "disinterest"])
     assert (args.key, args.stance) == ("db", "disinterest")
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--prop", "__proto__=1"],
+        ["--prop", 'nested={"items":[{"__proto__":"x"}]}'],
+        ["--external-id", "__proto__=x"],
+    ],
+)
+def test_cli_rejects_proto_keys(capsys, tmp_path, flags):
+    assert kuzu_main(tmp_path, "entity", "create", "--name", "Proto", "--type", "Person", *flags) == 2
+    assert "property and external id keys cannot be '__proto__'" in capsys.readouterr().err

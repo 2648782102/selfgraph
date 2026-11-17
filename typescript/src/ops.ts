@@ -2769,15 +2769,15 @@ async function lockCurrent<T>(
 }
 
 /**
- * Create a new version of a relation, settling its max_count endpoints again when supersede moves its event_time; an
- * unchanged update is a no-op.
+ * Create a new version of a relation, settling its max_count endpoints again under supersede when the version moves
+ * its event_time or drops a certification; an unchanged update is a no-op.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
  * @param args (UpdateRelationArgs): the properties to set and remove, a new valid time, and evidence to add.
  * @param schemaCheck (SchemaCheck | undefined): checks the resulting relation against the schema before the write, given the stored version too so only violations the update introduces count.
- * @param options (ContradictionOptions): "supersede" settles the endpoints again when event_time moves, against the max_count limits; any other mode leaves them as they are, since an update adds no relation.
+ * @param options (ContradictionOptions): "supersede" settles the endpoints again when event_time moves or the new revision of a certified relation, which starts uncertified, loses the exemption that kept it current, against the max_count limits; any other mode leaves them as they are, since an update adds no relation.
  * @return (Relation): the new version, current unless supersede retired it; throws ValidationError for a relation a contradiction invalidated.
  */
 export async function updateRelation(
@@ -2839,12 +2839,47 @@ export async function updateRelation(
   });
   const rel = await writeRelationVersion(runner, ns, current, props, true);
   await writeEvidence(runner, ns, records, createdAt);
-  if (options.contradiction === "supersede" && toIso(newEventTime) !== toIso(current.event_time)) {
-    const edge = { type: rel.type, from_id: rel.from_entity, to_id: rel.to_entity, props };
-    await resettleEndpoints(runner, ns, [edge], options.caps, createdAt);
+  const moved = toIso(newEventTime) !== toIso(current.event_time);
+  if (options.contradiction === "supersede" && (moved || current.certified_at !== null)) {
+    if (current.certified_at !== null) await settleUncertified(runner, ns, rel, options.caps, createdAt);
+    if (moved) {
+      const edge = { type: rel.type, from_id: rel.from_entity, to_id: rel.to_entity, props };
+      await resettleEndpoints(runner, ns, [edge], options.caps, createdAt);
+    }
     return (await newestRelation(runner, ns, rid))!;
   }
   return rel;
+}
+
+/**
+ * Settle the max_count endpoints of a relation whose new revision dropped the certification that kept it current.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rel (Relation): the new, uncertified revision, already written.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @param at (Date): the write's timestamp, stamped on each retirement.
+ * @return (Promise<void>): nothing.
+ */
+async function settleUncertified(
+  runner: Runner,
+  ns: string,
+  rel: Relation,
+  caps: ReadonlyMap<string, RelationCap> | null | undefined,
+  at: Date,
+): Promise<void> {
+  const [tracker, found] = await contradictionCheck(runner, ns, { contradiction: "supersede", caps }, [
+    [rel.type, rel.from_entity, rel.to_entity],
+  ]);
+  if (tracker === null) return;
+  tracker.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, rankOf(rel), effectiveTime(rel));
+  const [ended] = tracker.settle();
+  await retireRelations(
+    runner,
+    ns,
+    [...ended].map(([old, [by, when]]) => [found.get(old)!, by, when] as const),
+    at,
+  );
 }
 
 /**

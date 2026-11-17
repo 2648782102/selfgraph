@@ -184,7 +184,15 @@ function suite(spec: StoreSpec): void {
     expect((await g.retrieve("Ann")).context).toContain("GRAPH [certified] | Ann -[WORKS_AT]-> Acme");
     expect((await g.relations.uncertify(old.id)).certified_at).toBeNull();
     await g.relations.certify(old.id, { by: "hr" });
-    expect((await g.relations.update(old.id, { set_properties: { role: "cto" } })).certified_at).toBeNull();
+    const bumped = await g.relations.update(old.id, { set_properties: { role: "cto" } });
+    const newer = result.relations[0]!;
+    expect([bumped.certified_at, bumped.is_current, bumped.invalidated_by, bumped.invalidated_at]).toEqual([
+      null,
+      false,
+      newer.id,
+      newer.event_time,
+    ]);
+    expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([newer.id]);
     await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by must be a non-empty string");
     await expect(g.relations.certify("relation:missing", { by: "hr" })).rejects.toThrow("does not exist");
   });

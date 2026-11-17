@@ -11,6 +11,10 @@ same input twice gives the same graph. If a later insert names a stored entity
 another way, such as `Acme, Inc.` after `Acme`, the stored name stays and the new
 form becomes an alias.
 
+Property and external-id maps reject the key `__proto__` at any nesting depth,
+including inside arrays, with a `ValidationError` in both SDKs. This also applies
+to CLI, MCP, and custom extractor inputs.
+
 ## From text
 
 ```python

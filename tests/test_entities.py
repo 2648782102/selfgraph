@@ -342,3 +342,16 @@ def test_an_insert_larger_than_one_hydradb_message_writes_every_entity():
         ("Doc 0", 700_000),
         ("Doc 1", 700_000),
     ]
+
+
+@pytest.mark.parametrize("properties", [{"__proto__": "x"}, {"nested": [{"__proto__": "x"}]}])
+def test_proto_keys_are_rejected_before_writes(properties):
+    g = fresh_graph("proto")
+    for field, value in [("properties", properties), ("external_ids", {"__proto__": "x"})]:
+        with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
+            run(g.entities.create("Ann", "Person", **{field: value}))
+        with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
+            run(g.insert.facts({"entities": [{"type": "Person", "name": "Ann", field: value}]}))
+    assert run(g.entities.list()).items == []
+    good = {"constructor": "x", "prototype": "y", "value": "__proto__"}
+    assert run(g.entities.create("Ann", "Person", properties=good)).properties == good
