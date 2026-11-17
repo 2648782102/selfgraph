@@ -556,6 +556,19 @@ describe("trust rules without a store", () => {
     expect([...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!)).toEqual(walk);
   });
 
+  it("leaves out and logs a OneToMany multiplicity in the Ossie export", async () => {
+    const schema = {
+      entities: [{ name: "Person" }, { name: "Team" }],
+      relations: [{ type: "LEADS", from: { types: ["Person"] }, to: { types: ["Team"], max_count: 1 } }],
+    };
+    const { result, logged } = await captureLog(() => toOssie(schema));
+    const concepts = (result as { ontology: { relationships: Record<string, unknown>[] }[] }).ontology;
+    expect(concepts[0]!.relationships[0]).not.toHaveProperty("multiplicity");
+    expect(logged.map((line) => line.slice(line.indexOf(": ") + 2))).toEqual([
+      "ossie export: the OneToMany multiplicity of relation LEADS are left out",
+    ]);
+  });
+
   it("logs every schema field the Ossie export leaves out", async () => {
     const schema = {
       entities: [{ name: "Company", aliases: ["Co"], certified: true }],

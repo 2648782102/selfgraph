@@ -410,6 +410,7 @@ and the MCP `get_schema` tool takes `format: "ossie"`.
 | Property | A `ManyToOne` relationship to the built-in value type (`json` becomes `String`). |
 | Relation type | A relationship under each `from` type, one per `to` type (`Any` when none), named by the type, plus the `to` type when there are several. |
 | `from.max_count: 1` | `ManyToOne`, or `OneToOne` when `to.max_count` is 1 too. |
+| `from.max_count != 1` and `to.max_count: 1` | The unsupported `OneToMany` multiplicity is left out and logged. |
 | A relation between two entities of one type | The second role is named `other`, as in `{Person} knows {Person:other}`. |
 
 Export leaves out, with a warning on the `selfgraph` logger, a relation type with

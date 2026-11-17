@@ -55,7 +55,7 @@ function leftOut(kind: string, name: string, fields: Record<string, unknown>): v
 /**
  * Render a schema as an Apache Ossie ontology document (spec 0.3.0.dev0).
  *
- * Each entity type becomes an EntityType concept that extends its parent. Each property becomes a ManyToOne relationship to the matching built-in value type. Each relation type becomes a relationship under every one of its from types, one per to type (Any when it lists none), named by its type plus the to type when there are several; it is ManyToOne when from max_count is 1 and OneToOne when to max_count is 1 too. A relation type with no from types is left out, as Ossie declares a relationship under a concept. Relation properties, aliases, synonyms, definitions, mappings, certified flags, required flags, and min counts have no Ossie form and are left out too; each omission is logged.
+ * Each entity type becomes an EntityType concept that extends its parent. Each property becomes a ManyToOne relationship to the matching built-in value type. Each relation type becomes a relationship under every one of its from types, one per to type (Any when it lists none), named by its type plus the to type when there are several; it is ManyToOne when from max_count is 1 and OneToOne when to max_count is 1 too. A relation type with no from types is left out, as Ossie declares a relationship under a concept. Relation properties, aliases, synonyms, definitions, mappings, certified flags, required flags, min counts, and OneToMany multiplicities have no Ossie form and are left out too; each omission is logged.
  *
  * @param raw (Schema | ParsedSchema): the schema.
  * @return (Obj): the Ossie document; JSON is valid YAML, so it can be written as either.
@@ -99,6 +99,7 @@ export function toOssie(raw: Schema | ParsedSchema): Obj {
       synonyms: relation.synonyms,
       "certified flag": relation.certified,
       "min counts": relation.from.min_count != null || relation.to.min_count != null,
+      "OneToMany multiplicity": relation.from.max_count !== 1 && relation.to.max_count === 1,
     });
     const words = rtype.toLowerCase().replaceAll("_", " ");
     const targets = relation.to.types.length ? relation.to.types : ["Any"];

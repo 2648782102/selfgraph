@@ -124,7 +124,9 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
   });
 
   it("schema validation produces identical warnings in both languages", () => {
-    expect(schemaWarnings()).toEqual(py("schema", "-", "-"));
+    const warnings = schemaWarnings();
+    expect(warnings).toEqual(py("schema", "-", "-"));
+    expect(warnings.ossie.warnings).toContain("the OneToMany multiplicity of relation LEADS are left out");
   });
 
   for (const { name: store } of specs) {

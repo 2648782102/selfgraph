@@ -622,6 +622,21 @@ def test_ppr_ranks_equal_mass_by_id_whatever_the_string_hashing():
     assert sorted(ranks, key=ranks.get) == [f"thing:{n}" for n in walk]
 
 
+def test_ossie_export_leaves_out_and_logs_a_one_to_many_multiplicity(caplog):
+    schema = Schema.model_validate(
+        {
+            "entities": [{"name": "Person"}, {"name": "Team"}],
+            "relations": [{"type": "LEADS", "from": {"types": ["Person"]}, "to": {"types": ["Team"], "max_count": 1}}],
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="selfgraph"):
+        doc = schema.to_ossie()
+    assert "multiplicity" not in doc["ontology"][0]["relationships"][0]
+    assert [r.getMessage() for r in caplog.records] == [
+        "ossie export: the OneToMany multiplicity of relation LEADS are left out"
+    ]
+
+
 def test_ossie_export_logs_every_field_it_leaves_out(caplog):
     schema = Schema.model_validate(
         {

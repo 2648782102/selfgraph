@@ -12,6 +12,7 @@ import {
   SelfGraphError,
   toJsonable,
   toNeo4jOntology,
+  toOssie,
   ValidationError,
 } from "../../src/index.js";
 import { setLogger } from "../../src/internal/log.js";
@@ -125,6 +126,31 @@ const NEO4J_LOSS_SPEC = {
   ],
   relations: [
     { type: "OWNS", synonyms: ["holds"], certified: true, from: { types: ["Person"] }, to: { types: ["Company"] } },
+  ],
+};
+
+const OSSIE_SPEC = {
+  name: "conformance",
+  entities: [
+    { name: "Person", aliases: ["User"], properties: [{ name: "age", type: "integer" }] },
+    { name: "Company", aliases: ["Org"] },
+  ],
+  relations: [
+    {
+      type: "WORKS_AT",
+      from: { types: ["Person", "User"] },
+      to: { types: ["Org", "Company"], max_count: 1 },
+    },
+    {
+      type: "KNOWS",
+      from: { types: ["Person"] },
+      to: { types: ["Person"] },
+    },
+    {
+      type: "LEADS",
+      from: { types: ["Person"] },
+      to: { types: ["Company"], max_count: 1 },
+    },
   ],
 };
 
@@ -272,19 +298,38 @@ function unknownKeyError(kind: "facts" | "schema", value: unknown): string {
 }
 
 /**
+ * Call a function and collect the messages it logs on the selfgraph logger.
+ *
+ * @param call (() => T): the function to call.
+ * @return ({ result: T; logs: string }): the function's result and its logged lines joined by newlines.
+ */
+function capturedLogs<T>(call: () => T): { result: T; logs: string } {
+  const lines: string[] = [];
+  const previous = setLogger((message) => lines.push(message));
+  try {
+    return { result: call(), logs: lines.join("\n") };
+  } finally {
+    setLogger(previous);
+  }
+}
+
+/**
  * Export a schema holding every field the Neo4j ontology cannot carry, and return what it logs.
  *
  * @return (string): the logged warning lines joined by newlines, empty when the export logs nothing.
  */
 export function neo4jExportWarnings(): string {
-  const lines: string[] = [];
-  const previous = setLogger((message) => lines.push(message));
-  try {
-    toNeo4jOntology(Schema.parse(NEO4J_LOSS_SPEC));
-  } finally {
-    setLogger(previous);
-  }
-  return lines.join("\n");
+  return capturedLogs(() => toNeo4jOntology(Schema.parse(NEO4J_LOSS_SPEC))).logs;
+}
+
+/**
+ * Export a schema with aliases and OneToMany multiplicity to Ossie, and return the document and warnings.
+ *
+ * @return ({ doc: unknown; warnings: string }): the Ossie document and the logged warning lines joined by newlines.
+ */
+export function ossieExport(): { doc: unknown; warnings: string } {
+  const { result, logs } = capturedLogs(() => toJsonable(toOssie(Schema.parse(OSSIE_SPEC))));
+  return { doc: result, warnings: logs };
 }
 
 const JSON_INPUTS = ["NaN", "Infinity", "-Infinity", "1.5", "[1]", "nope"];
@@ -329,7 +374,7 @@ function tablesReferenceErrors(): string[] {
 /**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
- * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; tables_errors: string[]; term_forms: unknown; terms: unknown[]; neo4j_dropped: string }): one list per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the fields the Neo4j export drops, and how NaN and Infinity parse.
+ * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; tables_errors: string[]; term_forms: unknown; terms: unknown[]; neo4j_dropped: string; ossie: { doc: unknown; warnings: string } }): one list per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the fields the Neo4j export drops, the Ossie export document and warnings, and how NaN and Infinity parse.
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
@@ -346,6 +391,7 @@ export function schemaWarnings(): {
   iso_times: string[];
   terms_subtypes: unknown[];
   neo4j_dropped: string;
+  ossie: { doc: unknown; warnings: string };
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
 } {
@@ -457,6 +503,7 @@ export function schemaWarnings(): {
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
     tables_errors: tablesReferenceErrors(),
     neo4j_dropped: neo4jExportWarnings(),
+    ossie: ossieExport(),
     json_constants: jsonConstants(),
     term_forms: Object.fromEntries(
       Object.entries(schemaForms(terms)).map(([kind, named]) => [kind, Object.fromEntries(named)]),

@@ -238,10 +238,11 @@ def unknown_key_error(kind, value):
     return "no error"
 
 
-def neo4j_export_warnings():
-    """Export a schema holding every field the Neo4j ontology cannot carry, and return what it logs.
+def captured_logs(call):
+    """Call a function and collect the lines it logs on the selfgraph logger.
 
-    @return (str): the logged warning lines joined by newlines, empty when the export logs nothing.
+    @param call (Callable): the function to call.
+    @return (tuple): the function's result and its logged lines joined by newlines.
     """
     lines: list[str] = []
 
@@ -253,10 +254,27 @@ def neo4j_export_warnings():
     logger = logging.getLogger("selfgraph")
     logger.addHandler(sink)
     try:
-        Schema.model_validate(NEO4J_LOSS_SPEC).to_neo4j_ontology()
+        result = call()
     finally:
         logger.removeHandler(sink)
-    return "\n".join(lines)
+    return result, "\n".join(lines)
+
+
+def neo4j_export_warnings():
+    """Export a schema holding every field the Neo4j ontology cannot carry, and return what it logs.
+
+    @return (str): the logged warning lines joined by newlines, empty when the export logs nothing.
+    """
+    return captured_logs(lambda: Schema.model_validate(NEO4J_LOSS_SPEC).to_neo4j_ontology())[1]
+
+
+def ossie_export():
+    """Export a schema with aliases and OneToMany multiplicity to Ossie, and return the document and warnings.
+
+    @return (dict): the Ossie document and the logged warning lines joined by newlines.
+    """
+    doc, warnings = captured_logs(lambda: Schema.model_validate(OSSIE_SPEC).to_ossie())
+    return {"doc": to_jsonable(doc), "warnings": warnings}
 
 
 JSON_INPUTS = ["NaN", "Infinity", "-Infinity", "1.5", "[1]", "nope"]
@@ -298,7 +316,7 @@ def tables_reference_errors():
 def schema_warnings():
     """Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
 
-    @return (dict): one list of {code, message} per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the fields the Neo4j export drops, and how NaN and Infinity parse.
+    @return (dict): one list of {code, message} per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the fields the Neo4j export drops, the Ossie export document and warnings, and how NaN and Infinity parse.
     """
     schema = Schema.model_validate(SCHEMA_SPEC)
     cases = [Extraction.model_validate(case) for case in SCHEMA_CASES]
@@ -377,6 +395,7 @@ def schema_warnings():
         "tables_errors": tables_reference_errors(),
         "term_forms": to_jsonable(schema_forms(Schema.model_validate(TERMS_SPEC))),
         "neo4j_dropped": neo4j_export_warnings(),
+        "ossie": ossie_export(),
         "json_constants": json_constants(),
         "terms": [
             sorted(expand_tokens(_tokens(q), terms, _tokens))
@@ -608,6 +627,32 @@ NEO4J_LOSS_SPEC = {
             "from": {"types": ["Person"]},
             "to": {"types": ["Company"]},
         }
+    ],
+}
+
+
+OSSIE_SPEC = {
+    "name": "conformance",
+    "entities": [
+        {"name": "Person", "aliases": ["User"], "properties": [{"name": "age", "type": "integer"}]},
+        {"name": "Company", "aliases": ["Org"]},
+    ],
+    "relations": [
+        {
+            "type": "WORKS_AT",
+            "from": {"types": ["Person", "User"]},
+            "to": {"types": ["Org", "Company"], "max_count": 1},
+        },
+        {
+            "type": "KNOWS",
+            "from": {"types": ["Person"]},
+            "to": {"types": ["Person"]},
+        },
+        {
+            "type": "LEADS",
+            "from": {"types": ["Person"]},
+            "to": {"types": ["Company"], "max_count": 1},
+        },
     ],
 }
 

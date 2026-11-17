@@ -48,8 +48,8 @@ def to_ossie(schema: Schema) -> dict[str, Any]:
     its from types, one per to type (Any when it lists none), named by its type plus the to type when there are
     several; it is ManyToOne when from max_count is 1 and OneToOne when to max_count is 1 too. A relation type with
     no from types is left out, as Ossie declares a relationship under a concept. Relation properties, aliases,
-    synonyms, definitions, mappings, certified flags, required flags, and min counts have no Ossie form and are left
-    out too; each omission is logged.
+    synonyms, definitions, mappings, certified flags, required flags, min counts, and OneToMany multiplicities have
+    no Ossie form and are left out too; each omission is logged.
 
     @param schema (Schema): the schema.
     @return (dict[str, Any]): the Ossie document; JSON is valid YAML, so it can be written as either.
@@ -100,6 +100,7 @@ def to_ossie(schema: Schema) -> dict[str, Any]:
                 "synonyms": relation.synonyms,
                 "certified flag": relation.certified,
                 "min counts": relation.from_.min_count is not None or relation.to.min_count is not None,
+                "OneToMany multiplicity": relation.from_.max_count != 1 and relation.to.max_count == 1,
             },
         )
         words = rtype.lower().replace("_", " ")
