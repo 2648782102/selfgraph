@@ -640,6 +640,43 @@ async def choice_errors(graph):
     works_at = ids.relation_id("person:jane-doe", "WORKS_AT", "company:acme")
     dec = ids.decision_id("person:jane-doe", "Pick HydraDB")
     return {
+        "proto_value_type": await error_of(
+            graph.insert.facts({"entities": [{"type": "Person", "name": "Proto", "external_ids": {"__proto__": 1}}]})
+        ),
+        "proto_nested_value_type": await error_of(
+            graph.insert.facts(
+                {"entities": [{"type": "Person", "name": "Proto", "external_ids": {"nested": [{"__proto__": 1}]}}]}
+            )
+        ),
+        "external_id_unsafe_number": await error_of(
+            graph.insert.facts(
+                {"entities": [{"type": "Person", "name": "Proto", "external_ids": {"a": 9007199254740993}}]}
+            )
+        ),
+        "external_id_control_key": await error_of(
+            graph.insert.facts({"entities": [{"type": "Person", "name": "Proto", "external_ids": {"\x01": 1}}]})
+        ),
+        "proto_entity": await error_of(
+            graph.entities.create("Proto", "Person", properties={"nested": [{"__proto__": "x"}]})
+        ),
+        "proto_update": await error_of(graph.entities.update("person:jane-doe", external_ids={"__proto__": "x"})),
+        "proto_relation": await error_of(
+            graph.relations.create("person:jane-doe", "USES", "database:hydradb", properties={"__proto__": "x"})
+        ),
+        "proto_relation_update": await error_of(
+            graph.relations.update(works_at, set_properties={"nested": [{"__proto__": "x"}]})
+        ),
+        "proto_preference": await error_of(
+            graph.preferences.create("person:jane-doe", "database", "database:hydradb", properties={"__proto__": "x"})
+        ),
+        "proto_facts": await error_of(
+            graph.insert.facts(
+                {"entities": [{"type": "Person", "name": "Proto", "properties": {"nested": [{"__proto__": "x"}]}}]}
+            )
+        ),
+        "proto_cli": await error_of(
+            graph.entities.create("Proto", "Person", properties=_kv(["__proto__=1"], "--prop"))
+        ),
         "pref_create_stance": await error_of(
             graph.preferences.create("person:jane-doe", "database", "database:hydradb", stance="meh")
         ),
@@ -1407,6 +1444,31 @@ async def supersede(graph):
     out["undated_correction"] = [
         [v.revision, v.invalidated_by, v.event_time == corrected[-1].created_at] for v in corrected
     ]
+    await graph.insert.facts(
+        {
+            "entities": [
+                {"type": "Person", "name": "Judy"},
+                *({"type": "Company", "name": n} for n in ("Stark", "Wonka")),
+            ],
+            "relations": [link("judy", "stark", 2020)],
+        }
+    )
+    stark = ids.relation_id("person:judy", "WORKS_AT", "company:stark")
+    await graph.relations.certify(stark, by="hr")
+    await graph.insert.facts({"relations": [link("judy", "wonka", 2022)]})
+    await graph.relations.update(stark, set_properties={"role": "cto"})
+    out["certified_update"] = {
+        rid: [
+            [
+                v.revision,
+                v.is_current,
+                v.invalidated_by,
+                _serde.json_iso(v.invalidated_at) if v.invalidated_at else None,
+            ]
+            for v in await graph.relations.versions(rid)
+        ]
+        for rid in (stark, ids.relation_id("person:judy", "WORKS_AT", "company:wonka"))
+    }
     return out
 
 

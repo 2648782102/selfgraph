@@ -181,7 +181,7 @@ const floatArg = (flag: string) => (value: string) => {
 export function kv(pairs: string[], flag: string, text: true): Record<string, string>;
 export function kv(pairs: string[], flag: string, text?: false): JsonObject;
 export function kv(pairs: string[], flag: string, text = false): JsonObject {
-  const out: JsonObject = {};
+  const out: JsonObject = Object.create(null);
   for (const pair of pairs) {
     const i = pair.indexOf("=");
     if (i < 0) throw new ValidationError(`${flag} expects ${text ? "SYSTEM=ID" : "KEY=VALUE"}, got ${pyRepr(pair)}`);

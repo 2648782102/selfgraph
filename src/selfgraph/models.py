@@ -19,7 +19,14 @@ from pydantic import (
 from pydantic import ValidationError as PydanticValidationError
 
 from .errors import ValidationError
-from .ids import _has_surrogate, _require_clean_json, _require_no_control, _require_unit, normalize_rel_type
+from .ids import (
+    _has_surrogate,
+    _reject_proto_keys,
+    _require_clean_json,
+    _require_no_control,
+    _require_unit,
+    normalize_rel_type,
+)
 
 __all__ = [
     "JsonValue",
@@ -608,6 +615,7 @@ class EntityInput(InputModel):
             _require_no_control("entity alias", alias)
         return value
 
+    _proto_keys = field_validator("external_ids", "properties", mode="before")(_reject_proto_keys)
     _clean_json = _check(_require_clean_json, "entity property and external id", "external_ids", "properties")
 
 
@@ -682,6 +690,7 @@ class RelationInput(InputModel):
     def _normalize_type(cls, value: str) -> str:
         return normalize_rel_type(value)
 
+    _proto_keys = field_validator("properties", mode="before")(_reject_proto_keys)
     _clean_json = _check(_require_clean_json, "relation property", "properties")
 
 
@@ -699,6 +708,7 @@ class PreferenceInput(InputModel):
     event_time: FactsTime = None
 
     _clean_key = _check(_require_no_control, "preference key", "key")
+    _proto_keys = field_validator("properties", mode="before")(_reject_proto_keys)
     _clean_json = _check(_require_clean_json, "preference property", "properties")
 
 

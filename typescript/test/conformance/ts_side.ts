@@ -651,6 +651,51 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>>
   const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
   const bad = new Opaque() as never;
   return {
+    proto_value_type: await errorOf(() =>
+      graph.insert.facts({
+        entities: [{ type: "Person", name: "Proto", external_ids: JSON.parse('{"__proto__":1}') }],
+      }),
+    ),
+    proto_nested_value_type: await errorOf(() =>
+      graph.insert.facts({
+        entities: [{ type: "Person", name: "Proto", external_ids: JSON.parse('{"nested":[{"__proto__":1}]}') }],
+      }),
+    ),
+    external_id_unsafe_number: await errorOf(() =>
+      graph.insert.facts({
+        entities: [{ type: "Person", name: "Proto", external_ids: JSON.parse('{"a":9007199254740993}') as never }],
+      }),
+    ),
+    external_id_control_key: await errorOf(() =>
+      graph.insert.facts({ entities: [{ type: "Person", name: "Proto", external_ids: { "\x01": 1 } as never }] }),
+    ),
+    proto_entity: await errorOf(() =>
+      graph.entities.create("Proto", "Person", { properties: JSON.parse('{"nested":[{"__proto__":"x"}]}') }),
+    ),
+    proto_update: await errorOf(() =>
+      graph.entities.update("person:jane-doe", { external_ids: JSON.parse('{"__proto__":"x"}') }),
+    ),
+    proto_relation: await errorOf(() =>
+      graph.relations.create("person:jane-doe", "USES", "database:hydradb", {
+        properties: JSON.parse('{"__proto__":"x"}'),
+      }),
+    ),
+    proto_relation_update: await errorOf(() =>
+      graph.relations.update(worksAt, { set_properties: JSON.parse('{"nested":[{"__proto__":"x"}]}') }),
+    ),
+    proto_preference: await errorOf(() =>
+      graph.preferences.create("person:jane-doe", "database", "database:hydradb", {
+        properties: JSON.parse('{"__proto__":"x"}'),
+      }),
+    ),
+    proto_facts: await errorOf(() =>
+      graph.insert.facts({
+        entities: [{ type: "Person", name: "Proto", properties: JSON.parse('{"nested":[{"__proto__":"x"}]}') }],
+      }),
+    ),
+    proto_cli: await errorOf(() =>
+      graph.entities.create("Proto", "Person", { properties: kv(["__proto__=1"], "--prop") }),
+    ),
     pref_create_stance: await errorOf(() =>
       graph.preferences.create("person:jane-doe", "database", "database:hydradb", { stance: "meh" as never }),
     ),
@@ -1762,6 +1807,23 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     v.invalidated_by,
     v.event_time ? v.event_time.getTime() === firstCreated : false,
   ]);
+  await graph.insert.facts({
+    entities: [{ type: "Person", name: "Judy" }, ...["Stark", "Wonka"].map((name) => ({ type: "Company", name }))],
+    relations: [link("judy", "stark", 2020)],
+  });
+  const stark = ids.relationId("person:judy", "WORKS_AT", "company:stark");
+  await graph.relations.certify(stark, { by: "hr" });
+  await graph.insert.facts({ relations: [link("judy", "wonka", 2022)] });
+  await graph.relations.update(stark, { set_properties: { role: "cto" } });
+  const certified_update: Record<string, unknown> = {};
+  for (const rid of [stark, ids.relationId("person:judy", "WORKS_AT", "company:wonka")]) {
+    certified_update[rid] = (await graph.relations.versions(rid)).map((v) => [
+      v.revision,
+      v.is_current,
+      v.invalidated_by,
+      v.invalidated_at ? jsonIso(v.invalidated_at) : null,
+    ]);
+  }
   return {
     warnings,
     versions,
@@ -1771,5 +1833,6 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     delete_versions,
     subms,
     undated_correction,
+    certified_update,
   };
 }

@@ -401,3 +401,16 @@ def test_graph_diff_tool_returns_structured_changes_and_validates_window(server)
     assert [e["id"] for e in result.structured_content["entities_created"]] == ["t:a", "t:b"]
     with pytest.raises(Exception, match="until must be at or after since"):
         run(server.call_tool("graph_diff", {"since": "2021-01-01", "until": "2020-01-01"}))
+
+
+def test_proto_keys_are_rejected_by_mcp():
+    with mcp_session(namespace="proto_mcp"):
+        for fields in [{"properties": {"__proto__": "x"}}, {"external_ids": {"__proto__": "x"}}]:
+            with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
+                run(srv.create_entity("Ann", "Person", **fields))
+        with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
+            run(
+                srv.insert_facts(
+                    {"entities": [{"name": "Ann", "type": "Person", "properties": {"nested": [{"__proto__": "x"}]}}]}
+                )
+            )

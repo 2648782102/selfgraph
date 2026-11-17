@@ -224,6 +224,9 @@ def test_certified_relations_survive_supersede_and_lead_retrieval():
     run(g.relations.certify(old.id, by="hr"))
     bumped = run(g.relations.update(old.id, set_properties={"role": "cto"}))
     assert bumped.certified_at is None
+    newer = result.relations[0]
+    assert (bumped.is_current, bumped.invalidated_by, bumped.invalidated_at) == (False, newer.id, newer.event_time)
+    assert [r.id for r in run(g.relations.list(from_entity="person:ann")).items] == [newer.id]
     with pytest.raises(ValidationError, match="certified_by must be a non-empty string"):
         run(g.relations.certify(old.id, by=" "))
     with pytest.raises(NotFoundError):

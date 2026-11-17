@@ -52,6 +52,27 @@ export function hasControl(text: string): boolean {
 }
 
 /**
+ * Reject __proto__ keys before property or external-id values are parsed.
+ *
+ * @param value (unknown): the raw input, traversed through plain objects and arrays.
+ * @return (void): nothing; raises ValidationError on a __proto__ key.
+ */
+export function rejectProtoKeys(value: unknown): void {
+  const pending = [value];
+  const seen = new Set<object>();
+  while (pending.length) {
+    const item = pending.pop();
+    if (!Array.isArray(item) && !isPlainObject(item)) continue;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    if (!Array.isArray(item) && Object.hasOwn(item, "__proto__")) {
+      throw new ValidationError("property and external id keys cannot be '__proto__'");
+    }
+    for (const child of Object.values(item)) pending.push(child);
+  }
+}
+
+/**
  * Validate a stored JSON value: bounded nesting, clean string keys, UTF-8-emittable strings, safe integers, no Dates.
  *
  * @param name (string): the field name for error messages.
@@ -348,6 +369,7 @@ export function requireList(name: string, value: unknown): asserts value is stri
  */
 function requireMapping(name: string, value: unknown, safeInts = true): asserts value is Record<string, unknown> {
   if (!isPlainObject(value)) throw new ValidationError(`${name} must be a mapping, got ${typeName(value)}`);
+  if (["properties", "set_properties", "external_ids"].includes(name)) rejectProtoKeys(value);
   requireCleanJson(name, value, 0, safeInts);
 }
 

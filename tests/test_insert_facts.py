@@ -287,3 +287,17 @@ def test_relation_id_preflight_batches_kuzu_reads(monkeypatch):
     assert len(result.relations) == 257
     assert batches == [256, 1]
     assert single_reads == []
+
+
+@pytest.mark.parametrize("value", [{"__proto__": 1}, {"nested": [{"__proto__": 1}]}])
+def test_proto_keys_precede_value_type_validation(value):
+    with pytest.raises(ValidationError) as exc:
+        Extraction.model_validate({"entities": [{"type": "Person", "name": "Ann", "external_ids": value}]})
+    assert str(exc.value) == "property and external id keys cannot be '__proto__'"
+
+
+@pytest.mark.parametrize("value, key", [({"a": 9007199254740993}, "a"), ({"\x01": 1}, "\x01")])
+def test_other_external_id_errors_keep_value_type_validation(value, key):
+    with pytest.raises(ValidationError) as exc:
+        Extraction.model_validate({"entities": [{"type": "Person", "name": "Ann", "external_ids": value}]})
+    assert str(exc.value) == f"invalid facts: entities[0].external_ids.{key}: expected string"
