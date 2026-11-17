@@ -210,6 +210,69 @@ def test_check_answerable_grounds_schema_synonyms_definitions_and_plurals():
     assert run(fresh_graph("tier").check_answerable("anything")).verdict == "not_answerable"
 
 
+def test_definition_terms_keep_their_entity_owners():
+    schema = {
+        "entities": [
+            {
+                "name": "Employee",
+                "definitions": [{"name": "status", "expression": "active", "synonyms": ["employment state"]}],
+            },
+            {
+                "name": "Project",
+                "definitions": [{"name": "status", "expression": "phase", "synonyms": ["project state"]}],
+            },
+        ]
+    }
+    g = fresh_graph("tier", schema=schema)
+    run(g.insert.facts({"entities": [{"type": "Employee", "name": "Alice"}]}))
+    report = run(g.check_answerable("project state", terms=["project state"]))
+    assert report.verdict == "not_answerable"
+    assert [(t.status, t.matches) for t in report.terms] == [("schema_only", ["status"])]
+    assert [seed.id for seed in run(g.retrieve("employment state", depth=0)).seeds] == ["employee:alice"]
+
+
+def test_certification_follows_the_stored_definitions_name():
+    schema = {
+        "entities": [
+            {
+                "name": "Project",
+                "definitions": [{"name": "phase", "expression": "b", "synonyms": ["state"], "certified": False}],
+            },
+            {
+                "name": "Employee",
+                "definitions": [{"name": "status", "expression": "a", "synonyms": ["state"], "certified": True}],
+            },
+        ]
+    }
+    g = fresh_graph("tier", schema=schema)
+    run(g.insert.facts({"entities": [{"type": "Employee", "name": "Alice"}]}))
+    report = run(g.check_answerable("state"))
+    assert [(t.status, t.matches, t.certified) for t in report.terms] == [("definition", ["status"], True)]
+
+
+def test_certification_uses_the_matched_definitions_owner():
+    schema = {
+        "entities": [
+            {
+                "name": "Alpha",
+                "definitions": [{"name": "phase", "expression": "a", "synonyms": ["grade"], "certified": True}],
+            },
+            {
+                "name": "Beta",
+                "definitions": [{"name": "phase", "expression": "b", "synonyms": ["grade"], "certified": False}],
+            },
+        ]
+    }
+    g = fresh_graph("tier", schema=schema)
+    run(g.insert.facts({"entities": [{"type": "Alpha", "name": "Alice"}]}))
+    report = run(g.check_answerable("grade"))
+    assert [(t.status, t.matches, t.certified) for t in report.terms] == [("definition", ["phase"], True)]
+
+    run(g.insert.facts({"entities": [{"type": "Beta", "name": "Bob"}]}))
+    report = run(g.check_answerable("grade"))
+    assert [(t.status, t.matches, t.certified) for t in report.terms] == [("definition", ["phase"], False)]
+
+
 def test_check_answerable_ignores_possessive_and_contraction_endings():
     spec = {
         "entities": [{"name": "Person"}, {"name": "Company"}],

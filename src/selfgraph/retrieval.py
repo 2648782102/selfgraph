@@ -39,7 +39,7 @@ from .models import (
     Subgraph,
     TermCoverage,
 )
-from .terms import expand_tokens, grounded_terms, schema_forms, stem
+from .terms import _definition_forms, expand_tokens, grounded_terms, schema_forms, stem
 
 _log = logging.getLogger("selfgraph")
 
@@ -1209,6 +1209,12 @@ def answerability(
     @return (AnswerabilityReport): the coverage of each term, the connectivity, and the verdict.
     """
     forms = schema_forms(schema)
+    definition_entries: dict[str, list[tuple[str, str]]] = {}
+    definition_certified: dict[tuple[str, str], bool] = {}
+    for (owner, name), (forms_for_def, certified) in _definition_forms(schema).items():
+        definition_certified[(owner, name)] = certified
+        for form in forms_for_def:
+            definition_entries.setdefault(form, []).append((owner, name))
     explicit = terms is not None
     if terms is None:
         names = [n for e in entities for n in (e.name, *e.aliases)]
@@ -1240,13 +1246,27 @@ def answerability(
             status, declared = "missing", []
             for kind, named in kinds:
                 hits = [named[form] for form in named if words and _covers(words, form)]
-                live = [(t, c) for t, c in hits if kind not in held or t in held[kind]]
+                if kind == "definition":
+                    live = []
+                    for form in named:
+                        if not (words and _covers(words, form)):
+                            continue
+                        entries = definition_entries.get(form, ())
+                        if not any(owner in held["type"] for owner, _ in entries):
+                            continue
+                        live.extend(
+                            (name, definition_certified[(owner, name)])
+                            for owner, name in entries
+                            if owner in held["type"]
+                        )
+                else:
+                    live = [(t, c) for t, c in hits if kind not in held or t in held[kind]]
                 if live:
-                    status, found, certified = kind, {t for t, _ in live}, any(c for _, c in live)
+                    status, found, certified = kind, {t for t, _ in live}, all(c for _, c in live)
                     break
                 declared = declared or hits
             if status == "missing" and declared:
-                status, found, certified = "schema_only", {t for t, _ in declared}, any(c for _, c in declared)
+                status, found, certified = "schema_only", {t for t, _ in declared}, all(c for _, c in declared)
         coverage.append(
             TermCoverage(term=term, status=status, matches=sorted(found)[:_MAX_MATCHES], certified=certified)
         )

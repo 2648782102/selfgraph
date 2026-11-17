@@ -20,6 +20,7 @@ import { callTool, close, configure } from "../src/mcp.js";
 import { answerability, HUB_DEGREE, pprRank } from "../src/retrieval.js";
 import { checkedCypher, DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema } from "../src/schema.js";
+import { expandTokens } from "../src/terms.js";
 import {
   ANN_AT_ACME,
   buildCli,
@@ -112,6 +113,35 @@ function suite(spec: StoreSpec): void {
       await expect(g.checkAnswerable("Ann", options)).rejects.toThrow(message);
     }
     await expect(g.checkAnswerable("  ")).rejects.toThrow("question must be a non-empty string");
+  });
+
+  it("keeps definition terms scoped to their entity owners", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "Employee", definitions: [{ name: "status", expression: "active", synonyms: ["employment state"] }] },
+        { name: "Project", definitions: [{ name: "status", expression: "phase", synonyms: ["project state"] }] },
+      ],
+    });
+    const tokenize = (text: string) => new Set(text.toLowerCase().split(" "));
+    const expanded = expandTokens(new Set(["employment", "state"]), schema, tokenize);
+    expect(expanded.has("employee")).toBe(true);
+    expect(expanded.has("project")).toBe(false);
+    const shared = expandTokens(new Set(["status"]), schema, tokenize);
+    expect(shared.has("employee")).toBe(true);
+    expect(shared.has("project")).toBe(true);
+    const report = answerability(
+      "project state",
+      ["project state"],
+      [entity("employee:alice", "Alice", "Employee")],
+      [],
+      [],
+      schema,
+      3,
+    );
+    expect([report.verdict, report.terms.map((term) => [term.status, term.matches])]).toEqual([
+      "not_answerable",
+      [["schema_only", ["status"]]],
+    ]);
   });
 
   it("matches explicit stopword and single-character entity names and aliases only", async () => {

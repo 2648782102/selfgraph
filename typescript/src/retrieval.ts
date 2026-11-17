@@ -32,7 +32,7 @@ import * as ops from "./ops.js";
 import type { GraphPrimitives, Props } from "./protocols.js";
 import type { ParsedSchema } from "./schema.js";
 import { decodeEntity } from "./serde.js";
-import { expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
+import { definitionForms, expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
 import type { SeedTier } from "./tiers.js";
 import { checkOptions, keysOf, requireBool, requireInt, typeName } from "./validate.js";
 
@@ -1301,6 +1301,16 @@ export function answerability(
   depth: number,
 ): AnswerabilityReport {
   const found = schemaForms(schema);
+  const definitionEntries = new Map<string, Array<readonly [string, string]>>();
+  const definitionCertified = new Map<string, boolean>();
+  for (const [owner, name, defForms, certified] of definitionForms(schema).values()) {
+    definitionCertified.set(`${owner}\u0000${name}`, certified);
+    for (const form of defForms) {
+      const entries = definitionEntries.get(form) ?? [];
+      entries.push([owner, name]);
+      definitionEntries.set(form, entries);
+    }
+  }
   const explicit = terms !== null;
   const asked =
     terms ??
@@ -1350,11 +1360,23 @@ export function answerability(
       let declared: Array<readonly [string, boolean]> = [];
       for (const [kind, named] of kinds) {
         const hits = words.length ? [...named].filter(([form]) => covers(words, form)).map(([, hit]) => hit) : [];
-        const live = hits.filter(([t]) => isHeld(kind, t));
+        let live: Array<readonly [string, boolean]> = [];
+        if (kind === "definition") {
+          for (const [form] of named) {
+            if (!words.length || !covers(words, form)) continue;
+            const entries = definitionEntries.get(form) ?? [];
+            if (!entries.some(([owner]) => held.type.has(owner))) continue;
+            for (const [owner, name] of entries) {
+              if (held.type.has(owner)) live.push([name, definitionCertified.get(`${owner}\u0000${name}`) ?? false]);
+            }
+          }
+        } else {
+          live = hits.filter(([t]) => isHeld(kind, t));
+        }
         if (live.length) {
           status = kind;
           matched = live.map(([t]) => t);
-          certified = live.some(([, c]) => c);
+          certified = live.every(([, c]) => c);
           break;
         }
         if (!declared.length) declared = hits;
@@ -1362,7 +1384,7 @@ export function answerability(
       if (status === "missing" && declared.length) {
         status = "schema_only";
         matched = declared.map(([t]) => t);
-        certified = declared.some(([, c]) => c);
+        certified = declared.every(([, c]) => c);
       }
     }
     coverage.push({ term, status, matches: [...new Set(matched)].sort(comparePy).slice(0, MAX_MATCHES), certified });

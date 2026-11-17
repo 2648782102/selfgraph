@@ -82,6 +82,27 @@ def _forms(names: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(form for name in names for form in (name, _spaced(name))))
 
 
+def _definition_forms(schema: Schema | None) -> dict[tuple[str, str], tuple[list[str], bool]]:
+    """Map each definition, keyed by entity and name, to its surface forms and certified flag.
+
+    Keying by entity and name keeps definitions with a shared name or synonym distinct, so callers can tell which
+    declaring entity a form belongs to.
+
+    @param schema (Schema | None): the schema, or None for no definitions.
+    @return (dict[tuple[str, str], tuple[list[str], bool]]): each definition's forms and certified flag.
+    """
+    found: dict[tuple[str, str], tuple[list[str], bool]] = {}
+    if schema is None:
+        return found
+    for entity in schema.entities:
+        for definition in entity.definitions:
+            found[(entity.name, definition.name)] = (
+                _forms([definition.name, *definition.synonyms]),
+                definition.certified,
+            )
+    return found
+
+
 def schema_forms(schema: Schema | None) -> dict[str, dict[str, tuple[str, bool]]]:
     """Map every surface form of the schema's terms, by kind, to the term it names and whether it is certified.
 
@@ -102,8 +123,13 @@ def schema_forms(schema: Schema | None) -> dict[str, dict[str, tuple[str, bool]]
 
     for entity in schema.entities:
         note("type", entity.name, [entity.name, *entity.aliases, *entity.synonyms], entity.certified)
-        for definition in entity.definitions:
-            note("definition", definition.name, [definition.name, *definition.synonyms], definition.certified)
+    for (_, name), (forms, certified) in _definition_forms(schema).items():
+        for form in forms:
+            previous = found["definition"].get(form)
+            if previous is None:
+                found["definition"][form] = (name, certified)
+            elif previous[0] == name:
+                found["definition"][form] = (name, previous[1] and certified)
     for relation in schema.relations:
         note("relation", relation.type, [relation.type, *relation.aliases, *relation.synonyms], relation.certified)
     return found
@@ -114,8 +140,9 @@ def grounded_terms(
 ) -> dict[str, set[str]]:
     """List the terms the stored graph holds instances of, by kind, so a schema term alone never grounds a question.
 
-    A type is held when an entity of it or of a subtype is stored, a definition when its entity type is held, and a
-    relation type when a relation of it is stored. The stored types themselves are held too.
+    A type is held when an entity of it or of a subtype is stored, and a relation type when a relation of it is
+    stored. The stored types themselves are held too. Definition grounding is resolved from the held entity types
+    and the schema's definitions, keyed by entity and name.
 
     @param schema (Schema | None): the schema, or None for the stored types only.
     @param entity_types (Iterable[str]): the stored entities' types.
@@ -131,14 +158,15 @@ def grounded_terms(
         entity = index.get(canonical_entity_type(etype, schema))
         if entity is not None:
             held["type"].update(t.name for t in _lineage(entity, index))
-    held["definition"] = {d.name for e in schema.entities if e.name in held["type"] for d in e.definitions}
     stored = {normalize_rel_type(canonical_relation_type(t, schema)) for t in rels}
     held["relation"].update(r.type for r in schema.relations if normalize_rel_type(r.type) in stored)
     return held
 
 
 def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -> set[str]:
-    """Add the words of each entity type and its subtypes when a question names the type or one of its definitions.
+    """Add the words of each entity type and its subtypes when a question names the type or a definition.
+
+    A definition adds the words of every entity type that declares it and those types' subtypes.
 
     @param tokens (set[str]): the question's content tokens.
     @param schema (Schema | None): the schema, or None for no expansion.
@@ -148,16 +176,21 @@ def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -
     if schema is None:
         return tokens
     index = _entity_index(schema)
-    owner = {d.name: e.name for e in schema.entities for d in e.definitions}
+    definitions = _definition_forms(schema)
     stems = {stem(t) for t in tokens}
     out = set(tokens)
     forms = schema_forms(schema)
-    for kind, named in (("type", lambda term: term), ("definition", owner.__getitem__)):
-        for form, (term, _) in forms[kind].items():
+    for form, (term, _) in forms["type"].items():
+        words = {stem(t) for t in tokenize(form)}
+        if words and words <= stems:
+            for entity in schema.entities:
+                if any(t.name == term for t in _lineage(entity, index)):
+                    out |= tokenize(entity.name)
+    for (owner, _), (forms, _) in definitions.items():
+        for form in forms:
             words = {stem(t) for t in tokenize(form)}
             if words and words <= stems:
-                root = named(term)
                 for entity in schema.entities:
-                    if any(t.name == root for t in _lineage(entity, index)):
+                    if any(t.name == owner for t in _lineage(entity, index)):
                         out |= tokenize(entity.name)
     return out

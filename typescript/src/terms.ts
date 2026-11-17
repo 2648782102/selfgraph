@@ -5,6 +5,7 @@ import { canonicalEntityType, canonicalRelationType, entityIndex, lineage, type 
 export type Tokenize = (text: string) => Set<string>;
 
 export type SchemaTermKind = "type" | "definition" | "relation";
+export type DefinitionInfo = readonly [string, string, string[], boolean];
 
 const SINGULARS = new Map([
   ["calories", "calorie"],
@@ -79,9 +80,34 @@ function forms(names: readonly string[]): string[] {
 }
 
 /**
+ * Map each definition, keyed by entity and name, to its declaring entity, name, surface forms, and certified flag.
+ *
+ * Keying by entity and name keeps definitions with a shared name or synonym distinct, so callers can tell which
+ * declaring entity a form belongs to.
+ *
+ * @param schema (ParsedSchema | null): the schema, or null for no definitions.
+ * @return (Map<string, DefinitionInfo>): each definition's owner, name, forms, and certified flag.
+ */
+export function definitionForms(schema: ParsedSchema | null): Map<string, DefinitionInfo> {
+  const found = new Map<string, DefinitionInfo>();
+  if (schema === null) return found;
+  for (const entity of schema.entities) {
+    for (const definition of entity.definitions) {
+      found.set(`${entity.name}\u0000${definition.name}`, [
+        entity.name,
+        definition.name,
+        forms([definition.name, ...definition.synonyms]),
+        definition.certified,
+      ]);
+    }
+  }
+  return found;
+}
+
+/**
  * List the terms the stored graph holds instances of, by kind, so a schema term alone never grounds a question.
  *
- * A type is held when an entity of it or of a subtype is stored, a definition when its entity type is held, and a relation type when a relation of it is stored. The stored types themselves are held too.
+ * A type is held when an entity of it or of a subtype is stored, and a relation type when a relation of it is stored. The stored types themselves are held too. Definition grounding is resolved from the held entity types and the schema's definitions, keyed by entity and name.
  *
  * @param schema (ParsedSchema | null): the schema, or null for the stored types only.
  * @param entityTypes (Iterable<string>): the stored entities' types.
@@ -106,8 +132,6 @@ export function groundedTerms(
     const entity = index.get(canonicalEntityType(etype, schema));
     if (entity !== undefined) for (const t of lineage(entity, index)) held.type.add(t.name);
   }
-  for (const e of schema.entities)
-    if (held.type.has(e.name)) for (const d of e.definitions) held.definition.add(d.name);
   const stored = new Set([...rels].map((t) => normalizeRelType(canonicalRelationType(t, schema))));
   for (const r of schema.relations) if (stored.has(normalizeRelType(r.type))) held.relation.add(r.type);
   return held;
@@ -135,8 +159,12 @@ export function schemaForms(
   };
   for (const entity of schema.entities) {
     note("type", entity.name, [entity.name, ...entity.aliases, ...entity.synonyms], entity.certified);
-    for (const definition of entity.definitions) {
-      note("definition", definition.name, [definition.name, ...definition.synonyms], definition.certified);
+  }
+  for (const [, name, defForms, certified] of definitionForms(schema).values()) {
+    for (const form of defForms) {
+      const previous = found.definition.get(form);
+      if (previous === undefined) found.definition.set(form, [name, certified]);
+      else if (previous[0] === name) found.definition.set(form, [name, previous[1] && certified]);
     }
   }
   for (const relation of schema.relations) {
@@ -146,7 +174,9 @@ export function schemaForms(
 }
 
 /**
- * Add the words of each entity type and its subtypes when a question names the type or one of its definitions.
+ * Add the words of each entity type and its subtypes when a question names the type or a definition.
+ *
+ * A definition adds the words of every entity type that declares it and those types' subtypes.
  *
  * @param tokens (ReadonlySet<string>): the question's content tokens.
  * @param schema (ParsedSchema | null): the schema, or null for no expansion.
@@ -161,16 +191,24 @@ export function expandTokens(
   const out = new Set(tokens);
   if (schema === null) return out;
   const index = entityIndex(schema);
-  const owner = new Map(schema.entities.flatMap((e) => e.definitions.map((d) => [d.name, e.name] as const)));
+  const definitions = definitionForms(schema);
   const stems = new Set([...tokens].map(stem));
   const found = schemaForms(schema);
-  for (const kind of ["type", "definition"] as const) {
-    for (const [form, [term]] of found[kind]) {
+  for (const [form, [term]] of found.type) {
+    const words = [...tokenize(form)].map(stem);
+    if (!words.length || !words.every((w) => stems.has(w))) continue;
+    for (const entity of schema.entities) {
+      if ([...lineage(entity, index)].some((t) => t.name === term)) {
+        for (const token of tokenize(entity.name)) out.add(token);
+      }
+    }
+  }
+  for (const [owner, , defForms] of definitions.values()) {
+    for (const form of defForms) {
       const words = [...tokenize(form)].map(stem);
       if (!words.length || !words.every((w) => stems.has(w))) continue;
-      const root = kind === "type" ? term : owner.get(term)!;
       for (const entity of schema.entities) {
-        if ([...lineage(entity, index)].some((t) => t.name === root)) {
+        if ([...lineage(entity, index)].some((t) => t.name === owner)) {
           for (const token of tokenize(entity.name)) out.add(token);
         }
       }
