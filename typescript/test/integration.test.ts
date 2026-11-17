@@ -1282,14 +1282,19 @@ describe("store setup errors", () => {
     );
     const home = mkdtempSync(join(tmpdir(), "selfgraph-home-"));
     const saved = process.env.HOME;
+    const savedProfile = process.env.USERPROFILE;
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
-      const store = new KuzuStore("~/sub/x.kuzu");
+      const store = new KuzuStore(join("~", "sub", "x.kuzu"));
       await store.initialize();
       await store.close();
       expect(existsSync(join(home, "sub", "x.kuzu"))).toBe(true);
     } finally {
-      process.env.HOME = saved;
+      if (saved !== undefined) process.env.HOME = saved;
+      else delete process.env.HOME;
+      if (savedProfile !== undefined) process.env.USERPROFILE = savedProfile;
+      else delete process.env.USERPROFILE;
       rmSync(home, { recursive: true, force: true });
     }
     expect(kuzuError(new Error("IO exception: Could not set lock on file : /x"), "open").message).toMatch(

@@ -285,6 +285,7 @@ def test_bolt_initialize_skips_existing_constraints():
 def test_kuzu_paths_settings_and_errors(caplog, monkeypatch, tmp_path):
     pytest.importorskip("kuzu")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     store = KuzuStore("~/sub/x.kuzu")
     run(store.initialize())
     run(store.close())
