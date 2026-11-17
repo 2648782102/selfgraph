@@ -749,16 +749,20 @@ function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
   ) {
     return false;
   }
-  if (asOf === null || asOf.known === null) {
+  if (asOf === null) return version.replaced_at == null;
+  const valid = epochMicros(asOf.valid);
+  const history = loads<Array<Record<string, string | null>>>(version.replacements_json, []);
+  if (history.length === 0 && asOf.known === null) {
     const replaced = fromIso(version.replaced_at);
-    return replaced == null || (asOf !== null && epochMicros(replaced) > epochMicros(asOf.valid));
+    return replaced == null || epochMicros(replaced) > valid;
   }
-  const known = epochMicros(asOf.known);
-  return !loads<Array<Record<string, string | null>>>(version.replacements_json, []).some(
+  return !history.some(
     (r) =>
-      epochMicros(fromIso(r.at)!) <= epochMicros(asOf.valid) &&
-      epochMicros(fromIso(r.known_at)!) <= known &&
-      !(r.until && epochMicros(fromIso(r.until)!) <= known),
+      epochMicros(fromIso(r.at)!) <= valid &&
+      ops.knownBy(fromIso(r.known_at), asOf.known) &&
+      (!r.until ||
+        !ops.knownBy(fromIso(r.until), asOf.known) ||
+        (r.valid_until != null && epochMicros(fromIso(r.valid_until)!) > valid)),
   );
 }
 
