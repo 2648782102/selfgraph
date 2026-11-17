@@ -1325,8 +1325,9 @@ export function answerability(
   );
   const isHeld = (kind: TermCoverage["status"], term: string): boolean =>
     !(kind in held) || held[kind as keyof typeof held].has(term);
-  const own = (names: Iterable<string>) => new Map([...names].map((n) => [n, [n, false] as const]));
-  const kinds: Array<[TermCoverage["status"], Map<string, readonly [string, boolean]>]> = [
+  const own = (names: Iterable<string>) =>
+    new Map<string, Array<readonly [string, boolean]>>([...names].map((n) => [n, [[n, false] as const]]));
+  const kinds: Array<[TermCoverage["status"], Map<string, Array<readonly [string, boolean]>>]> = [
     ["type", new Map([...own(entities.map((e) => e.type)), ...found.type])],
     ["definition", found.definition],
     ["relation", new Map([...own(relations.map((r) => r.type)), ...found.relation])],
@@ -1359,7 +1360,7 @@ export function answerability(
       status = "missing";
       let declared: Array<readonly [string, boolean]> = [];
       for (const [kind, named] of kinds) {
-        const hits = words.length ? [...named].filter(([form]) => covers(words, form)).map(([, hit]) => hit) : [];
+        const hits = words.length ? [...named].filter(([form]) => covers(words, form)).flatMap(([, hit]) => hit) : [];
         let live: Array<readonly [string, boolean]> = [];
         if (kind === "definition") {
           for (const [form] of named) {

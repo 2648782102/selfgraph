@@ -1220,11 +1220,11 @@ def answerability(
         names = [n for e in entities for n in (e.name, *e.aliases)]
         terms = _question_terms(question, [*names, *(f for named in forms.values() for f in named)])
     held = grounded_terms(schema, (e.type for e in entities), (r.type for r in relations))
-    kinds: tuple[tuple[str, dict[str, tuple[str, bool]]], ...] = (
-        ("type", {**{e.type: (e.type, False) for e in entities}, **forms["type"]}),
+    kinds: tuple[tuple[str, dict[str, list[tuple[str, bool]]]], ...] = (
+        ("type", {**{e.type: [(e.type, False)] for e in entities}, **forms["type"]}),
         ("definition", forms["definition"]),
-        ("relation", {**{r.type: (r.type, False) for r in relations}, **forms["relation"]}),
-        ("property", {k: (k, False) for k in keys}),
+        ("relation", {**{r.type: [(r.type, False)] for r in relations}, **forms["relation"]}),
+        ("property", {k: [(k, False)] for k in keys}),
     )
     coverage: list[TermCoverage] = []
     linked: dict[str, set[str]] = {}
@@ -1245,7 +1245,7 @@ def answerability(
         else:
             status, declared = "missing", []
             for kind, named in kinds:
-                hits = [named[form] for form in named if words and _covers(words, form)]
+                hits = [hit for form in named if words and _covers(words, form) for hit in named[form]]
                 if kind == "definition":
                     live = []
                     for form in named:

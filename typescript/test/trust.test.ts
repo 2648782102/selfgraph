@@ -20,7 +20,7 @@ import { callTool, close, configure } from "../src/mcp.js";
 import { answerability, HUB_DEGREE, pprRank } from "../src/retrieval.js";
 import { checkedCypher, DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema } from "../src/schema.js";
-import { expandTokens } from "../src/terms.js";
+import { expandTokens, schemaForms } from "../src/terms.js";
 import {
   ANN_AT_ACME,
   buildCli,
@@ -141,6 +141,24 @@ function suite(spec: StoreSpec): void {
     expect([report.verdict, report.terms.map((term) => [term.status, term.matches])]).toEqual([
       "not_answerable",
       [["schema_only", ["status"]]],
+    ]);
+  });
+
+  it("lists every definition a schema-only shared synonym names", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "Employee", definitions: [{ name: "status", expression: "a", synonyms: ["state"], certified: true }] },
+        { name: "Project", definitions: [{ name: "phase", expression: "b", synonyms: ["state"], certified: false }] },
+        { name: "Person" },
+      ],
+    });
+    expect(schemaForms(schema).definition.get("state")).toEqual([
+      ["status", true],
+      ["phase", false],
+    ]);
+    const report = answerability("state", ["state"], [entity("person:alice", "Alice", "Person")], [], [], schema, 3);
+    expect(report.terms.map((term) => [term.status, term.matches, term.certified])).toEqual([
+      ["schema_only", ["phase", "status"], false],
     ]);
   });
 

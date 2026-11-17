@@ -3,7 +3,7 @@ from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_s
 
 from selfgraph import Schema, ValidationError, ids
 from selfgraph.runtime import build_graph
-from selfgraph.terms import stem
+from selfgraph.terms import schema_forms, stem
 
 ACME = ids.relation_id("person:ann", "WORKS_AT", "company:acme")
 GLOBEX = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
@@ -248,6 +248,27 @@ def test_certification_follows_the_stored_definitions_name():
     run(g.insert.facts({"entities": [{"type": "Employee", "name": "Alice"}]}))
     report = run(g.check_answerable("state"))
     assert [(t.status, t.matches, t.certified) for t in report.terms] == [("definition", ["status"], True)]
+
+
+def test_a_schema_only_shared_synonym_lists_every_definition_it_names():
+    schema = {
+        "entities": [
+            {
+                "name": "Employee",
+                "definitions": [{"name": "status", "expression": "a", "synonyms": ["state"], "certified": True}],
+            },
+            {
+                "name": "Project",
+                "definitions": [{"name": "phase", "expression": "b", "synonyms": ["state"], "certified": False}],
+            },
+            {"name": "Person"},
+        ]
+    }
+    assert schema_forms(Schema.model_validate(schema))["definition"]["state"] == [("status", True), ("phase", False)]
+    g = fresh_graph("tier", schema=schema)
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Alice"}]}))
+    report = run(g.check_answerable("state"))
+    assert [(t.status, t.matches, t.certified) for t in report.terms] == [("schema_only", ["phase", "status"], False)]
 
 
 def test_certification_uses_the_matched_definitions_owner():

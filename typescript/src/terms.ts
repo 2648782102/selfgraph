@@ -138,33 +138,36 @@ export function groundedTerms(
 }
 
 /**
- * Map every surface form of the schema's terms, by kind, to the term it names and whether it is certified.
+ * Map every surface form of the schema's terms, by kind, to the terms it names and whether each is certified.
  *
- * Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each form is also listed split into words, so InvoiceLine reads as "Invoice Line".
+ * Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the first term that declares it. A definition form names every definition that declares it, and a name declared by several entity types is certified only when all of them are.
  *
  * @param schema (ParsedSchema | null): the schema, or null for no terms.
- * @return (Record<SchemaTermKind, Map<string, readonly [string, boolean]>>): for "type", "definition", and "relation", each form's term and certified flag.
+ * @return (Record<SchemaTermKind, Map<string, Array<readonly [string, boolean]>>>): for "type", "definition", and "relation", each form's terms and their certified flags.
  */
 export function schemaForms(
   schema: ParsedSchema | null,
-): Record<SchemaTermKind, Map<string, readonly [string, boolean]>> {
-  const found: Record<SchemaTermKind, Map<string, readonly [string, boolean]>> = {
+): Record<SchemaTermKind, Map<string, Array<readonly [string, boolean]>>> {
+  const found: Record<SchemaTermKind, Map<string, Array<readonly [string, boolean]>>> = {
     type: new Map(),
     definition: new Map(),
     relation: new Map(),
   };
   if (schema === null) return found;
   const note = (kind: SchemaTermKind, term: string, names: readonly string[], certified: boolean): void => {
-    for (const form of forms(names)) if (!found[kind].has(form)) found[kind].set(form, [term, certified]);
+    for (const form of forms(names)) if (!found[kind].has(form)) found[kind].set(form, [[term, certified]]);
   };
   for (const entity of schema.entities) {
     note("type", entity.name, [entity.name, ...entity.aliases, ...entity.synonyms], entity.certified);
   }
   for (const [, name, defForms, certified] of definitionForms(schema).values()) {
     for (const form of defForms) {
-      const previous = found.definition.get(form);
-      if (previous === undefined) found.definition.set(form, [name, certified]);
-      else if (previous[0] === name) found.definition.set(form, [name, previous[1] && certified]);
+      const named = found.definition.get(form) ?? [];
+      const at = named.findIndex(([n]) => n === name);
+      const prior = named[at];
+      if (prior === undefined) named.push([name, certified]);
+      else named[at] = [name, prior[1] && certified];
+      found.definition.set(form, named);
     }
   }
   for (const relation of schema.relations) {
@@ -194,12 +197,14 @@ export function expandTokens(
   const definitions = definitionForms(schema);
   const stems = new Set([...tokens].map(stem));
   const found = schemaForms(schema);
-  for (const [form, [term]] of found.type) {
+  for (const [form, named] of found.type) {
     const words = [...tokenize(form)].map(stem);
     if (!words.length || !words.every((w) => stems.has(w))) continue;
-    for (const entity of schema.entities) {
-      if ([...lineage(entity, index)].some((t) => t.name === term)) {
-        for (const token of tokenize(entity.name)) out.add(token);
+    for (const [term] of named) {
+      for (const entity of schema.entities) {
+        if ([...lineage(entity, index)].some((t) => t.name === term)) {
+          for (const token of tokenize(entity.name)) out.add(token);
+        }
       }
     }
   }
