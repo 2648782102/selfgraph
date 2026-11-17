@@ -212,7 +212,7 @@ export function normalizeRelType(type: string): string {
 }
 
 /**
- * A hash of the source entity, the normalized type, and the target entity.
+ * A hash of the canonical entity ids and normalized relationship type.
  *
  * @param fromEntity (string): the source entity id.
  * @param type (string): the relationship type.
@@ -222,11 +222,11 @@ export function normalizeRelType(type: string): string {
 export function relationId(fromEntity: string, type: string, toEntity: string): string {
   requireStr("from_entity", fromEntity);
   requireStr("to_entity", toEntity);
-  return tagged("relation", hashParts(fromEntity, normalizeRelType(type), toEntity));
+  return tagged("relation", hashParts(canonicalId(fromEntity), normalizeRelType(type), canonicalId(toEntity)));
 }
 
 /**
- * A hash of the subject, stance, NFC key, and value entity.
+ * A hash of the canonical entity ids, stance, and NFC-normalized key.
  *
  * @param subjectEntity (string): the subject entity id.
  * @param stance (string): the preference stance.
@@ -239,11 +239,14 @@ export function preferenceId(subjectEntity: string, stance: string, key: string,
   requireStr("preference stance", stance);
   requireStr("preference key", key);
   requireStr("value_entity", valueEntity);
-  return tagged("preference", hashParts(subjectEntity, stance, normalizeText(key), valueEntity));
+  return tagged(
+    "preference",
+    hashParts(canonicalId(subjectEntity), stance, normalizeText(key), canonicalId(valueEntity)),
+  );
 }
 
 /**
- * A hash of the actor entity and the NFC title.
+ * A hash of the canonical actor entity id and NFC-normalized title.
  *
  * @param actorEntity (string | null | undefined): the actor entity id, if any.
  * @param title (string): the decision title.
@@ -252,18 +255,18 @@ export function preferenceId(subjectEntity: string, stance: string, key: string,
 export function decisionId(actorEntity: string | null | undefined, title: string): string {
   if (actorEntity != null) requireStr("actor_entity", actorEntity);
   requireStr("decision title", title);
-  return tagged("decision", hashParts(actorEntity ?? null, normalizeText(title)));
+  return tagged("decision", hashParts(canonicalId(actorEntity ?? null), normalizeText(title)));
 }
 
 /**
- * The profile node id for a subject; one profile per entity.
+ * The profile node id for the canonical subject entity id; one profile per entity.
  *
  * @param subjectEntity (string): the subject entity id.
  * @return (string): the profile node id.
  */
 export function profileId(subjectEntity: string): string {
   requireStr("subject_entity", subjectEntity);
-  return tagged("profile", subjectEntity);
+  return tagged("profile", canonicalId(subjectEntity));
 }
 
 /**

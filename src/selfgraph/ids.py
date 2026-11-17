@@ -355,7 +355,7 @@ def normalize_rel_type(type: str) -> str:
 
 
 def relation_id(from_entity: str, type: str, to_entity: str) -> str:
-    """A hash of ``from_entity``, the normalized ``type``, and ``to_entity``.
+    """A hash of the canonical entity ids and normalized relationship type.
 
     @param from_entity (str): the source entity id.
     @param type (str): the relationship type.
@@ -364,11 +364,11 @@ def relation_id(from_entity: str, type: str, to_entity: str) -> str:
     """
     _require_str("from_entity", from_entity)
     _require_str("to_entity", to_entity)
-    return f"relation:{_hash(from_entity, normalize_rel_type(type), to_entity)}"
+    return f"relation:{_hash(_canonical_id(from_entity), normalize_rel_type(type), _canonical_id(to_entity))}"
 
 
 def preference_id(subject_entity: str, stance: str, key: str, value_entity: str) -> str:
-    """A hash of ``subject_entity``, ``stance``, ``key``, and ``value_entity``.
+    """A hash of the canonical entity ids, stance, and NFC-normalized key.
 
     @param subject_entity (str): the subject entity id.
     @param stance (str): the preference stance.
@@ -380,11 +380,13 @@ def preference_id(subject_entity: str, stance: str, key: str, value_entity: str)
     _require_str("preference stance", stance)
     _require_str("preference key", key)
     _require_str("value_entity", value_entity)
-    return f"preference:{_hash(subject_entity, stance, normalize_text(key), value_entity)}"
+    return (
+        f"preference:{_hash(_canonical_id(subject_entity), stance, normalize_text(key), _canonical_id(value_entity))}"
+    )
 
 
 def decision_id(actor_entity: str | None, title: str) -> str:
-    """A hash of ``actor_entity`` and ``title``.
+    """A hash of the canonical actor entity id and NFC-normalized title.
 
     @param actor_entity (str | None): the actor entity id, if any.
     @param title (str): the decision title.
@@ -393,17 +395,17 @@ def decision_id(actor_entity: str | None, title: str) -> str:
     if actor_entity is not None:
         _require_str("actor_entity", actor_entity)
     _require_str("decision title", title)
-    return f"decision:{_hash(actor_entity, normalize_text(title))}"
+    return f"decision:{_hash(_canonical_id(actor_entity), normalize_text(title))}"
 
 
 def profile_id(subject_entity: str) -> str:
-    """The profile node ID for a subject. One profile per entity.
+    """The profile node ID for the canonical subject entity id. One profile per entity.
 
     @param subject_entity (str): the subject entity id.
     @return (str): the profile node id.
     """
     _require_str("subject_entity", subject_entity)
-    return f"profile:{subject_entity}"
+    return f"profile:{_canonical_id(subject_entity)}"
 
 
 def source_node_id(source_id: str) -> str:
