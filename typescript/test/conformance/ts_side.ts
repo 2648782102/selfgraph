@@ -715,6 +715,37 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>>
   };
 }
 
+/**
+ * Read inserted facts through helpers given noncanonical entity references.
+ *
+ * @param graph (SelfGraph): the graph whose store hosts the isolated case.
+ * @return (Promise<Record<string, unknown>>): derived ids and deterministic event times.
+ */
+async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknown>> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_canonical_fact_ids` });
+  const actor = " Person : Jane  Doe ";
+  const target = " Company : Acme ";
+  await g.insert.facts({
+    entities: [
+      { type: "Person", name: "Jane Doe" },
+      { type: "Company", name: "Acme" },
+    ],
+    relations: [{ from_entity: actor, type: "worksAt", to_entity: target, event_time: "2024-01-01" }],
+    preferences: [{ subject_entity: actor, key: "employer", value_entity: target, event_time: "2024-01-01" }],
+    decisions: [{ actor_entity: actor, title: "Pick employer", event_time: "2024-01-01" }],
+  });
+  const relation = await g.relations.get(ids.relationId(actor, "worksAt", target));
+  const preference = await g.preferences.get(ids.preferenceId(actor, "preference", "employer", target));
+  const decision = await g.decisions.get(ids.decisionId(actor, "Pick employer"));
+  const profile = await g.store.getNode(g.namespace, "Profile", ids.profileId(actor));
+  if (!relation || !preference || !decision || !profile) throw new Error("id helper did not address inserted fact");
+  return {
+    facts: [relation, preference, decision].map((fact) => [fact.id, fact.event_time ? jsonIso(fact.event_time) : null]),
+    profile: profile.id,
+    actorless: ids.decisionId(null, "Pick employer"),
+  };
+}
+
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   out.facts = toJsonable(await graph.insert.facts(FACTS, { source_id: "spec" }));
@@ -1557,6 +1588,7 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
   return toJsonable({
     diff: await graph.diff("1900-01-01", "2100-01-01"),
     diff_windows: await diffWindows(graph),
+    canonical_fact_ids: await canonicalFactIds(graph),
     answerable,
     filters:
       store instanceof KuzuStore

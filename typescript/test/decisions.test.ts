@@ -4,6 +4,30 @@ import { forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
 
 function suite(spec: StoreSpec): void {
   const open = freshGraphs(spec, "step-ids");
+  it.each(["relation", "preference", "decision", "profile"] as const)(
+    "addresses an inserted %s using id helpers with noncanonical references",
+    async (kind) => {
+      const g = open();
+      const actor = " Person : Jane  Doe ";
+      const target = " Company : Acme ";
+      await g.insert.facts({
+        entities: [
+          { type: "Person", name: "Jane Doe" },
+          { type: "Company", name: "Acme" },
+        ],
+        relations: [{ from_entity: actor, type: "worksAt", to_entity: target }],
+        preferences: [{ subject_entity: actor, key: "employer", value_entity: target }],
+        decisions: [{ actor_entity: actor, title: "Pick employer" }],
+      });
+      const getters = {
+        relation: () => g.relations.get(ids.relationId(actor, "worksAt", target)),
+        preference: () => g.preferences.get(ids.preferenceId(actor, "preference", "employer", target)),
+        decision: () => g.decisions.get(ids.decisionId(actor, "Pick employer")),
+        profile: () => g.store.getNode(g.namespace, "Profile", ids.profileId(actor)),
+      };
+      expect(await getters[kind]()).not.toBeNull();
+    },
+  );
   for (const stepFirst of [false, true]) {
     it(`keeps decisions and steps separate with stepFirst=${stepFirst}`, async () => {
       const g = open();

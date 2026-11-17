@@ -17,6 +17,7 @@ import {
   isMark,
   normalizeRelType,
   preferenceId,
+  profileId,
   relationId,
   slug,
   sourceNodeId,
@@ -60,6 +61,17 @@ function attempt<T>(fn: () => T): T | { error: string } {
 }
 
 describe("ids match Python byte for byte", () => {
+  it.each([
+    [" Person : Jane  Doe ", "person:jane-doe"],
+    ["Person:Cafe\u0301", "person:café"],
+    [" Doc : V1.2 ", "doc:v1.2"],
+  ])("canonicalizes entity references in fact ids: %s", (raw, canonical) => {
+    expect(relationId(raw, "worksAt", raw)).toBe(relationId(canonical, "WORKS_AT", canonical));
+    expect(preferenceId(raw, "preference", "k", raw)).toBe(preferenceId(canonical, "preference", "k", canonical));
+    expect(decisionId(raw, "Pick")).toBe(decisionId(canonical, "Pick"));
+    expect(profileId(raw)).toBe(profileId(canonical));
+  });
+
   it("slug, entity, relation, preference, decision, evidence, and source ids, with bad input rejected", () => {
     for (const [input, expected] of Object.entries(fx.slug)) expect(attempt(() => slug(input))).toEqual(expected);
     for (const [type, name, expected] of fx.entity_id) {

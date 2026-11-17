@@ -35,6 +35,21 @@ def test_preference_and_decision_ids():
         ids.decision_id("", "t")
 
 
+@pytest.mark.parametrize(
+    ("raw", "canonical"),
+    [
+        (" Person : Jane  Doe ", "person:jane-doe"),
+        ("Person:Cafe\u0301", "person:café"),
+        (" Doc : V1.2 ", "doc:v1.2"),
+    ],
+)
+def test_fact_id_helpers_canonicalize_entity_references(raw, canonical):
+    assert ids.relation_id(raw, "worksAt", raw) == ids.relation_id(canonical, "WORKS_AT", canonical)
+    assert ids.preference_id(raw, "preference", "k", raw) == ids.preference_id(canonical, "preference", "k", canonical)
+    assert ids.decision_id(raw, "Pick") == ids.decision_id(canonical, "Pick")
+    assert ids.profile_id(raw) == ids.profile_id(canonical)
+
+
 def test_quote_label():
     assert ids.quote_label("Person") == "Person"
     assert ids.quote_label("WORKS_AT") == "WORKS_AT"

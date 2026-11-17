@@ -12,6 +12,29 @@ def seed(g):
     return r1, r2
 
 
+@pytest.mark.parametrize("kind", ["relation", "preference", "decision", "profile"])
+def test_id_helpers_address_inserted_facts_with_noncanonical_references(kind):
+    g = new_graph()
+    actor, target = " Person : Jane  Doe ", " Company : Acme "
+    run(
+        g.insert.facts(
+            {
+                "entities": [{"type": "Person", "name": "Jane Doe"}, {"type": "Company", "name": "Acme"}],
+                "relations": [{"from_entity": actor, "type": "worksAt", "to_entity": target}],
+                "preferences": [{"subject_entity": actor, "key": "employer", "value_entity": target}],
+                "decisions": [{"actor_entity": actor, "title": "Pick employer"}],
+            }
+        )
+    )
+    getters = {
+        "relation": lambda: g.relations.get(ids.relation_id(actor, "worksAt", target)),
+        "preference": lambda: g.preferences.get(ids.preference_id(actor, "preference", "employer", target)),
+        "decision": lambda: g.decisions.get(ids.decision_id(actor, "Pick employer")),
+        "profile": lambda: g.store.get_node(g.namespace, "Profile", ids.profile_id(actor)),
+    }
+    assert run(getters[kind]()) is not None
+
+
 def test_create_decision_with_steps():
     g = new_graph()
     r1, r2 = seed(g)

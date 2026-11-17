@@ -696,6 +696,36 @@ async def choice_errors(graph):
     }
 
 
+async def canonical_fact_ids(graph):
+    """Read inserted facts through helpers given noncanonical entity references.
+
+    @param graph (SelfGraph): the graph whose store hosts the isolated case.
+    @return (dict): derived ids and deterministic event times.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_canonical_fact_ids")
+    actor, target = " Person : Jane  Doe ", " Company : Acme "
+    await g.insert.facts(
+        {
+            "entities": [{"type": "Person", "name": "Jane Doe"}, {"type": "Company", "name": "Acme"}],
+            "relations": [{"from_entity": actor, "type": "worksAt", "to_entity": target, "event_time": "2024-01-01"}],
+            "preferences": [
+                {"subject_entity": actor, "key": "employer", "value_entity": target, "event_time": "2024-01-01"}
+            ],
+            "decisions": [{"actor_entity": actor, "title": "Pick employer", "event_time": "2024-01-01"}],
+        }
+    )
+    relation = await g.relations.get(ids.relation_id(actor, "worksAt", target))
+    preference = await g.preferences.get(ids.preference_id(actor, "preference", "employer", target))
+    decision = await g.decisions.get(ids.decision_id(actor, "Pick employer"))
+    profile = await g.store.get_node(g.namespace, "Profile", ids.profile_id(actor))
+    assert relation is not None and preference is not None and decision is not None and profile is not None
+    return {
+        "facts": [[fact.id, json_iso(fact.event_time)] for fact in (relation, preference, decision)],
+        "profile": profile["id"],
+        "actorless": ids.decision_id(None, "Pick employer"),
+    }
+
+
 async def write(graph):
     out = {}
     out["facts"] = to_jsonable(await graph.insert.facts(FACTS, source_id="spec"))
@@ -1730,6 +1760,7 @@ async def dump(graph, ns):
         {
             "diff": await graph.diff("1900-01-01", "2100-01-01"),
             "diff_windows": await diff_windows(graph),
+            "canonical_fact_ids": await canonical_fact_ids(graph),
             "answerable": answerable,
             "prune_types": pruned,
             "known_at_sources": {
