@@ -881,6 +881,50 @@ def test_schema_aliases_and_case_canonicalize_types_before_ids_are_derived():
     assert [(r.from_entity, r.to_entity) for r in res.relations] == [("company:acme", "company:globex")] * 2
 
 
+@pytest.mark.parametrize("prefix", ["company", "org", "business"])
+def test_explicit_entity_ids_accept_all_schema_alias_references(prefix):
+    g = fresh_graph(
+        "explicit_alias_refs",
+        schema={"entities": [{"name": "Company", "aliases": ["org", "business"]}]},
+        resolver="exact",
+    )
+    original = ids.relation_id("business:42", "PARTNERS", "org:42")
+    result = run(
+        g.insert.facts(
+            {
+                "entities": [{"id": f"{prefix}:42", "type": "Company", "name": "Acme"}],
+                "relations": [{"from_entity": "business:42", "type": "PARTNERS", "to_entity": "org:42"}],
+                "preferences": [
+                    {
+                        "subject_entity": "org:42",
+                        "key": "partner",
+                        "value_entity": "business:42",
+                        "about_entity": "company:42",
+                    }
+                ],
+                "decisions": [
+                    {
+                        "title": "Partner",
+                        "actor_entity": "business:42",
+                        "outcome_entity": "org:42",
+                        "alternative_entities": ["business:42"],
+                        "steps": [original],
+                    }
+                ],
+            }
+        )
+    )
+    assert [e.id for e in result.entities] == ["company:42"]
+    relation = result.relations[0]
+    assert (relation.from_entity, relation.to_entity) == ("company:42", "company:42")
+    preference = run(g.preferences.get(result.preferences[0].id))
+    assert (preference.subject_entity, preference.value_entity, preference.about_entity) == ("company:42",) * 3
+    decision = run(g.decisions.get(result.decisions[0].id))
+    assert (decision.actor_entity, decision.outcome_entity) == ("company:42",) * 2
+    assert decision.alternative_entities == ["company:42"]
+    assert [s.relation_id for s in decision.steps] == [relation.id]
+
+
 def test_endpoint_types_resolve_like_entity_types_and_are_only_checked_with_entities():
     schema = {
         "entities": [{"name": "Person"}, {"name": "Company", "aliases": ["Org"]}],

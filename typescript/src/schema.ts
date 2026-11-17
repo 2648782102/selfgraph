@@ -394,7 +394,7 @@ export function canonicalRelationType(rtype: string, schema: ParsedSchema | null
 }
 
 /**
- * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. An explicit entity id in such an alias form is rewritten the same way.
+ * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. Explicit entity ids accept the same type prefixes while retaining their name part.
  *
  * @param facts (ParsedExtraction): the facts.
  * @param schema (ParsedSchema | null): the active schema.
@@ -408,19 +408,13 @@ export function canonicalizeTypes(facts: ParsedExtraction, schema: ParsedSchema 
     const etype = cleanText(ent.type);
     const canonical = canonicalEntityType(etype, schema);
     const next = canonical === etype ? ent : { ...ent, type: canonical };
-    if (!ent.id) {
-      const name = cleanText(ent.name);
-      const target = entityId(canonical, name);
-      for (const form of [etype, ...(forms.get(canonical) ?? [])]) {
-        const alt = entityId(form, name);
-        if (alt !== target && !moved.has(alt)) moved.set(alt, target);
-      }
-      return next;
+    const name = ent.id === null ? cleanText(ent.name) : ent.id.slice(ent.id.indexOf(":") + 1);
+    const target = ent.id === null ? entityId(canonical, name) : canonicalEntityRef(ent.id, etype, schema);
+    for (const form of [etype, ...(forms.get(canonical) ?? [])]) {
+      const alt = ent.id === null ? entityId(form, name) : canonicalId(`${form}:${name}`);
+      if (alt !== target && !moved.has(alt)) moved.set(alt, target);
     }
-    const target = canonicalEntityRef(ent.id, etype, schema);
-    if (target === ent.id) return next;
-    if (!moved.has(ent.id)) moved.set(ent.id, target);
-    return { ...next, id: target };
+    return ent.id === null || target === ent.id ? next : { ...next, id: target };
   });
   if (moved.size) {
     const kept = new Set(entities.map((ent) => ent.id || entityId(cleanText(ent.type), cleanText(ent.name))));

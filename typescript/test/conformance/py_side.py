@@ -1514,6 +1514,52 @@ async def diff_windows(graph):
     return out
 
 
+async def explicit_alias_refs(graph):
+    """Read canonical references after inserting an explicit entity id through several schema aliases.
+
+    @param graph (SelfGraph): the graph whose store holds the isolated case.
+    @return (dict): the persisted references and event time.
+    """
+    g = SelfGraph(
+        store=graph.store,
+        namespace=f"{graph.namespace}_explicit_alias_refs",
+        schema={"entities": [{"name": "Company", "aliases": ["org", "business"]}]},
+        resolver="exact",
+    )
+    result = await g.insert.facts(
+        {
+            "entities": [{"id": "org:42", "type": "Company", "name": "Acme"}],
+            "relations": [{"from_entity": "business:42", "type": "PARTNERS", "to_entity": "company:42"}],
+            "preferences": [
+                {"subject_entity": "business:42", "key": "partner", "value_entity": "org:42", "about_entity": "org:42"}
+            ],
+            "decisions": [
+                {
+                    "title": "Partner",
+                    "actor_entity": "business:42",
+                    "outcome_entity": "org:42",
+                    "alternative_entities": ["org:42"],
+                    "steps": [ids.relation_id("business:42", "PARTNERS", "company:42")],
+                }
+            ],
+        },
+        event_time="2020-01-01",
+    )
+    relation = await g.relations.get(result.relations[0].id)
+    preference = await g.preferences.get(result.preferences[0].id)
+    decision = await g.decisions.get(result.decisions[0].id)
+    assert (relation.from_entity, relation.to_entity, preference.subject_entity, decision.actor_entity) == (
+        "company:42",
+    ) * 4
+    return {
+        "relation": [relation.id, relation.from_entity, relation.to_entity],
+        "preference": [preference.subject_entity, preference.value_entity, preference.about_entity],
+        "decision": [decision.actor_entity, decision.outcome_entity, decision.alternative_entities],
+        "steps": [s.relation_id for s in decision.steps],
+        "event_time": _serde.json_iso(relation.event_time),
+    }
+
+
 async def dump(graph, ns):
     store = graph.store
     entities = [e async for e in graph.entities.iterate(limit=3)]
@@ -1666,6 +1712,7 @@ async def dump(graph, ns):
     }
     return to_jsonable(
         {
+            "explicit_alias_refs": await explicit_alias_refs(graph),
             "diff": await graph.diff("1900-01-01", "2100-01-01"),
             "diff_windows": await diff_windows(graph),
             "answerable": answerable,

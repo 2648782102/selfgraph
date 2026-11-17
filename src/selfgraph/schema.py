@@ -504,7 +504,7 @@ def canonicalize_types(facts: Extraction, schema: Schema | None) -> Extraction:
 
     References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such
     as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed
-    relation's derived id. An explicit entity id in such an alias form is rewritten the same way.
+    relation's derived id. Explicit entity ids accept the same type prefixes while retaining their name part.
 
     @param facts (Extraction): the facts.
     @param schema (Schema | None): the active schema.
@@ -522,15 +522,15 @@ def canonicalize_types(facts: Extraction, schema: Schema | None) -> Extraction:
         if ent.id is None:
             name = _ops._clean_text(ent.name)
             target = entity_id(canonical, name)
-            for form in (etype, *forms.get(canonical, ())):
-                alt = entity_id(form, name)
-                if alt != target and alt not in moved:
-                    moved[alt] = target
         else:
+            name = ent.id.split(":", 1)[1]
             target = canonical_entity_ref(ent.id, etype, schema)
             if target != ent.id:
-                moved.setdefault(ent.id, target)
                 update["id"] = target
+        for form in (etype, *forms.get(canonical, ())):
+            alt = entity_id(form, name) if ent.id is None else _canonical_id(f"{form}:{name}")
+            if alt != target:
+                moved.setdefault(alt, target)
         entities.append(ent.model_copy(update=update) if update else ent)
     if moved:
         kept = {ent.id or entity_id(_ops._clean_text(ent.type), _ops._clean_text(ent.name)) for ent in entities}

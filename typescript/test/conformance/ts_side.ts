@@ -1346,6 +1346,58 @@ async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
   return out;
 }
 
+/**
+ * Read canonical references after inserting an explicit entity id through several schema aliases.
+ *
+ * @param graph (SelfGraph): the graph whose store holds the isolated case.
+ * @return (Promise<unknown>): the persisted references and event time.
+ */
+async function explicitAliasRefs(graph: SelfGraph): Promise<unknown> {
+  const g = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}_explicit_alias_refs`,
+    schema: { entities: [{ name: "Company", aliases: ["org", "business"] }] },
+    resolver: "exact",
+  });
+  const result = await g.insert.facts(
+    {
+      entities: [{ id: "org:42", type: "Company", name: "Acme" }],
+      relations: [{ from_entity: "business:42", type: "PARTNERS", to_entity: "company:42" }],
+      preferences: [
+        {
+          subject_entity: "business:42",
+          key: "partner",
+          value_entity: "org:42",
+          about_entity: "org:42",
+        },
+      ],
+      decisions: [
+        {
+          title: "Partner",
+          actor_entity: "business:42",
+          outcome_entity: "org:42",
+          alternative_entities: ["org:42"],
+          steps: [ids.relationId("business:42", "PARTNERS", "company:42")],
+        },
+      ],
+    },
+    { event_time: "2020-01-01" },
+  );
+  const relation = (await g.relations.get(result.relations[0]!.id))!;
+  const preference = (await g.preferences.get(result.preferences[0]!.id))!;
+  const decision = (await g.decisions.get(result.decisions[0]!.id))!;
+  deepStrictEqual(
+    [relation.from_entity, relation.to_entity, preference.subject_entity, decision.actor_entity],
+    ["company:42", "company:42", "company:42", "company:42"],
+  );
+  return {
+    relation: [relation.id, relation.from_entity, relation.to_entity],
+    preference: [preference.subject_entity, preference.value_entity, preference.about_entity],
+    decision: [decision.actor_entity, decision.outcome_entity, decision.alternative_entities],
+    steps: decision.steps.map((s) => s.relation_id),
+    event_time: relation.event_time === null ? null : jsonIso(relation.event_time),
+  };
+}
+
 export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
   const store = graph.store;
   const entities = (await collect(graph.entities.iterate({ limit: 3 }))).sort((a, b) => (a.id < b.id ? -1 : 1));
@@ -1510,6 +1562,7 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     relationsAlias[alias] = (await schemed.relations.list({ type: alias })).items.map((r) => r.id);
   }
   return toJsonable({
+    explicit_alias_refs: await explicitAliasRefs(graph),
     diff: await graph.diff("1900-01-01", "2100-01-01"),
     diff_windows: await diffWindows(graph),
     answerable,
