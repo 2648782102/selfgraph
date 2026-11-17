@@ -127,7 +127,11 @@ function normalize(value: unknown): unknown {
  */
 function databasePath(path: string): string {
   if (path === "" || path === ":memory:") return path;
-  return resolve(path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
+  return resolve(
+    path === "~" || path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))
+      ? join(homedir(), path.slice(1))
+      : path,
+  );
 }
 
 /**
