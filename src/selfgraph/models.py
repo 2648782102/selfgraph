@@ -26,6 +26,7 @@ from .ids import (
     _require_no_control,
     _require_unit,
     normalize_rel_type,
+    type_name,
 )
 
 __all__ = [
@@ -611,7 +612,7 @@ class EntityInput(InputModel):
     def _clean_aliases(cls, value: list[str]) -> list[str]:
         for alias in value:
             if not isinstance(alias, str):
-                raise ValidationError(f"entity alias must be a string, got {type(alias).__name__}")
+                raise ValidationError(f"entity alias must be a string, got {type_name(alias)}")
             _require_no_control("entity alias", alias)
         return value
 

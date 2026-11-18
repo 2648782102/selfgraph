@@ -5,11 +5,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .errors import ValidationError
+from .ids import type_name
 from .terms import _spaced, stem
 
 __all__ = ["from_tables"]
 
 _TYPES = (
+    (re.compile(r"^_|\[|array|range"), "string"),
     (re.compile(r"bool"), "boolean"),
     (re.compile(r"json"), "json"),
     (re.compile(r"date|time"), "datetime"),
@@ -61,7 +63,7 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
     @return (dict[str, Any]): the schema as a mapping, ready to validate.
     """
     if isinstance(tables, str | Mapping) or not isinstance(tables, Sequence):
-        raise ValidationError(f"tables must be a list of table mappings, got {type(tables).__name__}")
+        raise ValidationError(f"tables must be a list of table mappings, got {type_name(tables)}")
     names: dict[str, str] = {}
     for i, table in enumerate(tables):
         if not isinstance(table, Mapping) or not isinstance(table.get("name"), str):

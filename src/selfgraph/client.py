@@ -17,7 +17,7 @@ from .contradiction import judge_contradictions
 from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace, decision_id
+from .ids import _require_namespace, decision_id, type_name
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
@@ -84,8 +84,6 @@ def _restated(
 ) -> DecisionTraceInput:
     """Merge an inserted decision over the stored one, so a restatement keeps every field it leaves out.
 
-    A None field or an empty list keeps the stored value and a given one replaces it; decisions.update clears.
-
     @param dec (DecisionTraceInput): the decision as inserted.
     @param stored (DecisionTrace | None): the stored trace with the same id, or None when it is new.
     @param default_event_time (datetime | None): the insert's event_time, for a decision that names none.
@@ -137,7 +135,7 @@ class SelfGraph:
         if level == "max" and max_tier == "max" and self._llm is None:
             raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
         if embedder is not None and not callable(getattr(embedder, "embed", None)):
-            raise ValidationError(f"embedder must have an embed method, got {type(embedder).__name__}")
+            raise ValidationError(f"embedder must have an embed method, got {type_name(embedder)}")
         self._level: tiers.Level = level
         self._max_tier: tiers.Level = max_tier
         self._embedder = embedder
@@ -315,7 +313,7 @@ class SelfGraph:
         @return (CypherResult): the resulting rows and counters.
         """
         if not isinstance(query, str):
-            raise ValidationError(f"query must be a string, got {type(query).__name__}")
+            raise ValidationError(f"query must be a string, got {type_name(query)}")
         if not query.strip():
             raise ValidationError("query cannot be empty")
         _ops._require_json_mapping("params", params, safe_ints=False)
@@ -355,14 +353,14 @@ class SelfGraph:
         @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
         """
         if not isinstance(query, str):
-            raise ValidationError(f"query must be a string, got {type(query).__name__}")
+            raise ValidationError(f"query must be a string, got {type_name(query)}")
         if not query.strip():
             raise ValidationError("query cannot be empty")
         if strategy is None:
             strategy = self._strategy
         seed_tier = self._seeds if seeds is None else self._seed_tier(seeds)
         if not isinstance(strategy, str):
-            raise ValidationError(f"strategy must be a string, got {type(strategy).__name__}")
+            raise ValidationError(f"strategy must be a string, got {type_name(strategy)}")
         for name, value in (("depth", depth), ("k", k), ("max_nodes", max_nodes), ("budget_tokens", budget_tokens)):
             _ops._require_int(name, value)
         _ops._require_bool("skip_hubs", skip_hubs)

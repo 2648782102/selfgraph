@@ -650,7 +650,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "graph_diff",
     description:
-      "List stored changes in the known-time window (since, until]. until defaults to now. Deletes and merges are not visible.",
+      "List changes in the known-time window (since, until]; until defaults to now. Deletes and merges are not visible.",
     input: { since: str, until: optStr },
     run: (g, a) => g.diff(a.since, a.until),
   }),

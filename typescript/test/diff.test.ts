@@ -66,9 +66,8 @@ function suite(spec: StoreSpec): void {
       const result = await g.diff("1900-01-01", "2100-01-01");
       expect(result.entities_created).toHaveLength(505);
       expect(new Set(result.relations_added.map((r) => r.id)).size).toBe(505);
-      expect(edges.mock.calls.every(([, o]) => o?.limit === 500)).toBe(true);
-      expect(edges.mock.calls.some(([, o]) => o?.skip === 500)).toBe(true);
-      expect(nodes.mock.calls.some(([, , o]) => o?.skip === 500)).toBe(true);
+      expect(edges.mock.calls.every(([, o]) => Array.isArray(o?.from_in))).toBe(true);
+      expect(nodes.mock.calls.some(([, , o]) => typeof o?.id_gt === "string")).toBe(true);
       expect(writes).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();

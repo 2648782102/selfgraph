@@ -5,6 +5,7 @@ from helpers import cli, create_entities, employment_graph, fresh_graph, instant
 
 from selfgraph import EntityInput, Extraction, StoreError, ValidationError
 from selfgraph._ops import _retired
+from selfgraph._serde import from_iso
 from selfgraph.runtime import to_jsonable
 
 
@@ -155,7 +156,7 @@ def test_passages_need_their_source_stored_and_its_event_time_reached():
 
 def test_as_of_parsing_on_every_surface(capsys):
     g = graph()
-    with pytest.raises(ValidationError, match="as_of must be a datetime, got int"):
+    with pytest.raises(ValidationError, match="as_of must be a datetime, got number"):
         run(g.retrieve("Ann", as_of=5))
     with pytest.raises(ValidationError, match="invalid as_of: 'soon' is not an ISO 8601"):
         run(g.retrieve("Ann", as_of="soon"))
@@ -447,3 +448,9 @@ def test_resettling_a_corrected_undated_relation_keeps_its_effective_time():
     assert versions[0].invalidated_by == initech.id
     assert versions[0].event_time == versions[-1].created_at
     assert versions[0].created_at == versions[0].invalidated_known_at
+
+
+def test_from_iso_reads_stored_times_with_the_parse_time_grammar():
+    assert from_iso("2024-01-01T00:00:59.1Z") == datetime(2024, 1, 1, 0, 0, 59, 100000, tzinfo=timezone.utc)
+    assert from_iso("2024-01-01T00:00:00") == utc(2024)
+    assert from_iso("2024-01-01 05:30+05:30") == utc(2024)

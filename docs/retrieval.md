@@ -107,6 +107,9 @@ graph = SelfGraph(store=store, embedder=MyEmbedder(), seeds="embeddings")
 - Every entity is scored by cosine similarity to the query, and the top `k`
   join the BM25 seeds by reciprocal rank fusion.
 - The first query embeds the whole namespace, so cost grows with the graph.
+- Every vector must have the same length as the query vector. A mismatch raises
+  `ValidationError` (`embedding vectors must have the same dimensions`) and
+  caches nothing.
 
 ## As of a point in time
 

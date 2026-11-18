@@ -43,7 +43,10 @@ Any other shape raises `ValidationError` when the store is built.
 (`connectionTimeout` and `connectionAcquisitionTimeout` in TypeScript). Pass your
 own driver settings to change them.
 
-**`HydraDBStore`** takes its token bare or in the second slot of a pair.
+**`HydraDBStore`** takes its token bare or in the second slot of a pair. Each
+node or edge row goes in one Bolt message, which HydraDB caps at 2 MiB, so a row
+may take at most 2 MiB minus 64 KiB. A larger row raises `StoreError` before
+it is written. Batches are split to stay under the cap.
 
 **`FalkorDBStore`** passes extra keyword arguments to the FalkorDB client and
 rejects unknown ones. The TypeScript store accepts a
@@ -56,6 +59,9 @@ cluster-only option that a standalone server rejects.
 - With no path, it opens `selfgraph_kuzu` in the current directory.
 - An empty path or `:memory:` opens a separate in-memory database for each store.
   Stores opened on the same file path share that file's database instead.
+  A store that passes different database options (such as `max_db_size` or
+  `buffer_pool_size`) than the database already open on that path raises
+  `ValidationError`; omitted options join the open database.
 - Each open Kuzu database reserves 8 TB of virtual memory by default, so a
   process holding many can run out of address space. Pass `max_db_size` (a
   positive integer of bytes), as in `KuzuStore("graph.kuzu", max_db_size=1 << 30)`,
@@ -115,6 +121,13 @@ Implement the `GraphStore` primitives (`upsert_node`, `create_edge`, `get_node`,
 `match_nodes`, `match_edges`, `update_current_edge`, and the rest) and pass your
 store to `SelfGraph`. Keep the dialect inside the store. In TypeScript, a Cypher
 engine can instead extend `CypherPrimitives` and implement `_run`.
+
+Property keys and `order_by` columns reach the primitives as plain identifiers
+(letters, digits, and underscores); the built-in stores reject anything else with
+`ValidationError`. A store with a write limit can implement the optional
+`check_node_writes(ns, label, rows)` and `check_edge_writes(ns, from_label, to_label, rows)`
+(`checkNodeWrites` and `checkEdgeWrites` in TypeScript). SelfGraph calls them
+before each write, so a raise leaves that write undone.
 
 ## Raw Cypher
 
@@ -200,5 +213,7 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 | `store="neo4j"` or `cypher` pointed at a HydraDB server | the parse error from `initialize`, ending `if this is a HydraDB server use store 'hydradb'` |
 | Another process has the Kuzu database open | the Kuzu lock error, ending `Kuzu allows one process at a time` |
 | Kuzu cannot reserve memory for another database | the Kuzu mmap error, ending `pass a smaller max_db_size` |
+| A second `KuzuStore` on an open path with other options | `KuzuStore('<path>') is already open with different options: <option> <open> vs <new>` (`ValidationError`) |
+| A HydraDB row over the write cap | `HydraDB rejects this write at <n> bytes; ...` |
 
 More connection messages are in [Errors](errors.md#connections).

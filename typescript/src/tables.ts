@@ -6,6 +6,7 @@ import { spaced, stem } from "./terms.js";
 import { checkOptions, typeName } from "./validate.js";
 
 const TYPES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^_|\[|array|range/, "string"],
   [/bool/, "boolean"],
   [/json/, "json"],
   [/date|time/, "datetime"],

@@ -620,17 +620,17 @@ export function checkSettings(settings: GraphSettings): GraphSettings {
   llmConcurrency(settings.llm_concurrency);
   const llm = buildLlm(settings);
   if (llm !== null) checkLlmConfig(llm);
-  const level = (settings.level || "balanced") as Level;
-  const cap = (settings.max_tier || "max") as Level;
-  if (llm === null && level === "max" && cap === "max") {
-    throw new ValidationError(`level 'max' needs an LLM: ${LLM_HINT}`);
-  }
-  const preset = PRESETS[level];
-  if (llm === null && clamp("resolution", settings.resolver || preset.resolution, cap) === "llm") {
-    throw new ValidationError(`resolver 'llm' needs an LLM: ${LLM_HINT}`);
-  }
-  if (llm === null && clamp("contradiction", settings.contradiction || preset.contradiction, cap) === "llm") {
-    throw new ValidationError(`contradiction 'llm' needs an LLM: ${LLM_HINT}`);
+  else {
+    const level = (settings.level || "balanced") as Level;
+    const cap = (settings.max_tier || "max") as Level;
+    if (level === "max" && cap === "max") throw new ValidationError(`level 'max' needs an LLM: ${LLM_HINT}`);
+    const preset = PRESETS[level];
+    if (clamp("resolution", settings.resolver || preset.resolution, cap) === "llm") {
+      throw new ValidationError(`resolver 'llm' needs an LLM: ${LLM_HINT}`);
+    }
+    if (clamp("contradiction", settings.contradiction || preset.contradiction, cap) === "llm") {
+      throw new ValidationError(`contradiction 'llm' needs an LLM: ${LLM_HINT}`);
+    }
   }
   const schema = asSchema(jsonSetting<Schema | ParsedSchema>(settings.schema, "schema"));
   requireSchemaForMode(settings.schema_mode, schema);

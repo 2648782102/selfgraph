@@ -72,6 +72,15 @@ export function requireIdentifier(name: string, what = "property name"): string 
 }
 
 /**
+ * Reject a property map whose keys are not all plain identifiers.
+ *
+ * @param props (object): the properties about to be written.
+ */
+export function requireKeys(props: object): void {
+  for (const key of Object.keys(props)) requireIdentifier(key);
+}
+
+/**
  * Sorted (key, value) pairs of an equality filter, sorted by key code point.
  *
  * @param equals (Props | null | undefined): the property filter.
@@ -287,7 +296,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     const extra = options.extra_label != null ? `, n:${quoteLabel(options.extra_label)}` : "";
-    for (const key of Object.keys(props)) requireIdentifier(key);
+    requireKeys(props);
     await this._run(`MERGE (n:${label} {id:$id, ns:$ns}) SET n += $props${extra}`, { id, ns, props });
   }
 
@@ -306,7 +315,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     const extra = options.extra_label != null ? `, n:${quoteLabel(options.extra_label)}` : "";
-    for (const [, props] of rows) for (const key of Object.keys(props)) requireIdentifier(key);
+    for (const [, props] of rows) requireKeys(props);
     for (const [, batch] of writeBatches(rows.map(([id, props]) => [null, { id, props }] as const))) {
       await this._run(`UNWIND $rows AS row MERGE (n:${label} {id: row.id, ns: $ns}) SET n += row.props${extra}`, {
         rows: batch,
@@ -329,7 +338,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     toLabel: string,
     rows: readonly EdgeWrite[],
   ): Promise<void> {
-    for (const [, , , props] of rows) for (const k of Object.keys(props)) requireIdentifier(k);
+    for (const [, , , props] of rows) requireKeys(props);
     const keyed = rows.map(([type, fromId, toId, props]) => {
       const row = { f: fromId, t: toId, rid: props.id ?? null, rev: props.revision ?? null, props };
       return [[type, "id" in props && "revision" in props], row] as const;
@@ -388,7 +397,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
     toId: string,
     props: Props,
   ): Promise<boolean> {
-    for (const k of Object.keys(props)) requireIdentifier(k);
+    requireKeys(props);
     const match = `MATCH (a:${fromLabel} {id:$from, ns:$ns}), (b:${toLabel} {id:$to, ns:$ns}) `;
     const params: Record<string, unknown> = { from: fromId, to: toId, ns, props };
     let write: string;
@@ -452,7 +461,7 @@ export abstract class CypherPrimitives extends CypherRunner implements GraphPrim
   }
 
   async updateCurrentEdge(ns: string, id: string, props: Props): Promise<void> {
-    for (const k of Object.keys(props)) requireIdentifier(k);
+    requireKeys(props);
     await this._run("MATCH ()-[r {id:$id, ns:$ns}]->() WHERE r.is_current = true SET r += $props", { id, ns, props });
   }
 

@@ -394,6 +394,10 @@ function suite(spec: StoreSpec): void {
       movies: "movie",
       cookies: "cookie",
       quizzes: "quiz",
+      heroes: "hero",
+      potatoes: "potato",
+      axes: "axe",
+      shoes: "shoe",
       buzzes: "buzz",
       waltzes: "waltz",
       menus: "menu",
@@ -492,14 +496,22 @@ function suite(spec: StoreSpec): void {
   });
 
   it("fromTables maps only integer SQL types to integer", () => {
-    const types = ["int", "INT UNSIGNED", "hugeint", "point", "interval"];
+    const types = [
+      "int",
+      "INT UNSIGNED",
+      "hugeint",
+      "point",
+      "interval",
+      "int4range",
+      "integer[]",
+      "_int8",
+      "ARRAY",
+      "tstzrange",
+    ];
     const schema = fromTables([{ name: "t", columns: types.map((type, i) => ({ name: `c${i}`, type })) }]);
     expect(schema.entities[0]!.properties.map((p) => p.type)).toEqual([
-      "integer",
-      "integer",
-      "integer",
-      "string",
-      "string",
+      ...Array(3).fill("integer"),
+      ...Array(7).fill("string"),
     ]);
   });
 }

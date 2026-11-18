@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from ._ops import _require_bool, _require_json_mapping, _require_optional_text, parse_time
 from .errors import ExtractionError, SelfGraphError, ValidationError
 from .extraction.extractor import LLMExtractor
-from .ids import _unstorable
+from .ids import _unstorable, type_name
 from .models import (
     Extraction,
     ExtractionInstructions,
@@ -68,7 +68,7 @@ class Insert:
         if resolver is not None:
             self._c._resolver_for(resolver)
         if not isinstance(text, str):
-            raise ValidationError(f"text must be a string, got {type(text).__name__}")
+            raise ValidationError(f"text must be a string, got {type_name(text)}")
         if _unstorable(text):
             raise ValidationError("text cannot contain NUL or unpaired surrogate characters")
         _require_optional_text("source_id", source_id)

@@ -215,6 +215,16 @@ def _edge_row(row: dict) -> dict:
     return {"props": row["r"], "from_id": row["from_e"], "to_id": row["to_e"], "type": row["t"]}
 
 
+def require_keys(props: Mapping[str, Any]) -> None:
+    """Reject a property map whose keys are not all plain identifiers.
+
+    @param props (Mapping[str, Any]): the properties about to be written.
+    @return (None): nothing.
+    """
+    for key in props:
+        require_identifier(key)
+
+
 def where_equals(alias: str, equals: dict | None, where: list[str], params: dict) -> None:
     """Add one alias.key = $eqN clause per equality-filter entry, in sorted key order, and bind its parameter.
 
@@ -397,8 +407,7 @@ class CypherPrimitives(CypherRunner):
         @param extra_label (str | None): an additional label to add.
         """
         extra = f", n:{quote_label(extra_label)}" if extra_label is not None else ""
-        for key in props:
-            require_identifier(key)
+        require_keys(props)
         await self._run(
             f"MERGE (n:{label} {{id:$id, ns:$ns}}) SET n += $props{extra}",
             {"id": id, "ns": ns, "props": props},
@@ -417,8 +426,7 @@ class CypherPrimitives(CypherRunner):
         """
         extra = f", n:{quote_label(extra_label)}" if extra_label is not None else ""
         for _, props in rows:
-            for key in props:
-                require_identifier(key)
+            require_keys(props)
         for _, batch in write_batches((None, {"id": id, "props": props}) for id, props in rows):
             await self._run(
                 f"UNWIND $rows AS row MERGE (n:{label} {{id: row.id, ns: $ns}}) SET n += row.props{extra}",
@@ -436,9 +444,8 @@ class CypherPrimitives(CypherRunner):
         @param rows (list[tuple[str, str, str, dict]]): (edge type, source id, destination id, properties) rows.
         @return (None): nothing.
         """
-        for _type, _from_id, _to_id, props in rows:
-            for key in props:
-                require_identifier(key)
+        for *_, props in rows:
+            require_keys(props)
         batches = write_batches(
             (
                 (type, "id" in props and "revision" in props),
@@ -564,8 +571,7 @@ class CypherPrimitives(CypherRunner):
         @param props (dict): edge properties.
         @return (bool): True when both endpoints were found and the edge created.
         """
-        for key in props:
-            require_identifier(key)
+        require_keys(props)
         match = f"MATCH (a:{from_label} {{id:$from, ns:$ns}}), (b:{to_label} {{id:$to, ns:$ns}}) "
         params: dict[str, Any] = {"from": from_id, "to": to_id, "ns": ns, "props": props}
         if "id" in props and "revision" in props:
@@ -641,8 +647,7 @@ class CypherPrimitives(CypherRunner):
         @param id (str): edge id.
         @param props (dict): properties to set.
         """
-        for key in props:
-            require_identifier(key)
+        require_keys(props)
         await self._run(
             "MATCH ()-[r {id:$id, ns:$ns}]->() WHERE r.is_current = true SET r += $props",
             {"id": id, "ns": ns, "props": props},

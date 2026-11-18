@@ -108,8 +108,6 @@ const TEXT_KEYS = keysOf<InsertTextOptions>({
 /**
  * Merge an inserted decision over the stored one, so a restatement keeps every field it leaves out.
  *
- * A null field or an empty list keeps the stored value and a given one replaces it; decisions.update clears.
- *
  * @param dec (ParsedDecisionTraceInput): the decision as inserted.
  * @param stored (DecisionTrace | null): the stored trace with the same id, or null when it is new.
  * @param defaultEventTime (Date | null): the insert's event_time, for a decision that names none.

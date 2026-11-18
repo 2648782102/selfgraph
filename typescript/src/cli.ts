@@ -812,10 +812,10 @@ export function buildParser(): Command<[], GlobalOptions> {
     .action((cypher, o, cmd) => emit(cmd, (g) => checkedCypher(g, cypher, bindParams(cypher, kv(o.param, "--param")))));
   program
     .command("diff")
-    .description("list stored changes in a known-time window")
-    .requiredOption("--since <iso>", "exclusive lower bound", timeArg("since"))
-    .option("--until <iso>", "inclusive upper bound, or now", timeArg("until"))
-    .option("--json", "print the result as JSON")
+    .description("list stored changes by known time, in (since, until]")
+    .requiredOption("--since <iso>", "exclusive known-time lower bound (ISO 8601)", timeArg("since"))
+    .option("--until <iso>", "inclusive known-time upper bound (ISO 8601; default now)", timeArg("until"))
+    .option("--json", "print structured changes instead of a summary")
     .action((o, cmd) =>
       emit(cmd, async (g) => {
         const result = await g.diff(o.since, o.until);

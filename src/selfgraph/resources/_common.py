@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from .._ops import _require_int
 from ..errors import ValidationError
-from ..ids import _has_control
+from ..ids import _has_control, type_name
 from ..models import Page
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ def _cursor_text(cursor: str | None, valid: Callable[[str], bool]) -> str | None
     if cursor is None:
         return None
     if not isinstance(cursor, str):
-        raise ValidationError(f"cursor must be a string, got {type(cursor).__name__}")
+        raise ValidationError(f"cursor must be a string, got {type_name(cursor)}")
     try:
         text = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
     except (ValueError, binascii.Error):

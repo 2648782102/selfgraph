@@ -217,11 +217,7 @@ export function entityIndex(schema: ParsedSchema): Map<string, ParsedEntityType>
 
 /**
  * Find the first inconsistency in a schema: a duplicate type, an alias of another type, an unknown or cyclic parent,
- * or a bad count.
- *
- * Entity type names and aliases are compared ignoring case, and an entity alias may not name another type or repeat
- * another type's alias. Relation types are compared after normalization. A max_count must be at least 1, a
- * min_count at least 0, and a min_count no greater than the max_count on the same side.
+ * an unknown endpoint type, or a bad count.
  *
  * @param schema (z.output<typeof SchemaObject>): the schema.
  * @return ([Array<string | number>, string] | null): the path and message of the first problem, or null.
@@ -394,7 +390,7 @@ export function canonicalRelationType(rtype: string, schema: ParsedSchema | null
 }
 
 /**
- * Rename entity and relation types written as schema aliases to the schema names before ids are derived. References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed relation's derived id. An explicit entity id prefixed with its own schema type or one of its aliases is rewritten the same way, and references through the type's other forms follow it, keeping the explicit name part.
+ * Rename entity and relation types written as schema aliases to the schema names and follow the moved ids.
  *
  * @param facts (ParsedExtraction): the facts.
  * @param schema (ParsedSchema | null): the active schema.
@@ -664,8 +660,7 @@ async function mergedFacts<T extends SchemaSubject>(
   const schemaTypes = new Set(schema.entities.map((t) => t.name));
   const entityKeys = facts.entities.map((ent) => {
     const etype = cleanText(ent.type);
-    const ename = cleanText(ent.name);
-    return { eid: ent.id || entityId(etype, ename), etype, ent };
+    return { eid: ent.id || entityId(etype, cleanText(ent.name)), etype, ent };
   });
   const eids = dedupList(entityKeys.map((item) => item.eid));
   const entityState = new Map<string, [string, JsonObject]>();
@@ -674,13 +669,8 @@ async function mergedFacts<T extends SchemaSubject>(
     entityState.set(eid, [stored.type, stored.properties]);
   }
   for (const { eid, etype, ent } of entityKeys) {
-    const prev = entityState.get(eid);
-    if (prev === undefined) {
-      entityState.set(eid, [etype, mergeProps(null, ent.properties)]);
-    } else {
-      const [prevType, prevProps] = prev;
-      entityState.set(eid, [schemaTypes.has(etype) ? etype : prevType, mergeProps(prevProps, ent.properties)]);
-    }
+    const [prevType, prevProps] = entityState.get(eid) ?? [etype, null];
+    entityState.set(eid, [schemaTypes.has(etype) ? etype : prevType, mergeProps(prevProps, ent.properties)]);
   }
   const entities = entityKeys.map(({ eid, ent }) => {
     const [type, properties] = entityState.get(eid)!;
@@ -688,7 +678,7 @@ async function mergedFacts<T extends SchemaSubject>(
   });
 
   const relKeys = facts.relations.map(
-    (rel) => [rel.id || relationId(rel.from_entity, normalizeRelType(rel.type), rel.to_entity), rel] as const,
+    (rel) => [rel.id || relationId(rel.from_entity, rel.type, rel.to_entity), rel] as const,
   );
   const relProps = new Map<string, JsonObject>();
   for (const [rid, edge] of await currentRelations(runner, ns, relKeys)) {

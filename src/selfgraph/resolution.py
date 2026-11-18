@@ -448,7 +448,7 @@ def _require_unit(name: str, value: Any, *, open_low: bool) -> None:
     @return (None): nothing; raises ValidationError when out of range.
     """
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise ValidationError(f"{name} must be a number, got {type(value).__name__}")
+        raise ValidationError(f"{name} must be a number, got {_ids.type_name(value)}")
     if value > 1 or value < 0 or (open_low and value == 0):
         bounds = "(0, 1]" if open_low else "[0, 1]"
         raise ValidationError(f"{name} must be in {bounds}, got {value}")
@@ -465,7 +465,7 @@ def require_resolver(value: Any) -> None:
         return
     if not callable(getattr(value, "resolve", None)):
         raise ValidationError(
-            f"resolver must be 'exact', 'default', 'fuzzy', 'llm', or an EntityResolver, got {type(value).__name__}"
+            f"resolver must be 'exact', 'default', 'fuzzy', 'llm', or an EntityResolver, got {_ids.type_name(value)}"
         )
 
 
@@ -497,8 +497,7 @@ def compatible_types(etype: str, schema: Schema | None) -> set[str]:
     @param schema (Schema | None): the active schema.
     @return (set[str]): the compatible case-folded type keys.
     """
-    folded = _ops.entity_type_key(etype)
-    out = {folded}
+    out = {_ops.entity_type_key(etype)}
     if schema is None:
         return out
     index = _entity_index(schema)
@@ -617,13 +616,6 @@ async def plan_resolution(
 ) -> Resolution:
     """Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs.
 
-    A typed candidate is offered every stored entity of its compatible types, read once per insert in id-ordered
-    pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types, stored and
-    from the same batch, whose name or alias matches its own, and is resolved after the others so a typed entity later
-    in the batch can absorb it; of the stored entities of other types, only those are kept in memory. When the store
-    indexes match keys (entities_matching), the default resolver is offered only the stored entities sharing a key
-    with a candidate, the only ones it can merge with, instead of every entity of the compatible types.
-
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param facts (Extraction): the validated facts.
@@ -707,7 +699,7 @@ async def plan_resolution(
         ]
         decision = await resolver.resolve(ent, existing)
         if not isinstance(decision, ResolutionDecision):
-            raise ValidationError(f"a resolver must return a ResolutionDecision, got {type(decision).__name__}")
+            raise ValidationError(f"a resolver must return a ResolutionDecision, got {_ids.type_name(decision)}")
         if decision.target_id is None:
             batch[eid] = _view(ent, eid, etype, ename, created_at)
             continue
@@ -743,7 +735,7 @@ def trim_resolution(resolution: Resolution, kept: Extraction) -> Resolution:
     """
     entities = {ent.id or _ids.entity_id(ent.type, ent.name) for ent in kept.entities}
     kept_by_kind = {
-        "relation": {rel.id or _ids.relation_id(rel.from_entity, rel.type, rel.to_entity) for rel in kept.relations},
+        "relation": {_rid_of(rel) for rel in kept.relations},
         "preference": {
             p.id or _ids.preference_id(p.subject_entity, p.stance, p.key, p.value_entity) for p in kept.preferences
         },
@@ -757,6 +749,15 @@ def trim_resolution(resolution: Resolution, kept: Extraction) -> Resolution:
         merges.append(merge)
     warnings = [w for w in resolution.warnings if any(f"join {eid} to itself" in w.message for eid in entities)]
     return Resolution(kept, merges, warnings)
+
+
+def _rid_of(rel: RelationInput) -> str:
+    """The id of a relation input, derived from its endpoints and type when it has none.
+
+    @param rel (RelationInput): the relation.
+    @return (str): the relation id.
+    """
+    return rel.id or _ids.relation_id(rel.from_entity, rel.type, rel.to_entity)
 
 
 def _redirect(ent: EntityInput, target: Entity) -> EntityInput:
@@ -806,11 +807,8 @@ async def _rewrite_refs(
         for eid in sorted(refs & mapping.keys()):
             merges[eid].rewrites.append(rewrite)
 
-    def rid_of(rel: RelationInput) -> str:
-        return rel.id or _ids.relation_id(rel.from_entity, rel.type, rel.to_entity)
-
     touched = [rel.from_entity in mapping or rel.to_entity in mapping for rel in facts.relations]
-    kept_rids = {rid_of(rel) for rel, hit in zip(facts.relations, touched, strict=True) if not hit}
+    kept_rids = {_rid_of(rel) for rel, hit in zip(facts.relations, touched, strict=True) if not hit}
     rel_map: dict[str, str] = {}
     rel_refs: dict[str, set[str]] = {}
     dropped: set[str] = set()
@@ -820,7 +818,7 @@ async def _rewrite_refs(
             relations.append(rel)
             continue
         new = rel.model_copy(update={"from_entity": m(rel.from_entity), "to_entity": m(rel.to_entity)})
-        old_id, new_id = rid_of(rel), rid_of(new)
+        old_id, new_id = _rid_of(rel), _rid_of(new)
         refs = {rel.from_entity, rel.to_entity}
         rel_refs[old_id] = refs
         existed = new_id in kept_rids or await _ops.relation_exists(runner, ns, new_id)
@@ -889,9 +887,6 @@ async def _rewrite_refs(
 
 def _encode_merge(ns: str, rec: MergeRecord) -> dict[str, Any]:
     """The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows.
-
-    A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound;
-    kept inline they would outgrow a store's per-document limit.
 
     @param ns (str): namespace.
     @param rec (MergeRecord): the record.
@@ -1280,8 +1275,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
                 runner, ns, [(edge, versions[0].invalidated_by, versions[0].invalidated_at)], at
             )
         restored[rw.id] = rel.id
-        orig_id = original.id or _ids.relation_id(original.from_entity, original.type, original.to_entity)
-        orig_restored[orig_id] = rel.id
+        orig_restored[_rid_of(original)] = rel.id
         relations.append(rel)
         moved.append((rw, _moved_to(rw, rel.id, _dump(back, exclude={"evidence"}), existed)))
         await _ops._repoint_steps(runner, ns, touching, restored)
@@ -1327,8 +1321,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             sib = _decode_merge(props, live_entries[props["id"]])
             for srw in sib.rewrites:
                 if srw.kind == "relation":
-                    sorig = RelationInput.model_validate(srw.original)
-                    sorig_id = sorig.id or _ids.relation_id(sorig.from_entity, sorig.type, sorig.to_entity)
+                    sorig_id = _rid_of(RelationInput.model_validate(srw.original))
                     if srw.dropped:
                         dropped_sibling_ids.add(sorig_id)
                     else:
@@ -1347,7 +1340,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             if current_steps != steps:
                 step_inputs = current_steps
             steps = current_steps
-        if not all([actor is None or await exists(actor), outcome is None or await exists(outcome)]):
+        if (actor is not None and not await exists(actor)) or (outcome is not None and not await exists(outcome)):
             continue
         if not all([await _ops.relation_exists(runner, ns, s) for s in steps]):
             continue

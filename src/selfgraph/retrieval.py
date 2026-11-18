@@ -30,6 +30,7 @@ from .extraction.chunking import count_tokens
 from .ids import _word_runs, normalize_text, profile_id
 from .models import (
     AnswerabilityReport,
+    DecisionTrace,
     Entity,
     Preference,
     Relation,
@@ -386,7 +387,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if len(a) != len(b):
         raise ValidationError("embedding vectors must have the same dimensions")
     norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
-    return sum(x * y for x, y in zip(a, b, strict=True)) / norm if norm else 0.0
+    return sum(x * y for x, y in zip(a, b, strict=False)) / norm if norm else 0.0
 
 
 async def _embedding_seeds(
@@ -650,10 +651,6 @@ def _ppr_rank(
 ) -> dict[str, int]:
     """Rank entities by personalized PageRank over source-weighted undirected edges, restarting at the seeds.
 
-    A blocked entity takes mass but passes none on: its mass restarts at the seeds, as from a dead end. Mass is
-    summed in the order the ids arrive, so the float result, and with it the rank of near-tied entities, does not
-    depend on the process's string hashing.
-
     @param seeds (list[tuple[Entity, float]]): seed entities with their scores.
     @param nodes (Iterable[str]): the entity ids collected by traversal, in traversal order.
     @param relations (list[Relation]): the relations collected by traversal.
@@ -834,21 +831,19 @@ def _context_payload(text: str, *, source: bool = False) -> str:
     @param source (bool): preserve passage lines and label each as source data.
     @return (str): display-safe content with no unlabelled physical lines.
     """
-    rows = re.split(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", text)
-    rendered = []
-    for row in rows:
-        rendered.append(
-            "".join(
-                f"\\u{ord(c):04x}"
-                if (ord(c) < 32 and c != "\t")
-                or 127 <= ord(c) <= 159
-                or ord(c) in (0x061C, 0x200E, 0x200F)
-                or 0x202A <= ord(c) <= 0x202E
-                or 0x2066 <= ord(c) <= 0x2069
-                else c
-                for c in row
-            )
+    rendered = [
+        "".join(
+            f"\\u{ord(c):04x}"
+            if (ord(c) < 32 and c != "\t")
+            or 127 <= ord(c) <= 159
+            or ord(c) in (0x061C, 0x200E, 0x200F)
+            or 0x202A <= ord(c) <= 0x202E
+            or 0x2066 <= ord(c) <= 0x2069
+            else c
+            for c in row
         )
+        for row in re.split(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", text)
+    ]
     return "\n".join("SOURCE | " + row for row in rendered) if source else "\\n".join(rendered)
 
 
@@ -872,12 +867,8 @@ def _assemble(
     @param decisions (list[DecisionTrace]): the collected decision traces.
     @param names (dict[str, str]): display name for every entity id the context mentions.
     @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
-    @param budget_tokens (int): the maximum estimated tokens to emit. Records are counted separately; the
-        cached change when the preceding record gains a newline is charged only when a following record fits.
-        The counter's empty-string cost (one for the length estimate, zero for cl100k) covers fallback rounding.
-        The first line that does not fit ends the context, so a farther line never takes the place of a nearer
-        one, and when even the first line does not fit, that line is cut to the budget, so a non-empty subgraph
-        never yields an empty context.
+    @param budget_tokens (int): the maximum estimated tokens to emit; the first line that does not fit ends the
+        context, and a first line that does not fit is cut to the budget.
     @param hubs (Collection[str]): hub entity ids; a relation line through one is marked "(via hub)".
     @return (str): the assembled context text. Certified relations come first among equally close ones and are
         marked "[certified]".
@@ -1067,34 +1058,16 @@ async def retrieve(
     decisions = await _collect_decisions(graph, ns, {r.id for r in relations}, as_of)
     preferences = await _collect_preferences(graph, ns, dist, valid)
     if as_of is not None and decisions:
-        refs = {
-            r
-            for d in decisions
-            for r in (
-                d.actor_entity,
-                d.outcome_entity,
-                *d.alternative_entities,
-                *(eid for step in d.steps for eid in (step.from_entity, step.to_entity)),
-            )
-            if r
-        }
+
+        def refs_of(d: DecisionTrace) -> list[str]:
+            steps = (eid for step in d.steps for eid in (step.from_entity, step.to_entity))
+            return [r for r in (d.actor_entity, d.outcome_entity, *d.alternative_entities, *steps) if r]
+
+        refs = {r for d in decisions for r in refs_of(d)}
         await _load(graph, ns, known, sorted(refs))
         found = [known[eid] for eid in sorted(refs) if eid in known]
         visible = await _visible_at(graph, ns, found, as_of, valid)
-        decisions = [
-            d
-            for d in decisions
-            if all(
-                r in visible
-                for r in (
-                    d.actor_entity,
-                    d.outcome_entity,
-                    *d.alternative_entities,
-                    *(eid for step in d.steps for eid in (step.from_entity, step.to_entity)),
-                )
-                if r
-            )
-        ]
+        decisions = [d for d in decisions if all(r in visible for r in refs_of(d))]
     passages = await _collect_passages(graph, ns, entities, dist, query_tokens, as_of)
     names = {e.id: e.name for e in entities}
     mentioned = {p.subject_entity for p in preferences} | {p.value_entity for p in preferences}
@@ -1130,10 +1103,7 @@ async def retrieve(
 
 
 def _term_words(text: str) -> list[str]:
-    """Split text into content tokens like _token_list, with possessive and contraction endings dropped.
-
-    "Ann's" is "ann" and "Doesn't" is "does", so a name, a synonym, and a question spell the same words. "won't"
-    and "can't" are irregular and stay whole.
+    """Split text into content tokens like _token_list, dropping possessive and contraction endings but "won't"/"can't".
 
     @param text (str): the question, name, or synonym.
     @return (list[str]): the content tokens, repeats kept.
@@ -1150,9 +1120,6 @@ def _term_words(text: str) -> list[str]:
 def _question_terms(question: str, names: Iterable[str]) -> list[str]:
     """Split a question into terms: each longest run of its content tokens that spells a multi-word name or alias,
     and every other content token on its own, except filler words such as "where", "tell", and "me".
-
-    A possessive or contraction ending is dropped from the question and from the names, so "Ann's Bakery" is one
-    term whichever way it is written; "won't" and "can't" stay whole.
 
     @param question (str): the question.
     @param names (Iterable[str]): the entity names, aliases, and schema term forms a run may spell, ignoring a plain
@@ -1229,16 +1196,6 @@ def answerability(
 ) -> AnswerabilityReport:
     """Judge whether a graph holds what a question asks about, by lexical matching only.
 
-    Each term is matched in turn against entity names and aliases, entity types, definitions, relation types, and
-    property and preference keys; the first kind with a match the graph holds covers it. Explicit terms that are
-    stopwords or single characters match only entity names and aliases, exactly once folded. Schema terms match by name,
-    alias, and synonym, and a match through a certified one is marked certified; a schema term with nothing stored
-    for it (see grounded_terms) covers nothing, and a term only such terms match is schema_only, which counts as
-    missing. Entities matched by different terms must be
-    joined by a path of at most depth hops; a pair joined only through a hub (HUB_DEGREE or more relations) is listed
-    in hub_only. The verdict is not_answerable when no term is covered, partial when some are missing, uncertain when
-    all are covered but not connected or only through a hub, and answerable otherwise.
-
     @param question (str): the question.
     @param terms (list[str] | None): the terms to check, or None to take them from the question.
     @param entities (list[Entity]): the entities to match.
@@ -1268,7 +1225,7 @@ def answerability(
         words = [t for t in runs if t not in _STOPWORDS]
         exact = explicit and (len(folded) == 1 or (bool(runs) and not words))
         if exact:
-            found = {e.id for e in entities if folded and any(_fold(n).strip() == folded for n in (e.name, *e.aliases))}
+            found = {e.id for e in entities if any(_fold(n).strip() == folded for n in (e.name, *e.aliases))}
         else:
             found = {e.id for e in entities if words and any(_covers(words, n) for n in (e.name, *e.aliases))}
         status, certified = "entity", False

@@ -87,24 +87,34 @@ def _auth_str():
     return f"{auth[0]}:{auth[1]}" if auth else None
 
 
+OPEN_STORES: list = []
+
+
 def make_store():
+    """Open a store for the selected test backend, tracked so the test that opened it closes it.
+
+    @return (Any): the store.
+    """
     if HYDRADB:
         from selfgraph import HydraDBStore
 
-        return HydraDBStore(HYDRADB_URI, auth=("neo4j", HYDRADB_TOKEN), database="default")
-    if CYPHER:
+        store = HydraDBStore(HYDRADB_URI, auth=("neo4j", HYDRADB_TOKEN), database="default")
+    elif CYPHER:
         from selfgraph import CypherStore
 
-        return CypherStore(CYPHER_URI, auth=neo4j_auth())
-    if FALKORDB:
+        store = CypherStore(CYPHER_URI, auth=neo4j_auth())
+    elif FALKORDB:
         from selfgraph import FalkorDBStore
 
-        return FalkorDBStore(host=FALKOR_HOST, port=FALKOR_PORT, graph="selfgraph_test")
-    if KUZU:
+        store = FalkorDBStore(host=FALKOR_HOST, port=FALKOR_PORT, graph="selfgraph_test")
+    elif KUZU:
         from selfgraph import KuzuStore
 
-        return KuzuStore(KUZU_PATH)
-    return Neo4jStore(NEO4J_URI, auth=neo4j_auth())
+        store = KuzuStore(KUZU_PATH)
+    else:
+        store = Neo4jStore(NEO4J_URI, auth=neo4j_auth())
+    OPEN_STORES.append(store)
+    return store
 
 
 def store_settings(**over):

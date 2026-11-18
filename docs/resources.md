@@ -245,7 +245,8 @@ await graph.decisions.create(
 - An insert that restates a stored decision keeps every field it leaves out. A
   missing field or an empty `steps` or `alternative_entities` keeps the stored
   value, and a given one replaces it. A new decision without a `status` is
-  `"completed"`. To clear a field, use `decisions.update(clear=[...])`.
+  `"completed"`. `DecisionTraceInput.status` is therefore `None` until the insert
+  fills it. To clear a field, use `decisions.update(clear=[...])`.
 
 ## Listing and iterating
 

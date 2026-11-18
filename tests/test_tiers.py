@@ -256,6 +256,10 @@ def test_stem_singularizes_es_plurals_and_keeps_status_and_analysis():
         "movies": "movie",
         "cookies": "cookie",
         "quizzes": "quiz",
+        "heroes": "hero",
+        "potatoes": "potato",
+        "axes": "axe",
+        "shoes": "shoe",
         "buzzes": "buzz",
         "waltzes": "waltz",
         "menus": "menu",
@@ -439,9 +443,20 @@ def test_from_tables_rejects_non_string_references_with_a_validation_error(refer
 
 
 def test_from_tables_maps_only_integer_sql_types_to_integer():
-    types = ["int", "INT UNSIGNED", "hugeint", "point", "interval"]
+    types = [
+        "int",
+        "INT UNSIGNED",
+        "hugeint",
+        "point",
+        "interval",
+        "int4range",
+        "integer[]",
+        "_int8",
+        "ARRAY",
+        "tstzrange",
+    ]
     schema = Schema.from_tables([{"name": "t", "columns": [{"name": f"c{i}", "type": t} for i, t in enumerate(types)]}])
-    assert [p.type for p in schema.entities[0].properties] == ["integer", "integer", "integer", "string", "string"]
+    assert [p.type for p in schema.entities[0].properties] == ["integer"] * 3 + ["string"] * 7
 
 
 def test_cli_mcp_and_settings_carry_the_level(capsys):

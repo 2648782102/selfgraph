@@ -143,7 +143,7 @@ def _stem(text: str) -> str:
     raw = stem.encode("utf-8")
     if len(raw) <= _STEM_MAX_BYTES:
         return stem
-    return raw[:_STEM_MAX_BYTES].decode("utf-8", "ignore").strip().strip(".").strip()
+    return _stem(raw[:_STEM_MAX_BYTES].decode("utf-8", "ignore"))
 
 
 def _claim(options: list[str], taken: set[str]) -> str:

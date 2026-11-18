@@ -523,8 +523,7 @@ export function resolverFor(
  * @return (Set<string>): the compatible case-folded type keys.
  */
 function compatibleTypes(etype: string, schema: ParsedSchema | null): Set<string> {
-  const folded = ops.entityTypeKey(etype);
-  const out = new Set([folded]);
+  const out = new Set([ops.entityTypeKey(etype)]);
   if (schema === null) return out;
   const index = entityIndex(schema);
   const own = index.get(canonicalEntityType(etype, schema));
@@ -714,7 +713,7 @@ function redirect(ent: ParsedEntityInput, target: Entity): ParsedEntityInput {
 }
 
 /**
- * Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs. A typed candidate is offered every stored entity of its compatible types, read once per insert in id-ordered pages. A candidate of the extraction fallback type (Thing) is also offered entities of other types, stored and from the same batch, whose name or alias matches its own, and is resolved after the others so a typed entity later in the batch can absorb it; of the stored entities of other types, only those are kept in memory. When the store indexes match keys (entitiesMatching), the default resolver is offered only the stored entities sharing a key with a candidate, the only ones it can merge with, instead of every entity of the compatible types.
+ * Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -1016,7 +1015,7 @@ async function rewriteRefs(
 }
 
 /**
- * The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows. A record repeats every time an insert merges the same pair again, so its sources and rewrites grow without bound; kept inline they would outgrow a store's per-document limit.
+ * The merge record node, without its sources and rewrites, which live in EntityMergeEntry rows.
  *
  * @param ns (string): the namespace.
  * @param rec (MergeRecord): the record.
@@ -1456,18 +1455,12 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     liveMerges = (await scanLiveMerges(runner, ns)).filter((props) => props.id !== mergeId);
     liveEntries = await loadEntries(runner, ns, liveMerges);
     for (const props of liveMerges) {
-      const own = liveEntries.get(props.id as string) ?? [];
-      const sib = decodeMerge(props, own);
+      const sib = decodeMerge(props, liveEntries.get(props.id as string) ?? []);
       for (const srw of sib.rewrites) {
-        if (srw.kind === "relation") {
-          const sorig = parseOrThrow(RelationInput, srw.original, "relation");
-          const sorigId = ridOf(sorig);
-          if (srw.dropped) {
-            droppedSiblingIds.add(sorigId);
-          } else {
-            siblingStepMap.set(sorigId, restored.get(srw.id) ?? srw.id);
-          }
-        }
+        if (srw.kind !== "relation") continue;
+        const sorigId = ridOf(parseOrThrow(RelationInput, srw.original, "relation"));
+        if (srw.dropped) droppedSiblingIds.add(sorigId);
+        else siblingStepMap.set(sorigId, restored.get(srw.id) ?? srw.id);
       }
     }
   }

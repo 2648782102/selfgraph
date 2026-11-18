@@ -15,6 +15,7 @@ from pydantic_core import core_schema
 
 from ..client import SelfGraph
 from ..errors import SelfGraphError, ValidationError, surface_hint
+from ..ids import type_name
 from ..models import Stance, Status, check_options, validation_message
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
@@ -134,7 +135,7 @@ def _json_number(value: Any) -> Any:
     @param value (Any): the argument value.
     @return (Any): the value; raises ValueError for anything but an int or a float.
     """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError("Expected number")
     return value
 
@@ -158,9 +159,7 @@ async def configure(settings: GraphSettings | None = None) -> None:
 
 
 async def close() -> None:
-    """Close the cached graph, if one is open; the next tool call reopens it.
-
-    A graph still opening is cancelled and awaited, and closed if it finished opening.
+    """Close the cached graph, cancelling and closing one still opening; the next tool call reopens it.
 
     @return (None): nothing.
     """
@@ -201,9 +200,7 @@ async def _open_graph() -> SelfGraph:
 
 
 async def _graph_handle() -> SelfGraph:
-    """Return the shared graph, opening and initialising it on first use.
-
-    Concurrent first calls share one open, so the store is initialised once.
+    """Return the shared graph, opening and initialising it once on first use.
 
     @return (SelfGraph): the shared, initialised graph.
     """
@@ -739,7 +736,7 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
     When no rows come back, warnings name labels and relationship types the namespace never stored and name
     literals that differ from a stored entity name only by case or spacing."""
     if not isinstance(query, str):
-        raise ValidationError(f"query must be a string, got {type(query).__name__}")
+        raise ValidationError(f"query must be a string, got {type_name(query)}")
     if _is_blocked_query(query):
         raise ValidationError(
             "run_cypher is read-only: it runs a single read that begins with MATCH, OPTIONAL MATCH, WITH, "
@@ -838,7 +835,7 @@ async def maintenance_dedupe_relations(dry_run: StrictBool = True) -> dict[str, 
 
 
 async def graph_diff(since: str, until: str | None = None) -> dict[str, Any]:
-    """List stored changes in the known-time window (since, until].
+    """List changes in the known-time window (since, until]; until defaults to now. Deletes and merges are not visible.
 
     @param since (str): exclusive lower bound as an ISO 8601 known time.
     @param until (str | None): inclusive upper bound, or now.
@@ -883,8 +880,8 @@ TOOLS = [
     get_decision,
     list_decisions,
     run_cypher,
-    retrieve,
     graph_diff,
+    retrieve,
     maintenance_decay,
     maintenance_prune,
     maintenance_dedupe_relations,

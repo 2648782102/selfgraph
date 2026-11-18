@@ -205,10 +205,6 @@ class Schema(TopInputModel):
     def _check_consistency(self) -> "Schema":
         """Reject a schema whose types contradict each other, naming the first problem by its path.
 
-        Entity type names and aliases are compared ignoring case, and an entity alias may not name another type or
-        repeat another type's alias. Relation types are compared after normalization. A max_count must be at
-        least 1, a min_count at least 0, and a min_count no greater than the max_count on the same side.
-
         @return (Schema): the schema; raises ValueError on a duplicate name, an alias of another type, an unknown
             or cyclic parent, an endpoint type that is no entity type name or alias, or an impossible endpoint count.
         """
@@ -500,12 +496,7 @@ def canonical_relation_type(rtype: str, schema: Schema | None) -> str:
 
 
 def canonicalize_types(facts: Extraction, schema: Schema | None) -> Extraction:
-    """Rename entity and relation types written as schema aliases to the schema names before ids are derived.
-
-    References elsewhere in the facts to an entity's derived id under any name or alias of its schema type (such
-    as org:acme for an entity typed Company or org) follow the canonical id, and so do references to a renamed
-    relation's derived id. An explicit entity id prefixed with its own schema type or one of its aliases is rewritten
-    the same way, and references through the type's other forms follow it, keeping the explicit name part.
+    """Rename entity and relation types written as schema aliases to the schema names and follow the moved ids.
 
     @param facts (Extraction): the facts.
     @param schema (Schema | None): the active schema.
@@ -781,35 +772,25 @@ async def _merged_facts(runner: Any, ns: str, facts: Extraction, schema: Schema)
     entity_keys = []
     for ent in facts.entities:
         etype = _ops._clean_text(ent.type)
-        ename = _ops._clean_text(ent.name)
-        entity_keys.append((ent.id or entity_id(etype, ename), etype, ent))
+        entity_keys.append((ent.id or entity_id(etype, _ops._clean_text(ent.name)), etype, ent))
     eids = _ops._dedup_list(eid for eid, _, _ in entity_keys)
-    stored_entities = {
-        eid: decode_entity(p) for eid, p in (await _ops._nodes_by_id(runner, ns, L_ENTITY, eids)).items()
-    }
-    entity_state: dict[str, tuple[str, dict[str, Any]]] = {
-        eid: (stored.type, stored.properties) for eid, stored in stored_entities.items()
-    }
+    entity_state: dict[str, tuple[str, dict[str, Any] | None]] = {}
+    for eid, props in (await _ops._nodes_by_id(runner, ns, L_ENTITY, eids)).items():
+        stored = decode_entity(props)
+        entity_state[eid] = (stored.type, stored.properties)
     for eid, etype, ent in entity_keys:
-        prev = entity_state.get(eid)
-        if prev is None:
-            entity_state[eid] = (etype, _ops._merge_props(None, ent.properties))
-        else:
-            prev_type, prev_props = prev
-            next_type = etype if etype in schema_types else prev_type
-            entity_state[eid] = (next_type, _ops._merge_props(prev_props, ent.properties))
+        prev_type, prev_props = entity_state.get(eid, (etype, None))
+        next_type = etype if etype in schema_types else prev_type
+        entity_state[eid] = (next_type, _ops._merge_props(prev_props, ent.properties))
     entities = [
         ent.model_copy(update={"type": entity_state[eid][0], "properties": entity_state[eid][1]})
         for eid, _, ent in entity_keys
     ]
 
-    rel_keys = [
-        (rel.id or relation_id(rel.from_entity, normalize_rel_type(rel.type), rel.to_entity), rel)
-        for rel in facts.relations
-    ]
-    stored_relations = await _ops._current_relations(runner, ns, rel_keys)
+    rel_keys = [(rel.id or relation_id(rel.from_entity, rel.type, rel.to_entity), rel) for rel in facts.relations]
     rel_props: dict[str, dict[str, Any]] = {
-        rid: _ops._relation_of(edge).properties for rid, edge in stored_relations.items()
+        rid: _ops._relation_of(edge).properties
+        for rid, edge in (await _ops._current_relations(runner, ns, rel_keys)).items()
     }
     for rid, rel in rel_keys:
         rel_props[rid] = _ops._merge_props(rel_props.get(rid), rel.properties)
@@ -832,10 +813,6 @@ async def enforce_schema(
 ) -> list[InsertWarning]:
     """Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
 
-    With before, the stored state an update starts from, only the warnings the update introduces count: a
-    violation the stored state already had neither raises in strict mode nor is reported in warn mode. With
-    upsert, entities and relations are checked after merging their properties with what is already stored.
-
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param facts (Extraction): the state about to be written.
@@ -843,7 +820,8 @@ async def enforce_schema(
     @param mode (SchemaMode): off skips the check, warn returns the warnings, strict raises on any.
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
     @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
-    @param before (Extraction | None): the stored state an update replaces, or None for a new write.
+    @param before (Extraction | None): the stored state an update replaces, or None for a new write; only the
+        warnings the update introduces then count, in both warn and strict mode.
     @param upsert (bool): whether to merge facts onto stored entities and relations before checking.
     @return (list[InsertWarning]): the warnings, empty when off or clean.
     """

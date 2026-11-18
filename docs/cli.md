@@ -54,7 +54,7 @@ A bad setting fails with exit code 2 even when the command needs no graph.
 | `--llm-provider` without `--llm-model` | `pass --llm-model` |
 | Unknown LLM provider, or a first-party provider with another provider's prefix (`--llm-provider anthropic --llm-model gemini/x`) | See [errors](errors.md#messages). Python checks the provider only when litellm is installed. |
 | `--schema-mode strict` without a schema | `schema_mode 'strict' needs a schema` |
-| `--schema`, `--instructions`, `--prompts`: missing file, invalid JSON, bad schema, or a prompt template without `{text}` | An error before the command runs. The `SELFGRAPH_*` variables are checked the same way. |
+| `--schema`, `--instructions`, `--prompts`: missing file, invalid JSON (including `NaN` or `Infinity`), bad schema, or a prompt template without `{text}` | An error before the command runs. The `SELFGRAPH_*` variables are checked the same way. |
 | Unknown store, mode, timeout, or concurrency | An error. |
 
 `kuzu` ignores `--auth` and `--database`. Passing either flag prints a warning
@@ -128,7 +128,9 @@ Unquoted words join into one query, so `retrieve who works at Acme` works. See
 
 **`KEY=VALUE` flags** (`--prop`, `--set`, `--param`) parse VALUE as JSON when it
 is valid JSON. So `zip=12345` stores the number. Write `zip='"12345"'` to keep
-text. A pair without `=` fails naming the flag (`--prop expects KEY=VALUE`).
+text. `NaN`, `Infinity`, and `-Infinity` are not JSON, so they stay text, while a
+number too large for a float, such as `1e400`, raises `ValidationError`. A pair
+without `=` fails naming the flag (`--prop expects KEY=VALUE`).
 
 **Time flags** (`--event-time`, `--as-of`, `--known-at`, `--now`, `--older-than`) take ISO 8601
 text. No offset, or a bare date, means UTC. Times in output are UTC with a `Z`

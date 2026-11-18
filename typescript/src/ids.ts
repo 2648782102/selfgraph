@@ -84,7 +84,7 @@ function hashParts(...parts: Array<string | null | undefined>): string {
 }
 
 /**
- * Report whether a character is a combining mark that is part of the word it follows: a vowel sign, virama, nukta, or tone mark (general category Mn or Mc), which NFC cannot fold into a letter. The marks are the ones of Unicode 15.0, listed in internal/marks so that every Node and Python version classifies them alike; the variation selectors are left out, so an emoji presentation selector still drops with its emoji.
+ * Report whether a character is a Unicode 15.0 combining mark that is part of the word it follows.
  *
  * @param ch (string): one character.
  * @return (boolean): true for a nonspacing or spacing mark other than a variation selector.
@@ -191,11 +191,7 @@ export function canonicalEntityId(eid: unknown): string {
 }
 
 /**
- * Canonicalise a relation type to UPPER_SNAKE so case, spacing, and camelCase variants collapse.
- *
- * A lower-to-upper case change splits words in the raw type. A digit and the letter after it split on the
- * uppercased result, so 'uses k8s' and 'USES_K8S' agree, and the result is NFC. Normalizing the result again
- * returns it unchanged.
+ * Canonicalise a relation type to UPPER_SNAKE so case, spacing, camelCase, and digit-letter variants collapse.
  *
  * @param type (string): the raw relation type.
  * @return (string): the canonical relation type.
@@ -379,7 +375,7 @@ export function stepId(traceId: string, order: number): string {
  * @return (string): the trace id.
  */
 export function traceOfStep(id: string): string {
-  const trace = id.slice(tagged("decisionstep", "").length);
+  const trace = id.slice("decisionstep:".length);
   const end = trace.lastIndexOf(":step:");
-  return trace.slice(0, end < 0 ? trace.length : end);
+  return end < 0 ? trace : trace.slice(0, end);
 }

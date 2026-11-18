@@ -18,8 +18,6 @@ _ENCODER_READY = False
 def _encoder():
     """Return a cached tiktoken encoder, or None when tiktoken is not installed or cl100k_base fails to load.
 
-    A load failure, such as no network for the first download, is logged once as a warning.
-
     @return (object | None): the encoder, or None.
     """
     global _ENCODER, _ENCODER_READY

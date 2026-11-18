@@ -169,14 +169,9 @@ function admitted(warnings: InsertWarning[], kind: string, check: () => void, rt
  * @return (Date | null): the time, or null when absent or not parseable.
  */
 export function lenientTime(value: string | null | undefined): Date | null {
-  if (value == null) return null;
-  const text = pyStrip(value);
+  const text = pyStrip(value ?? "");
   if (!text) return null;
-  if (/^\d{4}$/.test(text)) {
-    const year = Number(text);
-    if (year >= 1 && year <= 9999) return parseIso(`${text}-01-01`);
-    return null;
-  }
+  if (/^\d{4}$/.test(text)) return Number(text) >= 1 ? parseIso(`${text}-01-01`) : null;
   try {
     return parseIso(text);
   } catch {

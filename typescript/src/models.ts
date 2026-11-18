@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ValidationError } from "./errors.js";
 import { normalizeRelType } from "./ids.js";
 import { comparePy, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
-import { parseIso } from "./internal/time.js";
+import { parseIso, toIso } from "./internal/time.js";
 import { STANCES } from "./labels.js";
 import { hasSurrogate, keyHint, rejectProtoKeys, requireCleanJson, requireNoControl, requireUnit } from "./validate.js";
 
@@ -47,9 +47,11 @@ export const DateTimeInput = z.union([z.date(), z.string()]).transform((value, c
     return value;
   }
   try {
-    return parseIso(value);
-  } catch (exc) {
-    ctx.addIssue({ code: "custom", message: (exc as Error).message });
+    const parsed = parseIso(value);
+    toIso(parsed);
+    return parsed;
+  } catch {
+    ctx.addIssue({ code: "custom", message: `Invalid ISO 8601 string: ${JSON.stringify(value)}` });
     return z.NEVER;
   }
 });

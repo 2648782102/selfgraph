@@ -6,6 +6,7 @@ from collections.abc import Iterator, Mapping
 from typing import TypeVar
 
 from ..errors import _DANGLING, KEY_SOURCES, ExtractionError, ValidationError, error_reason, setting_hint
+from ..ids import type_name
 from ..models import LLMConfig, as_input, did_you_mean, suggest_key
 from ..protocols import LLMClient
 
@@ -223,5 +224,5 @@ def resolve_llm(llm: LLMConfig | Mapping | LLMClient | None) -> LLMClient | None
         return build_llm_client(as_input(LLMConfig, llm, "llm config"))
     raise ValidationError(
         "llm must be an LLMConfig (provider, model, api_key, base_url, timeout), a mapping of those fields, or an "
-        f"LLMClient with an async generate(system=, user=, output=) method; got {type(llm).__name__}"
+        f"LLMClient with an async generate(system=, user=, output=) method; got {type_name(llm)}"
     )

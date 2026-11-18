@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from .errors import ValidationError
+from .ids import type_name
 
 if TYPE_CHECKING:
     from .schema import Schema
@@ -50,7 +51,7 @@ def _mapping(value: Any, where: str) -> Mapping[str, Any]:
     @return (Mapping[str, Any]): the value with snake_case keys.
     """
     if not isinstance(value, Mapping):
-        raise ValidationError(f"{where} must be an object, got {type(value).__name__}")
+        raise ValidationError(f"{where} must be an object, got {type_name(value)}")
     out = {_CAMEL_KEYS[k]: v for k, v in value.items() if k in _CAMEL_KEYS}
     out.update((k, v) for k, v in value.items() if k not in _CAMEL_KEYS)
     return out
@@ -68,7 +69,7 @@ def _items(data: Mapping[str, Any], key: str, where: str) -> list[Any]:
     if value is None:
         return []
     if isinstance(value, str) or not isinstance(value, list | tuple):
-        raise ValidationError(f"{where}.{key} must be a list, got {type(value).__name__}")
+        raise ValidationError(f"{where}.{key} must be a list, got {type_name(value)}")
     return list(value)
 
 

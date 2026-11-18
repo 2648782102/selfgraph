@@ -93,6 +93,8 @@ const TABLES = [
       { name: "qty", type: "smallint" },
       { name: "pickup", type: "point" },
       { name: "lead_time", type: "interval" },
+      { name: "slots", type: "int4range" },
+      { name: "tags", type: "integer[]" },
       { name: "untyped" },
     ],
   },
@@ -616,6 +618,9 @@ const FACTS_TYPE_CASES: unknown[] = [
   { preferences: [{ ...LIKES, event_time: "20210304T" }] },
   { decisions: [{ title: "t", event_time: 1700000000 }] },
   { decisions: [{ title: "t", event_time: "soon", steps: [] }] },
+  { relations: [{ ...JOINED, event_time: "2021-02-29" }] },
+  { relations: [{ ...JOINED, event_time: "2021-01-01T00:00:00+05:60" }] },
+  { preferences: [{ ...LIKES, event_time: "9999-12-31T23:59:59-05:00" }] },
 ];
 
 export const TEXT =
@@ -759,6 +764,13 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>>
     ),
     rel_update_evidence: await errorOf(() => graph.relations.update(worksAt, { evidence: bad })),
     rel_update_evidence_item: await errorOf(() => graph.relations.update(worksAt, { evidence: [bad] })),
+    rel_create_evidence_mapping: await errorOf(() =>
+      graph.relations.create("person:jane-doe", "KNOWS", "company:acme", { evidence: { source_id: "s" } as never }),
+    ),
+    dec_create_steps_text: await errorOf(() => graph.decisions.create("Bad steps", { steps: "step" as never })),
+    entity_inf_property: await errorOf(() =>
+      graph.entities.create("Inf", "Person", { properties: { d: Number.POSITIVE_INFINITY } }),
+    ),
   };
 }
 

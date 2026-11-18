@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from functools import partial
 from typing import Any, NamedTuple, TypeVar, get_args
 
@@ -31,6 +30,7 @@ from ._serde import (
     R_TO,
     _dumps,
     _loads,
+    _parse_iso,
     aware,
     child_edge_id,
     decode_entity,
@@ -51,7 +51,7 @@ from ._serde import (
     to_iso,
 )
 from .errors import ConflictError, NotFoundError, TransientError, ValidationError
-from .ids import _has_control, _has_surrogate
+from .ids import _has_control, _has_surrogate, type_name
 from .models import (
     DecisionStep,
     DecisionTrace,
@@ -102,11 +102,6 @@ DECISION_CLEARABLE = (
     "event_time",
 )
 _MAX_ID_BYTES = 1024
-_ISO_TIME = re.compile(
-    r"([0-9]{4})-([0-9]{2})-([0-9]{2})"
-    r"(?:[Tt ]([0-9]{2})(?::([0-9]{2})(?::([0-9]{2})(?:[.,]([0-9]{1,9}))?)?)?)?"
-    r"(?:[ \t\n\r\f\v]*(Z|z|[+-][0-9]{2}(?::?[0-9]{2}(?::?[0-9]{2})?)?))?"
-)
 _PAGE = 500
 _BATCH = 1000
 _RELATION_ID_BATCH = 256
@@ -203,7 +198,7 @@ def _require_int(field: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a non-bool integer.
     """
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValidationError(f"{field} must be an integer, got {type(value).__name__}")
+        raise ValidationError(f"{field} must be an integer, got {type_name(value)}")
 
 
 def _require_bool(name: str, value: object) -> None:
@@ -214,7 +209,7 @@ def _require_bool(name: str, value: object) -> None:
     @return (None): nothing; raises ValidationError otherwise.
     """
     if not isinstance(value, bool):
-        raise ValidationError(f"{name} must be a boolean, got {type(value).__name__}")
+        raise ValidationError(f"{name} must be a boolean, got {type_name(value)}")
 
 
 def _require_optional_text(field: str, value: Any) -> None:
@@ -225,7 +220,7 @@ def _require_optional_text(field: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a string or None.
     """
     if value is not None and not isinstance(value, str):
-        raise ValidationError(f"{field} must be a string or None, got {type(value).__name__}")
+        raise ValidationError(f"{field} must be a string or None, got {type_name(value)}")
     if value is not None and _has_control(value):
         raise ValidationError(f"{field} cannot contain control or surrogate characters")
 
@@ -240,40 +235,11 @@ def _require_datetime(field: str, value: Any) -> None:
     if value is None:
         return
     if not isinstance(value, datetime):
-        raise ValidationError(f"{field} must be a datetime, got {type(value).__name__}")
+        raise ValidationError(f"{field} must be a datetime, got {type_name(value)}")
     try:
         to_iso(value)
     except (OverflowError, ValueError, OSError) as exc:
         raise ValidationError(f"{field} is outside the representable datetime range") from exc
-
-
-def _parse_iso(text: str) -> datetime:
-    """Parse the ISO 8601 forms both SDKs accept, with one grammar on every Python version.
-
-    The text is YYYY-MM-DD, then optionally T, t, or a space and HH, HH:MM, or HH:MM:SS with a 1 to 9 digit
-    fraction after '.' or ',', truncated to microseconds. Then optional ASCII whitespace and Z, z, or an offset of
-    +HH, +HHMM, +HH:MM, +HHMMSS, or +HH:MM:SS below 24 hours. No offset means UTC.
-
-    @param text (str): the ISO text.
-    @return (datetime): the timezone-aware datetime; raises ValueError when the text does not match or a field is
-        out of range.
-    """
-    m = _ISO_TIME.fullmatch(text)
-    if m is None:
-        raise ValueError(f"not an ISO 8601 date or time: {text!r}")
-    year, month, day, hour, minute, second, fraction, tz = m.groups()
-    offset = timezone.utc
-    if tz and tz not in ("Z", "z"):
-        digits = tz[1:].replace(":", "")
-        hours, minutes, seconds = int(digits[:2]), int(digits[2:4] or 0), int(digits[4:6] or 0)
-        if hours > 23 or minutes > 59 or seconds > 59:
-            raise ValueError(f"UTC offset out of range: {tz!r}")
-        sign = -1 if tz[0] == "-" else 1
-        offset = timezone(sign * timedelta(hours=hours, minutes=minutes, seconds=seconds))
-    micro = int(fraction[:6].ljust(6, "0")) if fraction else 0
-    return datetime(
-        int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0), micro, tzinfo=offset
-    )
 
 
 def parse_time(value: Any, field: str) -> datetime | None:
@@ -306,7 +272,7 @@ def _validate_own_id(kind: str, oid: str | None) -> None:
     if oid is None:
         return
     if not isinstance(oid, str):
-        raise ValidationError(f"{kind} id must be a string, got {type(oid).__name__}")
+        raise ValidationError(f"{kind} id must be a string, got {type_name(oid)}")
     if not oid:
         raise ValidationError(f"{kind} id cannot be empty")
     if _has_control(oid):
@@ -372,10 +338,10 @@ def _require_list(name: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a list of strings.
     """
     if isinstance(value, str) or not isinstance(value, list | tuple):
-        raise ValidationError(f"{name} must be a list of strings, got {type(value).__name__}")
+        raise ValidationError(f"{name} must be a list of strings, got {type_name(value)}")
     for item in value:
         if not isinstance(item, str):
-            raise ValidationError(f"{name} must be a list of strings, got a {type(item).__name__} element")
+            raise ValidationError(f"{name} must be a list of strings, got a {type_name(item)} element")
         if _has_control(item):
             raise ValidationError(f"{name} elements cannot contain control or surrogate characters")
 
@@ -389,10 +355,10 @@ def _require_mapping(name: str, value: Any, *, safe_ints: bool = True) -> None:
     @return (None): nothing; raises ValidationError when not a mapping.
     """
     if not isinstance(value, Mapping):
-        raise ValidationError(f"{name} must be a mapping, got {type(value).__name__}")
+        raise ValidationError(f"{name} must be a mapping, got {type_name(value)}")
     for key in value:
         if not isinstance(key, str):
-            raise ValidationError(f"{name} keys must be strings, got a {type(key).__name__} key")
+            raise ValidationError(f"{name} keys must be strings, got a {type_name(key)} key")
     if name in {"properties", "set_properties", "external_ids"}:
         _ids._reject_proto_keys(value)
     _ids._require_clean_json(name, value, safe_ints=safe_ints)
@@ -514,12 +480,12 @@ def _require_clean_evidence(ev: EvidenceInput) -> None:
     @return (None): nothing; raises ValidationError on a bad source id, quote, confidence, or offsets.
     """
     if not isinstance(ev, EvidenceInput):
-        raise ValidationError(f"evidence must be EvidenceInput objects, got a {type(ev).__name__}")
+        raise ValidationError(f"evidence must be EvidenceInput objects, got a {type_name(ev)}")
     _require_text("evidence source_id", ev.source_id)
     _require_optional_text("evidence chunk_id", ev.chunk_id)
     if ev.quote is not None:
         if not isinstance(ev.quote, str):
-            raise ValidationError(f"evidence quote must be a string, got {type(ev.quote).__name__}")
+            raise ValidationError(f"evidence quote must be a string, got {type_name(ev.quote)}")
         if _has_surrogate(ev.quote):
             raise ValidationError("evidence quote cannot contain unpaired surrogate characters")
     if ev.confidence is not None:
@@ -547,15 +513,15 @@ def evidence_from_inputs(
     @param source_version (str | None): the inserted source's version; other evidence gets "<source_id>:manual".
     @return (list[Evidence]): the stored evidence.
     """
-    if isinstance(inputs, str | bytes) or not isinstance(inputs, Iterable):
-        raise ValidationError(f"evidence must be a list of Evidence objects, got {type(inputs).__name__}")
+    if not isinstance(inputs, list | tuple):
+        raise ValidationError(f"evidence must be a list of Evidence objects, got {type_name(inputs)}")
     out: list[Evidence] = []
     for ev in inputs:
         if isinstance(ev, Mapping):
             ev = as_input(EvidenceInput, ev, "evidence")
         if not isinstance(ev, EvidenceInput):
             raise ValidationError(
-                f"evidence must be EvidenceInput objects (selfgraph.EvidenceInput(...)), got a {type(ev).__name__}"
+                f"evidence must be EvidenceInput objects (selfgraph.EvidenceInput(...)), got a {type_name(ev)}"
             )
         _require_clean_evidence(ev)
         sv = source_version if source_version and ev.source_id == source_id else f"{ev.source_id}:manual"
@@ -802,7 +768,7 @@ async def _delete_evidence(runner: Any, ns: str, target_id: str) -> None:
 
 async def _entity_known(runner: Any, ns: str, eid: str, known: set[str] | frozenset[str]) -> bool:
     if not isinstance(eid, str):
-        raise ValidationError(f"entity reference must be a string id, got {type(eid).__name__}")
+        raise ValidationError(f"entity reference must be a string id, got {type_name(eid)}")
     if _has_control(eid):
         raise ValidationError("entity reference cannot contain control or surrogate characters")
     return eid in known or await runner.node_exists(ns, L_ENTITY, eid)
@@ -926,7 +892,7 @@ async def validate_facts(
         ("decisions", facts.decisions),
     ):
         if not isinstance(collection, list | tuple):
-            raise ValidationError(f"facts {name} must be a list, got {type(collection).__name__}")
+            raise ValidationError(f"facts {name} must be a list, got {type_name(collection)}")
     facts = _canonical_refs(facts)
     entity_ids = [ent.id or _ids.entity_id(ent.type, ent.name) for ent in facts.entities]
     for eid, ent in zip(entity_ids, facts.entities, strict=True):
@@ -952,7 +918,7 @@ async def validate_facts(
         _require_datetime("relation event_time", rel.event_time)
         _reject_reserved_rel_type(_ids.normalize_rel_type(rel.type), rel.type)
         if not isinstance(rel.evidence, list | tuple):
-            raise ValidationError(f"relation evidence must be a list, got {type(rel.evidence).__name__}")
+            raise ValidationError(f"relation evidence must be a list, got {type_name(rel.evidence)}")
         for ev in rel.evidence:
             _require_clean_evidence(ev)
         await _require_endpoints(
@@ -1015,10 +981,6 @@ async def upsert_entities(
     schema_types: Collection[str] = (),
 ) -> list[Entity]:
     """Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
-
-    Entities are read and written in batches; a repeated id merges into the earlier input, as sequential upserts would.
-    A stored entity keeps its type when an input spells it with other case or spacing, unless the input's type is a
-    schema type name.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1452,8 +1414,7 @@ async def delete_entities(
     decisions that reference an entity or use one of those relations as a step, their profiles and the preferences
     pointing at them, their evidence, and the merge records they survived or were absorbed in. A considered
     alternative is dropped from a decision that is kept, and a kept preference about a deleted entity loses its
-    about_entity in a new version. The max_count endpoints a deleted relation sat at are settled again after (see
-    resettle_endpoints). Ids that are not stored are skipped.
+    about_entity in a new version. Ids that are not stored are skipped.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1859,23 +1820,6 @@ def effective_time(version: Relation | Preference | DecisionTrace) -> datetime:
     return aware(version.event_time or version.created_at)
 
 
-def _restated_event_time(named: datetime | None, *, stored: datetime | None, keep_stored: bool) -> datetime | None:
-    """Pick the event_time for an upsert of an existing version.
-
-    A write that does not name a time keeps the stored time when the version is still current, matching
-    relations.update. A reassertion of a retired version with no named time leaves event_time unset so the
-    effective time is the write's creation time.
-
-    @param named (datetime | None): the time named on this write, after applying the insert default.
-    @param stored (datetime | None): the current version's event_time.
-    @param keep_stored (bool): True when the stored version is current and should keep its time.
-    @return (datetime | None): the event_time to store.
-    """
-    if named is not None:
-        return named
-    return stored if keep_stored else None
-
-
 def _reasserts(prev: Relation, effective: datetime) -> bool:
     """Tell whether a write at an effective time brings a retired relation back as current.
 
@@ -2018,9 +1962,7 @@ class Contradictions:
         displaced it in time order, the max_count-th newer fact at the endpoint with retired history counted, at
         that fact's effective time. Each retired relation gets one warning:
         "contradiction_out_of_order" when it was written by this write after that fact was current, else
-        "relation_superseded". A relation retired by an earlier write whose invalidating fact is no longer the
-        max_count-th newer one, because this write added a fact in between, is returned with its corrected
-        invalidation and no warning; the caller writes that as a new revision of it.
+        "relation_superseded".
 
         @return (tuple[dict[str, tuple[str, datetime]], list[InsertWarning]]): each retired relation id with the
             id that invalidated it and when, and the warnings.
@@ -2132,9 +2074,6 @@ async def require_max_count(
 
 def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
     """Mark a relation version as no longer current because a newer relation superseded it.
-
-    A version that was already retired takes a new revision instead, copying its content, so a known_at read from
-    before this write still sees the earlier retirement.
 
     @param edge (dict): the edge row, current or already retired.
     @param by (str): the id of the relation that superseded it.
@@ -2287,15 +2226,6 @@ async def resettle_endpoints(
     runner: Any, ns: str, moved: Iterable[dict], caps: Mapping[str, RelationCap] | None, at: datetime
 ) -> int:
     """Settle again each max_count endpoint a deleted or moved relation sat at, as supersede would settle it now.
-
-    Every relation a supersede retired at such an endpoint is admitted back with its stored rank, and
-    Contradictions.settle settles every endpoint those relations sit at, as an insert settles it, with retired history
-    counted at each one. One that comes back is written as a new current revision with its properties and source
-    count, taking effect when the retired version did, so as_of reads show it valid from its start. One that stays
-    retired, or a retired one whose invalidation settle corrects, takes a new revision naming the relation and time
-    that now displace it, so known_at reads still see the earlier retirement. A current one settle retires is retired
-    as a supersede retires it. A retirement by replace_source or the LLM judge names no relation of the endpoint, so
-    it is left as it is. Both endpoints of each deleted or moved relation are locked before they are read.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2469,7 +2399,7 @@ async def upsert_relations(
                 rid, (edge["from_id"], edge["type"], edge["to_id"]), (rel.from_entity, rtype, rel.to_entity)
             )
             prev = _relation_of(edge)
-            event_time = _restated_event_time(named, stored=prev.event_time, keep_stored=prev.is_current)
+            event_time = named if named is not None else prev.event_time if prev.is_current else None
             effective = aware(event_time or created_at)
             sources = prev.source_count + gained.pop(rid, 0)
             merged_properties = _merge_props(prev.properties, rel.properties)
@@ -2660,8 +2590,7 @@ async def update_relation(
     contradiction: str = "off",
     caps: Mapping[str, RelationCap] | None = None,
 ) -> Relation:
-    """Create a new version of a relation, settling its max_count endpoints again under supersede when the version
-    moves its event_time or drops a certification.
+    """Create a new version of a relation, settling its max_count endpoints again under supersede.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -3082,9 +3011,6 @@ async def replace_source(
     replaced, stays current, and so does a certified one, with a "certified_kept" warning. Evidence recorded by hand
     has no stored version and always counts.
 
-    The replacement takes effect at the version's stored effective time, so a version recorded before this insert
-    keeps its first event_time. A restored version uses the insert's effective time instead.
-
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param source_id (str): the source id.
@@ -3256,7 +3182,7 @@ async def upsert_preference(
     if current is None:
         event_time, strength, about_entity = named, pref.strength, pref.about_entity
     else:
-        event_time = _restated_event_time(named, stored=current.event_time, keep_stored=True)
+        event_time = named if named is not None else current.event_time
         strength = current.strength if pref.strength is None else pref.strength
         about_entity = current.about_entity if pref.about_entity is None else pref.about_entity
     merged_props = _merge_props(current.properties if current is not None else None, pref.properties)

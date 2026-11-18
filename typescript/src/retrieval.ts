@@ -334,7 +334,7 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   if (a.length !== b.length) throw new ValidationError("embedding vectors must have the same dimensions");
   const dot = (x: readonly number[], y: readonly number[]): number => {
     let sum = 0;
-    for (let i = 0; i < Math.min(x.length, y.length); i++) sum += x[i]! * y[i]!;
+    for (let i = 0; i < x.length; i++) sum += x[i]! * y[i]!;
     return sum;
   };
   const norm = Math.sqrt(dot(a, a)) * Math.sqrt(dot(b, b));
@@ -880,7 +880,7 @@ function contextPayload(text: string, source = false): string {
  * @param subgraph (Subgraph): the collected entities, relations, preferences, and decisions.
  * @param names (Map<string, string>): entity id to display name.
  * @param dist (Map<string, number>): entity id to hop distance from the seeds.
- * @param budgetTokens (number): the token budget. Records are counted separately; the cached change when the preceding record gains a newline is charged only when a following record fits. The counter's empty-string cost (one for the length estimate, zero for cl100k) covers fallback rounding. The first line that does not fit ends the context, so a farther line never takes the place of a nearer one, and when even the first line does not fit, that line is cut to the budget, so a non-empty subgraph never yields an empty context.
+ * @param budgetTokens (number): the token budget; the first line that does not fit ends the context, and a first line that does not fit is cut to the budget.
  * @param countTokens ((text: string) => number): the token counter.
  * @param hubs (ReadonlySet<string>): hub entity ids; a relation line through one is marked "(via hub)".
  * @return (string): the context text. Certified relations come first among equally close ones and are marked "[certified]".
@@ -1187,9 +1187,7 @@ async function run(
 }
 
 /**
- * Split text into content tokens like tokenList, with possessive and contraction endings dropped.
- *
- * "Ann's" is "ann" and "Doesn't" is "does", so a name, a synonym, and a question spell the same words. "won't" and "can't" are irregular and stay whole.
+ * Split text into content tokens like tokenList, dropping possessive and contraction endings but "won't"/"can't".
  *
  * @param text (string): the question, name, or synonym.
  * @return (string[]): the content tokens, repeats kept.
@@ -1207,8 +1205,6 @@ function termWords(text: string): string[] {
 
 /**
  * Split a question into terms: each longest run of its content tokens that spells a multi-word name or alias, and every other content token on its own, except filler words such as "where", "tell", and "me".
- *
- * A possessive or contraction ending is dropped from the question and from the names, so "Ann's Bakery" is one term whichever way it is written; "won't" and "can't" stay whole.
  *
  * @param question (string): the question.
  * @param names (Iterable<string>): the entity names, aliases, and schema term forms a run may spell, ignoring a plain plural ending.
@@ -1289,8 +1285,6 @@ function reaches(
 /**
  * Judge whether a graph holds what a question asks about, by lexical matching only.
  *
- * Each term is matched in turn against entity names and aliases, entity types, definitions, relation types, and property and preference keys; the first kind with a match covers it. Explicit terms that are stopwords or single characters match only entity names and aliases, exactly once folded. Schema terms match by name, alias, and synonym, and a match through a certified one is marked certified. Entities matched by different terms must be joined by a path of at most depth hops; a pair joined only through a hub (HUB_DEGREE or more relations) is listed in hub_only. The verdict is not_answerable when no term is covered, partial when some are missing, uncertain when all are covered but not connected or only through a hub, and answerable otherwise.
- *
  * @param question (string): the question.
  * @param terms (string[] | null): the terms to check, or null to take them from the question.
  * @param entities (Entity[]): the entities to match.
@@ -1340,9 +1334,9 @@ export function answerability(
     const exact = explicit && (cpLen(folded) === 1 || (runs.length > 0 && !words.length));
     let matched: string[];
     if (exact) {
-      matched = folded
-        ? entities.filter((e) => [e.name, ...e.aliases].some((n) => pyStrip(fold(n)) === folded)).map((e) => e.id)
-        : [];
+      matched = entities
+        .filter((e) => [e.name, ...e.aliases].some((n) => pyStrip(fold(n)) === folded))
+        .map((e) => e.id);
     } else {
       matched = words.length
         ? entities.filter((e) => [e.name, ...e.aliases].some((n) => covers(words, n))).map((e) => e.id)

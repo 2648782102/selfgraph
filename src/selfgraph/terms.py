@@ -19,6 +19,11 @@ _SINGULARS = {
     "selfies": "selfie",
     "zombies": "zombie",
     "quizzes": "quiz",
+    "echoes": "echo",
+    "heroes": "hero",
+    "potatoes": "potato",
+    "tomatoes": "tomato",
+    "vetoes": "veto",
     "buses": "bus",
     "statuses": "status",
     "status": "status",
@@ -44,12 +49,6 @@ def _takes_es(base: str) -> bool:
 
 def stem(token: str) -> str:
     """Strip a plural ending so "customers" and "customer", or "addresses" and "address", compare equal.
-
-    The suffix rules run in order: -ies becomes -y, -es is dropped where _takes_es says the singular takes it, and
-    any other final s is dropped unless the word ends in -ss. _SINGULARS holds the common words those rules get
-    wrong: -ie nouns that would read as -y plurals, quizzes and buses (doubled or -us stems), status and analysis
-    (singulars that end in s), and nouns that are the same in both numbers. A blanket -us / -is keep would leave
-    menus unchanged and would turn excuses into excus.
 
     @param token (str): a casefolded token.
     @return (str): the token in its singular form.
@@ -139,9 +138,7 @@ def grounded_terms(
 
 
 def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -> set[str]:
-    """Add the words of each entity type and its subtypes when a question names the type or a definition.
-
-    A definition adds the words of the entity type it belongs to and that type's subtypes.
+    """Add the words of each entity type and its subtypes when a question names the type or one of its definitions.
 
     @param tokens (set[str]): the question's content tokens.
     @param schema (Schema | None): the schema, or None for no expansion.

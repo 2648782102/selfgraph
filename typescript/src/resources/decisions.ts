@@ -139,8 +139,7 @@ export class Decisions extends Resource {
     const out: ops.UpdateTraceFields = {};
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;
-      if (key === "status") out.status = value as Status;
-      else if (key === "event_time") out.event_time = parseTime(value, "event_time");
+      if (key === "event_time") out.event_time = parseTime(value, "event_time");
       else (out as Record<string, unknown>)[key] = value;
     }
     return this.graph.write((tx, ns) => ops.updateTrace(tx, ns, id, out));

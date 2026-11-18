@@ -874,10 +874,6 @@ export async function getEntity(runner: Runner, ns: string, eid: string): Promis
 /**
  * Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
  *
- * Entities are read and written in batches; a repeated id merges into the earlier input, as sequential upserts would.
- * A stored entity keeps its type when an input spells it with other case or spacing, unless the input's type is a
- * schema type name.
- *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param ents (readonly ParsedEntityInput[]): the entities to upsert, in order.
@@ -1315,7 +1311,8 @@ export async function repointSteps(
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param given (string): the entity id.
- * @return (DeleteResult): counts of what was removed.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @return (DeleteResult): counts of what was removed and restored.
  */
 export async function deleteEntity(
   runner: Runner,
@@ -1416,7 +1413,8 @@ async function deleteNodesWhere(
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param given (readonly string[]): the canonical entity ids.
- * @return (DeleteResult): counts of what was removed.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @return (DeleteResult): counts of what was removed and restored.
  */
 export async function deleteEntities(
   runner: Runner,
@@ -1496,7 +1494,8 @@ export function addCounts(total: DeleteResult, counts: DeleteResult): void {
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rids (readonly string[]): the relation ids.
- * @return (DeleteResult): counts of what was removed.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @return (DeleteResult): counts of what was removed and restored.
  */
 export async function deleteRelations(
   runner: Runner,
@@ -1775,23 +1774,6 @@ export const effectiveTime = (version: Relation | Preference | DecisionTrace): D
   version.event_time ?? version.created_at;
 
 /**
- * Pick the event_time for an upsert of an existing version.
- *
- * A write that does not name a time keeps the stored time when the version is still current, matching
- * updateRelation. A reassertion of a retired version with no named time leaves event_time unset so the
- * effective time is the write's creation time.
- *
- * @param named (Date | null): the time named on this write, after applying the insert default.
- * @param stored (Date | null): the current version's event_time.
- * @param keepStored (boolean): true when the stored version is current and should keep its time.
- * @return (Date | null): the event_time to store.
- */
-const restatedEventTime = (named: Date | null, stored: Date | null, keepStored: boolean): Date | null => {
-  if (named !== null) return named;
-  return keepStored ? stored : null;
-};
-
-/**
  * Tell whether a write at an effective time brings a retired relation back as current.
  *
  * @param prev (Relation): the stored version.
@@ -1980,10 +1962,7 @@ export class Contradictions {
    * current with a "certified_kept" warning. A retired relation is invalidated by the fact that displaced it in time
    * order, the max_count-th newer fact at the endpoint with retired history counted, at
    * that fact's effective time. Each retired relation gets one warning: "contradiction_out_of_order" when it was
-   * written by this write after that fact was current, else "relation_superseded". A relation retired by an
-   * earlier write whose invalidating fact is no longer the max_count-th newer one, because this write added a fact
-   * in between, is returned with its corrected invalidation and no warning; the caller writes that as a new
-   * revision of it.
+   * written by this write after that fact was current, else "relation_superseded".
    *
    * @return ([Map<string, [string, Date]>, InsertWarning[]]): each retired relation id with the id that invalidated it and when, and the warnings.
    */
@@ -2183,8 +2162,6 @@ export async function requireMaxCount(
 /**
  * Mark a relation version as no longer current because a newer relation superseded it.
  *
- * A version that was already retired takes a new revision instead, copying its content, so a known_at read from before this write still sees the earlier retirement.
- *
  * @param edge (EdgeRow): the edge row, current or already retired.
  * @param by (string): the id of the relation that superseded it.
  * @param at (Date): the superseding relation's effective time.
@@ -2317,15 +2294,6 @@ export async function retireRelations(
 
 /**
  * Settle again each max_count endpoint a deleted or moved relation sat at, as supersede would settle it now.
- *
- * Every relation a supersede retired at such an endpoint is admitted back with its stored rank, and
- * Contradictions.settle settles every endpoint those relations sit at, as an insert settles it, with retired history
- * counted at each one. One that comes back is written as a new current revision with its properties and source count,
- * taking effect when the retired version did, so as_of reads show it valid from its start. One that stays retired, or a
- * retired one whose invalidation settle corrects, takes a new revision naming the relation and time that now displace
- * it, so known_at reads still see the earlier retirement. A current one settle retires is retired as a supersede
- * retires it. A retirement by replace_source or the LLM judge names no relation of the endpoint, so it is left as it
- * is. Both endpoints of each deleted or moved relation are locked before they are read.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -2523,7 +2491,7 @@ export async function upsertRelations(
     } else {
       requireSameEnds(rid, [edge.from_id, edge.type, edge.to_id], [rel.from_entity, rtype, rel.to_entity]);
       const prev = relationOf(edge);
-      eventTime = restatedEventTime(named, prev.event_time, prev.is_current);
+      eventTime = named ?? (prev.is_current ? prev.event_time : null);
       const effective = eventTime ?? createdAt;
       const sources = prev.source_count + takeGained(gained, rid);
       const mergedProperties = mergeProps(prev.properties, rel.properties);
@@ -2769,8 +2737,7 @@ async function lockCurrent<T>(
 }
 
 /**
- * Create a new version of a relation, settling its max_count endpoints again under supersede when the version moves
- * its event_time or drops a certification; an unchanged update is a no-op.
+ * Create a new version of a relation, settling its max_count endpoints again under supersede.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -3197,9 +3164,6 @@ export async function sourceTargets(runner: Runner, ns: string, sourceId: string
  * stays current, and so does a certified one, with a "certified_kept" warning. Evidence recorded by hand has no stored
  * version and always counts.
  *
- * The replacement takes effect at the version's stored effective time, so a version recorded before this insert keeps
- * its first event_time. A restored version uses the insert's effective time instead.
- *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param sourceId (string): the source id.
@@ -3290,7 +3254,8 @@ export async function replaceSource(
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
- * @return (DeleteResult): counts of what was removed.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @return (DeleteResult): counts of what was removed and restored.
  */
 export async function deleteRelation(
   runner: Runner,
@@ -3412,7 +3377,7 @@ export async function upsertPreference(
         "these identify the preference and are immutable; create a new preference to change them",
     );
   }
-  const eventTime = current === null ? named : restatedEventTime(named, current.event_time, true);
+  const eventTime = named ?? current?.event_time ?? null;
   const strength = current === null || pref.strength != null ? pref.strength : current.strength;
   const aboutEntity = current === null || pref.about_entity != null ? pref.about_entity : current.about_entity;
   const mergedProps = mergeProps(current?.properties ?? null, pref.properties);

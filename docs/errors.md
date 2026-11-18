@@ -28,18 +28,22 @@ except SelfGraphError as exc:
 ## Messages
 
 Python and TypeScript produce the same message text, with the same paths. Both
-name types the Python way (`str`, `NoneType`).
+name a value's type as JSON does (`string`, `number`, `boolean`, `null`, `array`,
+`object`), a datetime as `Date`, and any other value by its class name.
 
 ### Input
 
 | Situation | Message |
 |-----------|---------|
 | Empty or whitespace-only text | `<field> cannot be empty` |
-| Wrong value type | `<field> must be a string, got int` |
+| Wrong value type | `<field> must be a string, got number` |
 | A model fails validation (facts, instructions, prompts, LLM config, MCP tool arguments) | One `path: message` line per problem, such as `invalid facts: entities[0].name: field required` |
 | Unknown key | `unknown key 'nmae' in facts.entities[0]; did you mean 'name'? (valid keys: id, type, name, ...)`. The valid keys are listed when there are at most eight. |
 | Malformed list cursor ([paging](resources.md#listing-and-iterating)) | `invalid cursor '...'` |
 | Evidence `confidence` outside 0 to 1 (a preference `strength` reports the same way) | `evidence confidence must be between 0 and 1, got 1.5` |
+| A property or external id key named `__proto__` | `property and external id keys cannot be '__proto__'` |
+| A value JSON cannot hold, such as an infinite float | `value is not JSON-serializable: Out of range float values are not JSON compliant` |
+| A time outside years 1 to 9999 | `<field> is outside the representable datetime range` |
 
 ### LLM and prompts
 

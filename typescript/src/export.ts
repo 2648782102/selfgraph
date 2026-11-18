@@ -147,7 +147,7 @@ function stem(text: string): string {
   if (raw.length <= STEM_MAX_BYTES) return cleaned;
   let end = STEM_MAX_BYTES;
   while (end > 0 && (raw[end]! & 0xc0) === 0x80) end--;
-  return pyStrip(pyStrip(pyStrip(new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw.subarray(0, end))), "."));
+  return stem(new TextDecoder("utf-8", { ignoreBOM: true }).decode(raw.subarray(0, end)));
 }
 
 /**

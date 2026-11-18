@@ -85,6 +85,8 @@ TABLES = [
             {"name": "qty", "type": "smallint"},
             {"name": "pickup", "type": "point"},
             {"name": "lead_time", "type": "interval"},
+            {"name": "slots", "type": "int4range"},
+            {"name": "tags", "type": "integer[]"},
             {"name": "untyped"},
         ],
     },
@@ -566,6 +568,9 @@ FACTS_TYPE_CASES = [
     {"preferences": [{**_LIKES, "event_time": "20210304T"}]},
     {"decisions": [{"title": "t", "event_time": 1700000000}]},
     {"decisions": [{"title": "t", "event_time": "soon", "steps": []}]},
+    {"relations": [{**_JOINED, "event_time": "2021-02-29"}]},
+    {"relations": [{**_JOINED, "event_time": "2021-01-01T00:00:00+05:60"}]},
+    {"preferences": [{**_LIKES, "event_time": "9999-12-31T23:59:59-05:00"}]},
 ]
 
 MCP_ARGUMENT_CASES = [
@@ -738,6 +743,11 @@ async def choice_errors(graph):
         ),
         "rel_update_evidence": await error_of(graph.relations.update(works_at, evidence=Opaque())),
         "rel_update_evidence_item": await error_of(graph.relations.update(works_at, evidence=[Opaque()])),
+        "rel_create_evidence_mapping": await error_of(
+            graph.relations.create("person:jane-doe", "KNOWS", "company:acme", evidence={"source_id": "s"})
+        ),
+        "dec_create_steps_text": await error_of(graph.decisions.create("Bad steps", steps="step")),
+        "entity_inf_property": await error_of(graph.entities.create("Inf", "Person", properties={"d": float("inf")})),
     }
 
 

@@ -23,6 +23,7 @@ from ._cypher import (
     count_of,
     query_error,
     records_to_result,
+    require_keys,
     where_after,
 )
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
@@ -501,8 +502,7 @@ class HydraDBStore(AutoCommitStore):
         out = []
         cleared: dict[tuple[str, ...], list[int]] = {}
         for id, props in rows:
-            for prop_key in props:
-                require_identifier(prop_key)
+            require_keys(props)
             row = _node_write_row(ns, label, id, props)
             _guard_sizes(row)
             out.append(row)
@@ -540,7 +540,9 @@ class HydraDBStore(AutoCommitStore):
         @return (None): nothing.
         """
         extra_label = _engine_label(extra_label)
-        marks = [_label_key(label), _label_key(extra_label)] if extra_label is not None else [_label_key(label)]
+        labels = [label] if extra_label is None else [label, extra_label]
+        marks = [_label_key(name) for name in labels]
+        after_all = label in (L_EVIDENCE, L_MERGE)
         for batch in _by_columns(rows):
             ids = [r["id"] for r in batch]
             await self._write(
@@ -549,7 +551,7 @@ class HydraDBStore(AutoCommitStore):
                 ids,
                 needs or (),
                 marks,
-                after_all=label in (L_EVIDENCE, L_MERGE),
+                after_all=after_all,
             )
             if extra_label is not None:
                 await self._write(
@@ -558,12 +560,10 @@ class HydraDBStore(AutoCommitStore):
                     ids,
                     ids,
                     marks,
-                    after_all=label in (L_EVIDENCE, L_MERGE),
+                    after_all=after_all,
                 )
             if _QUEUING.get() is self:
-                self._pending_nodes.update((label, i) for i in ids)
-                if extra_label is not None:
-                    self._pending_nodes.update((extra_label, i) for i in ids)
+                self._pending_nodes.update((name, i) for name in labels for i in ids)
 
     async def entities_matching(self, ns: str, keys: Iterable[str]) -> list[dict]:
         """Read the entities sharing a match key with some keys, through the key index instead of a scan.
@@ -714,8 +714,7 @@ class HydraDBStore(AutoCommitStore):
     ) -> None:
         out = []
         for type, from_id, to_id, props in rows:
-            for key in props:
-                require_identifier(key)
+            require_keys(props)
             row = _edge_write_row(ns, type, from_label, from_id, to_label, to_id, props)
             _guard_sizes(row)
             out.append(row)
@@ -772,8 +771,7 @@ class HydraDBStore(AutoCommitStore):
         return out
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
-        for key in props:
-            require_identifier(key)
+        require_keys(props)
         merged = await merged_current_edge(self, ns, id, props)
         if merged is None:
             return
@@ -852,8 +850,7 @@ class HydraDBStore(AutoCommitStore):
             where.append("NOT r.is_current <> true" if anchored else "r.is_current = true")
         where_after("r.sid", id_gt, where, params)
         ob = "sid" if order_by == "id" else require_identifier(order_by, "order_by")
-        tie_break = ", r.revision AS __rev" if order_by == "id" else ""
-        order = "__ob, __rev" if order_by == "id" else "__ob"
+        tie_break, order = (", r.revision AS __rev", "__ob, __rev") if order_by == "id" else ("", "__ob")
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob{tie_break} "

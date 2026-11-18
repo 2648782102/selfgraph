@@ -69,16 +69,12 @@ def _lenient_event_time(value: str | None) -> datetime | None:
     @param value (str | None): ISO text, a four-digit year, or None.
     @return (datetime | None): the time, or None when absent or not parseable.
     """
-    if value is None:
-        return None
-    text = value.strip()
+    text = (value or "").strip()
     if not text:
         return None
     if len(text) == 4 and text.isascii() and text.isdigit():
         year = int(text)
-        if 1 <= year <= 9999:
-            return datetime(year, 1, 1, tzinfo=timezone.utc)
-        return None
+        return datetime(year, 1, 1, tzinfo=timezone.utc) if year >= 1 else None
     try:
         return parse_time(text, "event_time")
     except ValidationError:

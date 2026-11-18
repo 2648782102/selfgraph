@@ -577,15 +577,16 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
     llm = _build_llm(settings)
     if llm is not None:
         check_llm_config(llm)
-    level = settings.level or "balanced"
-    cap = settings.max_tier or "max"
-    if llm is None and level == "max" and cap == "max":
-        raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
-    preset = PRESETS[level]
-    if llm is None and clamp("resolution", settings.resolver or preset["resolution"], cap) == "llm":
-        raise ValidationError(f"resolver 'llm' needs an LLM: {LLM_HINT}")
-    if llm is None and clamp("contradiction", settings.contradiction or preset["contradiction"], cap) == "llm":
-        raise ValidationError(f"contradiction 'llm' needs an LLM: {LLM_HINT}")
+    else:
+        level = settings.level or "balanced"
+        cap = settings.max_tier or "max"
+        if level == "max" and cap == "max":
+            raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
+        preset = PRESETS[level]
+        if clamp("resolution", settings.resolver or preset["resolution"], cap) == "llm":
+            raise ValidationError(f"resolver 'llm' needs an LLM: {LLM_HINT}")
+        if clamp("contradiction", settings.contradiction or preset["contradiction"], cap) == "llm":
+            raise ValidationError(f"contradiction 'llm' needs an LLM: {LLM_HINT}")
     schema = as_schema(_json_setting(settings.schema, "schema"))
     require_schema_for_mode(settings.schema_mode, schema)
     instructions = as_input(

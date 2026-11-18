@@ -118,6 +118,10 @@ The config is checked when it is built. These raise `ValidationError`:
 - a first-party provider with another provider's model prefix
   (`provider="anthropic", model="gemini/x"`).
 
+The entity pass asks the model for `type`, `name`, and `aliases` only. SelfGraph
+derives every entity id; an `id`, `properties`, or `external_ids` in the reply is
+ignored. Set those with `insert.facts` or `entities.update`.
+
 Text longer than one chunk logs `extracting chunk 3/12` at INFO on the
 `selfgraph` logger. The CLI prints these lines on stderr.
 
@@ -274,10 +278,11 @@ Text is split into chunks of up to 512 tokens with a 64-token overlap. Without
 or `chunk_text` raises `ValidationError`. Without `overlap_tokens` the overlap is
 `min(64, max_tokens // 4)`, so a small `max_tokens` works on its own.
 `count_tokens` uses the tokenizer when installed and estimates otherwise.
-tiktoken downloads `cl100k_base` on first use. When that load fails, for example
-with no network, SelfGraph logs one warning on the `selfgraph` logger and
-estimates for the rest of the process. Set `TIKTOKEN_CACHE_DIR` to a directory
-holding the cached encoding to run offline.
+In Python, tiktoken downloads `cl100k_base` on first use. When that load fails,
+for example with no network, SelfGraph logs one warning on the `selfgraph` logger
+and estimates for the rest of the process. Set `TIKTOKEN_CACHE_DIR` to a directory
+holding the cached encoding to run offline. The TypeScript SDK reads the encoding
+bundled with `js-tiktoken`, so it needs no network.
 
 ## Unknown keys
 

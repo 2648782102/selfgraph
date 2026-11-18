@@ -139,9 +139,9 @@ def test_property_values_and_keys_are_checked_and_null_clears_a_key():
         run(g.entities.update("person:ann", properties={"deep": [-(2**60)]}))
     with pytest.raises(ValidationError, match="outside the safe range"):
         run(g.insert.text("Ann met Bob.", source_id="s", metadata={"n": 2**64}))
-    with pytest.raises(ValidationError, match="cannot hold datetime values; use an ISO 8601 string"):
+    with pytest.raises(ValidationError, match="cannot hold Date values; use an ISO 8601 string"):
         run(g.entities.create("Cy", "Person", properties={"at": utc(2024)}))
-    with pytest.raises(ValidationError, match="cannot hold datetime values"):
+    with pytest.raises(ValidationError, match="cannot hold Date values"):
         run(g.relations.create("person:ann", "R", "person:ann", properties={"at": utc(2024)}))
 
     for bad in ({"": 1}, {"  ": 2}):

@@ -37,7 +37,7 @@ export const MARK_RANGES = [
  * @param ranges (string): the ranges, each one code point or a first and last code point joined by a hyphen.
  * @return (string): the class body, to place between square brackets in a regex with the u flag.
  */
-export function charClass(ranges: string): string {
+function charClass(ranges: string): string {
   return ranges
     .split(" ")
     .map((item) =>

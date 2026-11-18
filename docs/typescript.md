@@ -74,7 +74,9 @@ unchanged.
 to 22, call `await graph.close()` in a `finally` block.
 
 **Values.** Timestamps are `Date` objects. Inputs also accept ISO text. A `null`
-inside `properties` removes that key.
+inside `properties` removes that key. The `steps`, `alternative_entities`, and
+`remove_properties` options take arrays; a `Set` or generator raises
+`ValidationError`, as a non-list does in Python.
 
 **Updates.** An omitted field keeps its value. `null` behaves as `None` does in
 Python:
@@ -133,7 +135,7 @@ Python:
 
 `npx @hydradb/selfgraph` (installed: `selfgraph`) takes the same flags, commands,
 and `SELFGRAPH_*` variables as the Python [CLI](cli.md), and prints the same
-JSON. `npx @hydradb/selfgraph mcp` serves the same 35 [MCP](mcp.md) tools.
+JSON. `npx @hydradb/selfgraph mcp` serves the same 39 [MCP](mcp.md) tools.
 
 ## Known issues
 

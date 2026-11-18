@@ -256,6 +256,10 @@ def test_facts_bare_years_and_string_strengths_are_rejected():
             {"decisions": [{"title": "t", "event_time": "soon", "steps": []}]},
             'decisions[0].event_time: invalid ISO 8601 string: "soon"',
         ),
+        (
+            {"relations": [{**joined, "event_time": "2021-01-01T00:00:00+05:60"}]},
+            'relations[0].event_time: invalid ISO 8601 string: "2021-01-01T00:00:00+05:60"',
+        ),
     ]
     for facts, message in cases:
         with pytest.raises(ValidationError) as exc:

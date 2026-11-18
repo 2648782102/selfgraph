@@ -249,7 +249,7 @@ export function pyJsonDumps(value: unknown, options: PyDumpsOptions = {}): strin
     if (v === false) return "false";
     if (typeof v === "string") return jsonString(v, ensureAscii);
     if (typeof v === "number") {
-      if (!Number.isFinite(v)) throw new TypeError(`Out of range float values are not JSON compliant: ${v}`);
+      if (!Number.isFinite(v)) throw new TypeError("Out of range float values are not JSON compliant");
       return pyNumber(v);
     }
     if (typeof v === "bigint") return v.toString();

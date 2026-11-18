@@ -13,6 +13,7 @@ from .errors import ValidationError
 
 __all__ = [
     "slug",
+    "type_name",
     "entity_id",
     "canonical_entity_id",
     "relation_id",
@@ -106,7 +107,7 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
         if safe_ints and abs(value) > MAX_SAFE_INTEGER:
             raise ValidationError(f"{name} integer {value} is outside the safe range; store it as a string")
     elif isinstance(value, date):
-        raise ValidationError(f"{name} cannot hold {type(value).__name__} values; use an ISO 8601 string")
+        raise ValidationError(f"{name} cannot hold {type_name(value)} values; use an ISO 8601 string")
     elif isinstance(value, Mapping):
         for key, item in value.items():
             if isinstance(key, str) and _has_control(key):
@@ -117,6 +118,29 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
             _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
 
 
+def type_name(value: object) -> str:
+    """Name a value's type the way the TypeScript port names it in errors.
+
+    @param value (object): the value.
+    @return (str): null, boolean, number, string, array, Date, object, or the class name.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int | float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list | tuple):
+        return "array"
+    if isinstance(value, date):
+        return "Date"
+    if isinstance(value, Mapping):
+        return "object"
+    return type(value).__name__
+
+
 def _require_str(label: str, value: object) -> None:
     """Validate a value is a non-empty string with no control or surrogate characters.
 
@@ -125,7 +149,7 @@ def _require_str(label: str, value: object) -> None:
     @return (None): nothing; raises ValidationError when not a clean, non-empty string.
     """
     if not isinstance(value, str):
-        raise ValidationError(f"{label} must be a string, got {type(value).__name__}")
+        raise ValidationError(f"{label} must be a string, got {type_name(value)}")
     if not value.strip():
         raise ValidationError(f"{label} cannot be empty")
     _require_no_control(label, value)
@@ -140,7 +164,7 @@ def _require_unit(label: str, value: object, *, finite: bool = False) -> None:
     @return (None): nothing; raises ValidationError when non-numeric or out of range.
     """
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValidationError(f"{label} must be a number, got {type(value).__name__}")
+        raise ValidationError(f"{label} must be a number, got {type_name(value)}")
     if finite and not math.isfinite(value):
         raise ValidationError(f"{label} must be a finite number")
     if not 0.0 <= value <= 1.0:
@@ -241,12 +265,7 @@ def _hash(*parts: str | None) -> str:
 
 
 def _is_mark(ch: str) -> bool:
-    """Report whether a character is a combining mark that is part of the word it follows.
-
-    Vowel signs, viramas, nuktas, and tone marks are general category Mn or Mc and have no composed form for NFC
-    to fold them into. The marks are the ones of Unicode 15.0, listed in _marks so that every Python and Node
-    version classifies them alike; the variation selectors are left out, so an emoji presentation selector still
-    drops with its emoji.
+    """Report whether a character is a Unicode 15.0 combining mark that is part of the word it follows.
 
     @param ch (str): one character.
     @return (bool): True for a nonspacing or spacing mark other than a variation selector.
@@ -283,12 +302,6 @@ def slug(text: str) -> str:
 
 def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
-
-    Drops punctuation for every type and keeps combining marks, so a name written with
-    vowel signs keeps them; for organisation-like types it also drops a
-    leading article and trailing corporate suffixes, so "Acme", "Acme, Inc." and
-    "The Acme Corporation" resolve to one id while a Work "The Trial" stays distinct
-    from "Trial".
 
     @param type (str): the entity type, which scopes suffix and article stripping.
     @param name (str): the raw entity name.
@@ -359,11 +372,7 @@ def canonical_entity_id(eid: str) -> str:
 
 
 def normalize_rel_type(type: str) -> str:
-    """Canonicalise a relation type to UPPER_SNAKE so case, spacing, and camelCase variants collapse.
-
-    A lower-to-upper case change splits words in the raw type. A digit and the letter after it split on the
-    uppercased result, so 'uses k8s' and 'USES_K8S' agree, and the result is NFC. Normalizing the result again
-    returns it unchanged.
+    """Canonicalise a relation type to UPPER_SNAKE so case, spacing, camelCase, and digit-letter variants collapse.
 
     @param type (str): the raw relation type.
     @return (str): the canonical relation type.
@@ -509,10 +518,6 @@ def entity_merge_id(survivor_id: str, absorbed_id: str) -> str:
     return f"entitymerge:{_hash(survivor_id, absorbed_id)}"
 
 
-def _tagged(prefix: str, rest: str) -> str:
-    return f"{prefix}:{rest}"
-
-
 RESERVED_ID_PREFIXES = frozenset(
     {"relation", "preference", "decision", "decisionstep", "profile", "source", "sv", "evidence", "entitymerge"}
 )
@@ -536,7 +541,7 @@ def step_id(trace_id: str, order: int) -> str:
     @param order (int): the step's position in the trace.
     @return (str): the step node id.
     """
-    return _tagged("decisionstep", f"{trace_id}:step:{order}")
+    return f"decisionstep:{trace_id}:step:{order}"
 
 
 def trace_of_step(sid: str) -> str:
@@ -545,7 +550,7 @@ def trace_of_step(sid: str) -> str:
     @param sid (str): the step node id.
     @return (str): the trace id.
     """
-    return sid[len(_tagged("decisionstep", "")) :].rsplit(":step:", 1)[0]
+    return sid[len("decisionstep:") :].rsplit(":step:", 1)[0]
 
 
 def quote_label(name: str) -> str:

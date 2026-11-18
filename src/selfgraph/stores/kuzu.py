@@ -15,7 +15,7 @@ from typing import Any
 from ..errors import SelfGraphError, StoreError, ValidationError
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue
-from ._cypher import AutoCommitStore, count_of, where_after, write_batches
+from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["KuzuStore"]
@@ -236,9 +236,10 @@ class KuzuStore(AutoCommitStore):
         if max_db_size is not None and (type(max_db_size) is not int or max_db_size < 1):
             raise ValidationError(f"max_db_size must be a positive integer of bytes, got {max_db_size!r}")
         path = os.path.expanduser(path)
-        if path not in ("", ":memory:"):
-            path = os.path.abspath(path)
-        key = object() if path in ("", ":memory:") else path
+        if path in ("", ":memory:"):
+            key: object = object()
+        else:
+            path = key = os.path.abspath(path)
         with _CACHE_LOCK:
             db = _DATABASES.get(key)
             if db is None:
@@ -300,10 +301,7 @@ class KuzuStore(AutoCommitStore):
                 raise _kuzu_error(exc, "Kuzu query failed") from exc
 
     def _in_transaction(self) -> bool:
-        """Report whether a raw statement left a transaction open on the connection.
-
-        Kuzu fixes current_timestamp() when a transaction starts, so two reads a clock tick apart match only inside
-        one. Reading it never ends the transaction.
+        """Report whether a raw statement left a transaction open, as two current_timestamp() reads a tick apart match.
 
         @return (bool): True when a transaction is open.
         """
@@ -362,8 +360,7 @@ class KuzuStore(AutoCommitStore):
         if extra_label is not None:
             quote_label(extra_label)
         for _, props in rows:
-            for key in props:
-                require_identifier(key)
+            require_keys(props)
         for _, batch in write_batches((None, {"pk": _pk(ns, id), "id": id, "doc": _jv(props)}) for id, props in rows):
             await self._run(_UPSERT_NODES, {"rows": batch, "ns": ns, "label": label})
 
@@ -381,9 +378,8 @@ class KuzuStore(AutoCommitStore):
         @param rows (list[tuple[str, str, str, dict]]): (edge type, source id, destination id, properties) rows.
         @return (None): nothing.
         """
-        for _type, _from_id, _to_id, props in rows:
-            for key in props:
-                require_identifier(key)
+        for *_, props in rows:
+            require_keys(props)
         edge_rows = [
             {
                 "f": _pk(ns, from_id),
@@ -423,11 +419,7 @@ class KuzuStore(AutoCommitStore):
         _where_doc_equals("n", equals, where, params)
         _where_doc_any_of(ns, any_of, where, params)
         where_after("n.id", id_gt, where, params)
-        if order_by == "id":
-            ob = "n.id"
-        else:
-            col = require_identifier(order_by, "order_by")
-            ob = f"json_extract(n.doc, '{col}')"
+        ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{require_identifier(order_by, 'order_by')}')"
         res = await self._run(
             f"MATCH (n:N) WHERE {' AND '.join(where)} "
             f"RETURN n.doc AS doc ORDER BY {ob} SKIP {int(skip)} LIMIT {int(limit)}",
@@ -505,8 +497,7 @@ class KuzuStore(AutoCommitStore):
         return sorted(rows, key=lambda row: order[row["props"]["id"]])
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
-        for key in props:
-            require_identifier(key)
+        require_keys(props)
         merged = await merged_current_edge(self, ns, id, props)
         if merged is None:
             return
@@ -574,8 +565,7 @@ class KuzuStore(AutoCommitStore):
         elif order_by == "revision":
             ob = "r.revision"
         else:
-            col = require_identifier(order_by, "order_by")
-            ob = f"json_extract(r.doc, '{col}')"
+            ob = f"json_extract(r.doc, '{require_identifier(order_by, 'order_by')}')"
         res = await self._run(
             f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et "
@@ -594,8 +584,9 @@ class KuzuStore(AutoCommitStore):
         *,
         order_by: str | None = None,
     ) -> list[dict]:
-        ob = None if order_by is None else require_identifier(order_by, "order_by")
-        order = "" if ob is None else f" ORDER BY json_extract(c.doc, '{ob}')"
+        order = (
+            "" if order_by is None else f" ORDER BY json_extract(c.doc, '{require_identifier(order_by, 'order_by')}')"
+        )
         res = await self._run(
             "MATCH (p:N {pk:$pk})-[r:R]->(c:N) "
             f"WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc{order}",

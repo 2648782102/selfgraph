@@ -130,7 +130,7 @@ def test_unknown_llm_provider_suggests_only_within_one_edit(provider, known, sug
 def test_empty_and_wrongly_typed_text_have_distinct_messages():
     with pytest.raises(ValidationError, match="^namespace cannot be empty$"):
         _require_text("namespace", "  ")
-    with pytest.raises(ValidationError, match="^namespace must be a string, got int$"):
+    with pytest.raises(ValidationError, match="^namespace must be a string, got number$"):
         _require_text("namespace", 5)
 
 

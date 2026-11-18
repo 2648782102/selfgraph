@@ -19,18 +19,13 @@ async def graph_diff(runner: Any, ns: str, since: datetime, until: datetime) -> 
     """
     result = GraphDiff(since=since, until=until)
     retired: dict[tuple[str, datetime], Relation] = {}
-    skip = 0
-    while True:
-        rows = await runner.match_edges(
-            ns,
-            from_label=L_ENTITY,
-            to_label=L_ENTITY,
-            current_only=False,
-            order_by="id",
-            skip=skip,
-            limit=_ops._PAGE,
-        )
-        for row in rows:
+    pages = _ops._keyset(lambda after, limit: runner.match_nodes(ns, L_ENTITY, order_by="id", id_gt=after, limit=limit))
+    async for page in pages:
+        for row in page:
+            entity = decode_entity(row)
+            if since < aware(entity.created_at) <= until:
+                result.entities_created.append(entity)
+        for row in await _ops._edges_into(runner, ns, L_ENTITY, L_ENTITY, "from_in", [row["id"] for row in page]):
             relation = _ops._relation_of(row)
             if since < aware(relation.created_at) <= until:
                 target = result.relations_added if relation.revision == 1 else result.relations_revised
@@ -41,21 +36,8 @@ async def graph_diff(runner: Any, ns: str, since: datetime, until: datetime) -> 
                 previous = retired.get(key)
                 if previous is None or previous.revision < relation.revision:
                     retired[key] = relation
-        if len(rows) < _ops._PAGE:
-            break
-        skip += len(rows)
     result.relations_added.sort(key=lambda r: (r.id, r.revision))
     result.relations_revised.sort(key=lambda r: (r.id, r.revision))
     result.relations_retired = sorted(retired.values(), key=lambda r: (r.id, aware(r.invalidated_known_at)))
-    skip = 0
-    while True:
-        rows = await runner.match_nodes(ns, L_ENTITY, order_by="id", skip=skip, limit=_ops._PAGE)
-        for row in rows:
-            entity = decode_entity(row)
-            if since < aware(entity.created_at) <= until:
-                result.entities_created.append(entity)
-        if len(rows) < _ops._PAGE:
-            break
-        skip += len(rows)
     result.entities_created.sort(key=lambda e: e.id)
     return result

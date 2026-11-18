@@ -35,6 +35,7 @@ import {
   AutoCommitStore,
   quoteLabel,
   requireIdentifier,
+  requireKeys,
   sortedEntries,
   toCount,
   whereAfter,
@@ -661,7 +662,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
-    for (const [, props] of rows) for (const k of Object.keys(props)) requireIdentifier(k);
+    for (const [, props] of rows) requireKeys(props);
     const cleared = new Map<string, [string[], bigint[]]>();
     const out = rows.map(([id, props]) => {
       const row = nodeWriteRow(ns, label, id, props);
@@ -718,7 +719,9 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     extraLabel?: string | null,
   ): Promise<void> {
     extraLabel = engineLabel(extraLabel);
-    const marks = extraLabel != null ? [labelKey(label), labelKey(extraLabel)] : [labelKey(label)];
+    const labels = extraLabel === null ? [label] : [label, extraLabel];
+    const marks = labels.map(labelKey);
+    const afterAll = label === L_EVIDENCE || label === L_MERGE;
     for (const batch of byColumns(rows)) {
       const ids = batch.map((r) => r.id as bigint);
       await this.write(
@@ -727,23 +730,20 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
         ids,
         needs,
         marks,
-        label === L_EVIDENCE || label === L_MERGE,
+        afterAll,
       );
-      if (extraLabel != null) {
+      if (extraLabel !== null) {
         await this.write(
           `MATCH (n:${label}) WHERE n.id IN $iids SET n:${quoteLabel(extraLabel)}`,
           { iids: ids },
           ids,
           ids,
           marks,
-          label === L_EVIDENCE || label === L_MERGE,
+          afterAll,
         );
       }
       if (queuing.getStore() === this) {
-        for (const id of ids) {
-          this.pendingNodes.add(`${label}\x00${id}`);
-          if (extraLabel != null) this.pendingNodes.add(`${extraLabel}\x00${id}`);
-        }
+        for (const name of labels) for (const id of ids) this.pendingNodes.add(`${name}\x00${id}`);
       }
     }
   }
@@ -927,7 +927,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     toLabel: string,
     rows: readonly EdgeWrite[],
   ): Promise<void> {
-    for (const [, , , props] of rows) for (const k of Object.keys(props)) requireIdentifier(k);
+    for (const [, , , props] of rows) requireKeys(props);
     const out = rows.map(([type, fromId, toId, props]) => {
       const row = edgeWriteRow(ns, type, fromLabel, fromId, toLabel, toId, props);
       guardSizes(row);
@@ -1002,7 +1002,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   }
 
   async updateCurrentEdge(ns: string, id: string, props: Props): Promise<void> {
-    for (const k of Object.keys(props)) requireIdentifier(k);
+    requireKeys(props);
     const merged = await mergedCurrentEdge(this, ns, id, props);
     if (merged === null) return;
     const assignments = ["r.doc = $doc"];

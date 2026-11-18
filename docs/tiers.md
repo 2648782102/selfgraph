@@ -41,7 +41,7 @@ Tiers run light to powerful.
 `resolver="llm"`, `contradiction="llm"`, and `extraction="llm"`.
 `seeds="embeddings"` needs an `embedder=`.
 These checks run after the [cost cap](#cost-cap), so a tier the cap lowers
-never raises.
+never raises. The CLI and the MCP server run them at startup and exit with code 2.
 
 ## Rules
 
