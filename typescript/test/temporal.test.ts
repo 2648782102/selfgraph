@@ -1172,25 +1172,27 @@ function suite(spec: StoreSpec): void {
   });
 
   for (const how of ["insert", "update"] as const) {
-    it(`moving the superseding fact later by ${how} keeps the retirement it caused`, async () => {
-      const g = await graph("supersede");
-      await insert(g, [annAt("acme", 2020)]);
-      await insert(g, [annAt("globex", 2022)]);
-      if (how === "insert") await insert(g, [annAt("globex", 2025)]);
-      else await g.relations.update(GLOBEX, { event_time: at(2025) });
-      expect((await g.relations.get(GLOBEX))?.is_current).toBe(true);
-      const versions = await g.relations.versions(ACME);
-      expect(versions.map((v) => [v.is_current, v.invalidated_by, v.invalidated_at])).toEqual([
-        [false, GLOBEX, at(2022)],
-      ]);
-      const valid = async (when: Date) =>
-        (await g.retrieve("Ann", { as_of: when })).subgraph.relations.map((r) => r.id);
-      expect([await valid(at(2021)), await valid(at(2023)), await valid(at(2026))]).toEqual([
-        [ACME],
-        [GLOBEX],
-        [GLOBEX],
-      ]);
-    });
+    for (const start of [2022, 2020]) {
+      it(`moving the superseding fact later by ${how} keeps the retirement it caused (start ${start})`, async () => {
+        const g = await graph("supersede");
+        await insert(g, [annAt("acme", 2020)]);
+        await insert(g, [annAt("globex", start)]);
+        if (how === "insert") await insert(g, [annAt("globex", 2025)]);
+        else await g.relations.update(GLOBEX, { event_time: at(2025) });
+        expect((await g.relations.get(GLOBEX))?.is_current).toBe(true);
+        const versions = await g.relations.versions(ACME);
+        expect(versions.map((v) => [v.is_current, v.invalidated_by, v.invalidated_at])).toEqual([
+          [false, GLOBEX, at(start)],
+        ]);
+        const valid = async (when: Date) =>
+          (await g.retrieve("Ann", { as_of: when })).subgraph.relations.map((r) => r.id);
+        expect([await valid(at(2021)), await valid(at(2023)), await valid(at(2026))]).toEqual([
+          [start > 2020 ? ACME : GLOBEX],
+          [GLOBEX],
+          [GLOBEX],
+        ]);
+      });
+    }
   }
 
   it("rejects an invalid as_of and a closed graph", async () => {

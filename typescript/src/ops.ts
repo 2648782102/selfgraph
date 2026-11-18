@@ -1917,7 +1917,7 @@ export class Contradictions {
     const since = this.starts.get(old);
     if (start === undefined || since === undefined) return effective;
     const at = epochMicros(start);
-    return epochMicros(since) < at && at < epochMicros(effective) ? start : effective;
+    return epochMicros(since) <= at && at < epochMicros(effective) ? start : effective;
   }
 
   private seat(slot: Slot, rid: string, rank: Rank, effective: Date): void {

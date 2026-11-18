@@ -734,16 +734,18 @@ def test_moving_the_superseding_fact_earlier_reinstates_the_relation_it_retired(
     assert [r.id for r in held] == [GLOBEX]
 
 
+@pytest.mark.parametrize("start", [2022, 2020], ids=["later", "same-time"])
 @pytest.mark.parametrize("how", ["insert", "update"])
-def test_moving_the_superseding_fact_later_keeps_the_retirement_it_caused(how):
+def test_moving_the_superseding_fact_later_keeps_the_retirement_it_caused(how, start):
     g = graph(contradiction="supersede")
     insert(g, works_at("acme", 2020))
-    insert(g, works_at("globex", 2022))
+    insert(g, works_at("globex", start))
     backdate(g, how, {**works_at("globex"), "event_time": utc(2025)})
     assert run(g.relations.get(GLOBEX)).is_current
     [acme] = run(g.relations.versions(ACME))
-    assert (acme.is_current, acme.invalidated_by, acme.invalidated_at) == (False, GLOBEX, utc(2022))
-    assert (valid_at(g, 2021), valid_at(g, 2023), valid_at(g, 2026)) == ({ACME}, {GLOBEX}, {GLOBEX})
+    assert (acme.is_current, acme.invalidated_by, acme.invalidated_at) == (False, GLOBEX, utc(start))
+    first = {ACME} if start > 2020 else {GLOBEX}
+    assert (valid_at(g, 2021), valid_at(g, 2023), valid_at(g, 2026)) == (first, {GLOBEX}, {GLOBEX})
 
 
 def test_an_insert_that_moves_a_fact_reports_what_it_stored():

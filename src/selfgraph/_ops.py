@@ -1912,7 +1912,7 @@ class Contradictions:
         return effective_time(version), version.revision, aware(version.created_at)
 
     def _displaced_at(self, by: str, old: str, rank: tuple) -> datetime:
-        """When a newer relation displaced an older one: its stretch start if after the older one's, else its time.
+        """When a newer relation displaced an older one: its stretch start if not before the older one's, else its time.
 
         @param by (str): the newer relation's id.
         @param old (str): the displaced relation's id.
@@ -1920,7 +1920,7 @@ class Contradictions:
         @return (datetime): the displacement time.
         """
         start, since = self._starts.get(by), self._starts.get(old)
-        if start is not None and since is not None and since < start < rank[0]:
+        if start is not None and since is not None and since <= start < rank[0]:
             return start
         return rank[0]
 
