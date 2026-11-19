@@ -3355,6 +3355,7 @@ function preferenceIdentity(pref: Preference | ParsedPreferenceInput): string {
  * @param pid (string): the preference id.
  * @param stored (string): the stored identity.
  * @param given (string): the written identity.
+ * @return (void): nothing; throws ValidationError when they differ.
  */
 function requireSamePreference(pid: string, stored: string, given: string): void {
   if (stored !== given) {
@@ -3373,6 +3374,7 @@ function requireSamePreference(pid: string, stored: string, given: string): void
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param preferences (readonly ParsedPreferenceInput[]): the final canonical preferences to write.
+ * @return (Promise<void>): nothing; throws ValidationError if a preference id names a different identity.
  */
 export async function requirePreferenceIdentities(
   runner: Runner,
