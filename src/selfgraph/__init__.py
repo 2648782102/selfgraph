@@ -63,7 +63,7 @@ from .schema import Definition, EntityType, PropertySpec, RelationEndpoint, Rela
 from .sync import SyncSelfGraph
 from .tiers import Level
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 if TYPE_CHECKING:
     from .stores.cypher import CypherStore, Neo4jStore
