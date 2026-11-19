@@ -1911,18 +1911,20 @@ class Contradictions:
         self._starts[version.id] = _run_start(found)
         return effective_time(version), version.revision, aware(version.created_at)
 
-    def _displaced_at(self, by: str, old: str, rank: tuple) -> datetime:
-        """When a newer relation displaced an older one: its stretch start if not before the older one's, else its time.
+    def _displaced_at(self, newer: list[tuple[tuple, str]], limit: int, old: str) -> datetime:
+        """When newer relations displaced an older one: once limit of them began if not before it, else at the limit-th.
 
-        @param by (str): the newer relation's id.
+        @param newer (list[tuple[tuple, str]]): the newer relations' ranks and ids, oldest first.
+        @param limit (int): the endpoint's max_count.
         @param old (str): the displaced relation's id.
-        @param rank (tuple): the newer relation's rank.
         @return (datetime): the displacement time.
         """
-        start, since = self._starts.get(by), self._starts.get(old)
-        if start is not None and since is not None and since <= start < rank[0]:
+        at = newer[limit - 1][0][0]
+        start = sorted(self._starts.get(rid, rank[0]) for rank, rid in newer)[limit - 1]
+        since = self._starts.get(old)
+        if since is not None and since <= start < at:
             return start
-        return rank[0]
+        return at
 
     def _seat(self, key: tuple[str, str, str], rid: str, rank: tuple) -> None:
         self._groups.setdefault(key, {})[rid] = rank
@@ -2022,8 +2024,8 @@ class Contradictions:
                         )
                     )
                     continue
-                rank, by = newer[limit - 1]
-                at = self._displaced_at(by, old, rank)
+                by = newer[limit - 1][1]
+                at = self._displaced_at(newer, limit, old)
                 if old not in retired:
                     slots.append(old)
                 if old not in retired or at < retired[old][1]:
@@ -2034,8 +2036,8 @@ class Contradictions:
                 ended = retired.get(rid, self._ended.get(rid))
                 if ended is None or len(newer) < limit:
                     continue
-                rank, by = newer[limit - 1]
-                at = self._displaced_at(by, rid, rank)
+                by = newer[limit - 1][1]
+                at = self._displaced_at(newer, limit, rid)
                 if (by, at) != ended and (ended[0] in facts or at < ended[1]):
                     retired[rid] = self._ended[rid] = (by, at)
         warnings: list[InsertWarning] = []

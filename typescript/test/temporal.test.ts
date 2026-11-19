@@ -1195,6 +1195,25 @@ function suite(spec: StoreSpec): void {
     }
   }
 
+  for (const how of ["insert", "update"] as const) {
+    it(`moving a fact later by ${how} keeps older facts until max_count newer ones have started`, async () => {
+      const relations = [{ type: "WORKS_AT", from: { types: ["Person"], max_count: 2 } }];
+      const g = open({ schema: { ...SPEC, relations }, contradiction: "supersede" });
+      await g.insert.facts({ entities: PEOPLE });
+      const initech = ids.relationId("person:ann", "WORKS_AT", "company:initech");
+      await insert(g, [annAt("acme", 2014)]);
+      await insert(g, [annAt("globex", 2015)]);
+      if (how === "insert") await insert(g, [annAt("globex", 2018)]);
+      else await g.relations.update(GLOBEX, { event_time: at(2018) });
+      await insert(g, [annAt("initech", 2018)]);
+      const versions = await g.relations.versions(ACME);
+      expect(versions.map((v) => [v.is_current, v.invalidated_at])).toEqual([[false, at(2018)]]);
+      const valid = async (when: Date) =>
+        (await g.retrieve("Ann", { as_of: when })).subgraph.relations.map((r) => r.id).sort();
+      expect([await valid(at(2016)), await valid(at(2019))]).toEqual([[ACME, GLOBEX].sort(), [GLOBEX, initech].sort()]);
+    });
+  }
+
   it("rejects an invalid as_of and a closed graph", async () => {
     const g = await graph();
     await expect(g.retrieve("Ann", { as_of: 5 as never })).rejects.toThrow("as_of must be a datetime, got number");

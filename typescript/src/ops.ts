@@ -1905,17 +1905,19 @@ export class Contradictions {
   }
 
   /**
-   * When a newer relation displaced an older one: its stretch start if after the older one's, else its time.
+   * When newer relations displaced an older one: once limit of them began if not before it, else at the limit-th.
    *
-   * @param by (string): the newer relation's id.
+   * @param newer (Array<[Rank, string]>): the newer relations' ranks and ids, oldest first.
+   * @param limit (number): the endpoint's max_count.
    * @param old (string): the displaced relation's id.
    * @return (Date): the displacement time.
    */
-  private displacedAt(by: string, old: string): Date {
-    const effective = this.times.get(by)!;
-    const start = this.starts.get(by);
+  private displacedAt(newer: Array<[Rank, string]>, limit: number, old: string): Date {
+    const effective = this.times.get(newer[limit - 1]![1])!;
+    const starts = newer.map(([, rid]) => this.starts.get(rid) ?? this.times.get(rid)!);
+    const start = starts.sort((a, b) => epochMicros(a) - epochMicros(b))[limit - 1]!;
     const since = this.starts.get(old);
-    if (start === undefined || since === undefined) return effective;
+    if (since === undefined) return effective;
     const at = epochMicros(start);
     return epochMicros(since) <= at && at < epochMicros(effective) ? start : effective;
   }
@@ -2041,7 +2043,7 @@ export class Contradictions {
           continue;
         }
         const by = newer[limit - 1]![1];
-        const at = this.displacedAt(by, old);
+        const at = this.displacedAt(newer, limit, old);
         if (!retired.has(old)) slots.push(old);
         if (!retired.has(old) || epochMicros(at) < epochMicros(retired.get(old)![1])) {
           retired.set(old, [by, at]);
@@ -2053,7 +2055,7 @@ export class Contradictions {
         const ended = retired.get(rid) ?? this.ended.get(rid);
         if (ended === undefined || newer.length < limit) continue;
         const by = newer[limit - 1]![1];
-        const at = this.displacedAt(by, rid);
+        const at = this.displacedAt(newer, limit, rid);
         if (
           (by !== ended[0] || epochMicros(at) !== epochMicros(ended[1])) &&
           (facts.has(ended[0]) || epochMicros(at) < epochMicros(ended[1]))
