@@ -143,6 +143,10 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
         true,
         false,
       ]);
+      const nakatomi = ids.relationId("person:kim", "WORKS_AT", "company:nakatomi");
+      const moved = fromTs as { moved_later: unknown[][]; moved_later_valid: string[] };
+      expect(moved.moved_later).toEqual([[1, false, nakatomi, "2022-01-01T00:00:00Z"]]);
+      expect(moved.moved_later_valid).toEqual([nakatomi]);
     });
 
     it.skipIf(!live.get(store))(

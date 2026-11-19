@@ -734,14 +734,33 @@ def test_moving_the_superseding_fact_earlier_reinstates_the_relation_it_retired(
     assert [r.id for r in held] == [GLOBEX]
 
 
-def test_updating_the_superseding_fact_to_a_later_time_moves_the_retirement_it_caused():
+@pytest.mark.parametrize("start", [2022, 2020], ids=["later", "same-time"])
+@pytest.mark.parametrize("how", ["insert", "update"])
+def test_moving_the_superseding_fact_later_keeps_the_retirement_it_caused(how, start):
     g = graph(contradiction="supersede")
     insert(g, works_at("acme", 2020))
-    insert(g, works_at("globex", 2022))
-    assert run(g.relations.update(GLOBEX, event_time=utc(2025))).is_current
-    acme = run(g.relations.versions(ACME))[0]
-    assert (acme.is_current, acme.invalidated_by, acme.invalidated_at) == (False, GLOBEX, utc(2025))
-    assert valid_at(g, 2026) == {GLOBEX}
+    insert(g, works_at("globex", start))
+    backdate(g, how, {**works_at("globex"), "event_time": utc(2025)})
+    assert run(g.relations.get(GLOBEX)).is_current
+    [acme] = run(g.relations.versions(ACME))
+    assert (acme.is_current, acme.invalidated_by, acme.invalidated_at) == (False, GLOBEX, utc(start))
+    first = {ACME} if start > 2020 else {GLOBEX}
+    assert (valid_at(g, 2021), valid_at(g, 2023), valid_at(g, 2026)) == (first, {GLOBEX}, {GLOBEX})
+
+
+@pytest.mark.parametrize("how", ["insert", "update"])
+def test_moving_a_fact_later_keeps_older_facts_until_max_count_newer_ones_have_started(how):
+    spec = {**SPEC, "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"], "max_count": 2}}]}
+    g = fresh_graph("contra", schema=spec, contradiction="supersede")
+    run(g.insert.facts({"entities": PEOPLE}))
+    initech = ids.relation_id("person:ann", "WORKS_AT", "company:initech")
+    insert(g, works_at("acme", 2014))
+    insert(g, works_at("globex", 2015))
+    backdate(g, how, {**works_at("globex"), "event_time": utc(2018)})
+    insert(g, works_at("initech", 2018))
+    [acme] = run(g.relations.versions(ACME))
+    assert (acme.is_current, acme.invalidated_at) == (False, utc(2018))
+    assert (valid_at(g, 2016), valid_at(g, 2019)) == ({ACME, GLOBEX}, {GLOBEX, initech})
 
 
 def test_an_insert_that_moves_a_fact_reports_what_it_stored():
