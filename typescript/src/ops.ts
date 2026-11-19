@@ -2164,7 +2164,9 @@ async function endpointEdges(
           keepNewest(found, edge);
           if (every !== undefined) {
             const id = idOf(edge.props);
-            every.set(id, [...(every.get(id) ?? []), edge]);
+            const versions = every.get(id);
+            if (versions === undefined) every.set(id, [edge]);
+            else versions.push(edge);
           }
         }
       }
