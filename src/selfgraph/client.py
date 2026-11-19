@@ -637,6 +637,7 @@ class SelfGraph:
             if mode == "strict" and conflicts == "warn":
                 await _ops.require_max_count(tx, ns, caps, resolved.relations, default_event_time, created_at)
             await _ops.require_relation_identities(tx, ns, resolved.relations)
+            await _ops.require_preference_identities(tx, ns, resolved.preferences)
             source_version: str | None = None
             base_evidence = []
             prior = await _ops.source_targets(tx, ns, source_id) if replace_source and source_id else set()

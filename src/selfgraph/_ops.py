@@ -3143,6 +3143,50 @@ async def preference_exists(runner: Any, ns: str, pid: str) -> bool:
     return bool(await _typed_edge_versions(runner, ns, pid, _is_preference_type))
 
 
+def _preference_identity(pref: Preference | PreferenceInput) -> tuple[str, str, str, str]:
+    """The fields that identify a preference and cannot change: subject, stance, normalized key, and value.
+
+    @param pref (Preference | PreferenceInput): a stored preference or an input to write.
+    @return (tuple[str, str, str, str]): its (subject_entity, stance, key, value_entity).
+    """
+    return (pref.subject_entity, pref.stance, _ids.normalize_text(pref.key), pref.value_entity)
+
+
+def _require_same_preference(pid: str, stored: tuple[str, ...], given: tuple[str, ...]) -> None:
+    """Reject a write that would change the subject, stance, key, or value of an existing preference.
+
+    @param pid (str): the preference id.
+    @param stored (tuple[str, ...]): the stored identity.
+    @param given (tuple[str, ...]): the written identity.
+    @return (None): nothing; raises ValidationError when they differ.
+    """
+    if stored != given:
+        raise ValidationError(
+            f"preference {pid!r} already exists with different subject/stance/key/value; "
+            "these identify the preference and are immutable; create a new preference to change them"
+        )
+
+
+async def require_preference_identities(runner: Any, ns: str, preferences: list[PreferenceInput]) -> None:
+    """Reject conflicting preference ids before the insert writes any facts or provenance.
+
+    An id conflicts when it is stored, or given earlier in the batch, with a different identity.
+
+    @param runner (Any): the graph runner.
+    @param ns (str): namespace.
+    @param preferences (list[PreferenceInput]): the final canonical preferences to write.
+    @return (None): nothing; raises ValidationError if a preference id names a different identity.
+    """
+    identities: dict[str, tuple[str, str, str, str]] = {}
+    for pref in preferences:
+        pid = pref.id or _ids.preference_id(pref.subject_entity, pref.stance, pref.key, pref.value_entity)
+        given = _preference_identity(pref)
+        if pid not in identities:
+            current = await get_preference(runner, ns, pid)
+            identities[pid] = given if current is None else _preference_identity(current)
+        _require_same_preference(pid, identities[pid], given)
+
+
 async def upsert_preference(
     runner: Any,
     ns: str,
@@ -3169,16 +3213,8 @@ async def upsert_preference(
 
     await runner.lock_node(ns, L_PROFILE, profile_id)
     current = await get_preference(runner, ns, pid)
-    if current is not None and (
-        current.subject_entity != pref.subject_entity
-        or current.stance != pref.stance
-        or current.key != _ids.normalize_text(pref.key)
-        or current.value_entity != pref.value_entity
-    ):
-        raise ValidationError(
-            f"preference {pid!r} already exists with different subject/stance/key/value; "
-            "these identify the preference and are immutable; create a new preference to change them"
-        )
+    if current is not None:
+        _require_same_preference(pid, _preference_identity(current), _preference_identity(pref))
     if current is None:
         event_time, strength, about_entity = named, pref.strength, pref.about_entity
     else:

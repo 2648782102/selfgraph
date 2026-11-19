@@ -1245,6 +1245,33 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   if ((await graph.entities.get("thing:rejected")) !== null) {
     throw new Error("rejected relation left an entity in the graph");
   }
+  try {
+    await graph.insert.facts(
+      {
+        entities: [{ type: "Thing", name: "Rejected Preference" }],
+        preferences: [
+          { id: pref, subject_entity: "person:jane-doe", key: "database", value_entity: "thing:rejected-preference" },
+        ],
+      },
+      { source_id: "rejected-preference" },
+    );
+    throw new Error("preference id was accepted with a different value");
+  } catch (exc) {
+    if (!(exc instanceof ValidationError)) throw exc;
+    out.rejected_preference = exc.message;
+  }
+  if ((await graph.entities.get("thing:rejected-preference")) !== null) {
+    throw new Error("rejected preference left an entity in the graph");
+  }
+  if ((await graph.preferences.get(pref))?.value_entity !== "database:hydradb") {
+    throw new Error("rejected preference changed the stored preference");
+  }
+  if (
+    (await graph.store.matchNodes(graph.namespace, "SourceVersion", { equals: { source_id: "rejected-preference" } }))
+      .length
+  ) {
+    throw new Error("rejected preference left a source version in the graph");
+  }
   out.context_boundary = await contextBoundary(graph);
   const capped = new SelfGraph(graph.store, {
     namespace: graph.namespace,
