@@ -3340,6 +3340,60 @@ export async function preferenceExists(runner: Runner, ns: string, pid: string):
 }
 
 /**
+ * The fields that identify a preference and cannot change: subject, stance, normalized key, and value.
+ *
+ * @param pref (Preference | ParsedPreferenceInput): a stored preference or an input to write.
+ * @return (string): its identity as one comparable key.
+ */
+function preferenceIdentity(pref: Preference | ParsedPreferenceInput): string {
+  return JSON.stringify([pref.subject_entity, pref.stance, ids.normalizeText(pref.key), pref.value_entity]);
+}
+
+/**
+ * Reject a write that would change the subject, stance, key, or value of an existing preference.
+ *
+ * @param pid (string): the preference id.
+ * @param stored (string): the stored identity.
+ * @param given (string): the written identity.
+ */
+function requireSamePreference(pid: string, stored: string, given: string): void {
+  if (stored !== given) {
+    throw new ValidationError(
+      `preference ${pyRepr(pid)} already exists with different subject/stance/key/value; ` +
+        "these identify the preference and are immutable; create a new preference to change them",
+    );
+  }
+}
+
+/**
+ * Reject conflicting preference ids before the insert writes any facts or provenance.
+ *
+ * An id conflicts when it is stored, or given earlier in the batch, with a different identity.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param preferences (readonly ParsedPreferenceInput[]): the final canonical preferences to write.
+ */
+export async function requirePreferenceIdentities(
+  runner: Runner,
+  ns: string,
+  preferences: readonly ParsedPreferenceInput[],
+): Promise<void> {
+  const identities = new Map<string, string>();
+  for (const pref of preferences) {
+    const pid = pref.id || ids.preferenceId(pref.subject_entity, pref.stance, pref.key, pref.value_entity);
+    const given = preferenceIdentity(pref);
+    let stored = identities.get(pid);
+    if (stored === undefined) {
+      const current = await getPreference(runner, ns, pid);
+      stored = current === null ? given : preferenceIdentity(current);
+      identities.set(pid, stored);
+    }
+    requireSamePreference(pid, stored, given);
+  }
+}
+
+/**
  * Insert-semantics upsert of a preference: merge properties, versioning on change.
  *
  * @param runner (Runner): the graph runner.
@@ -3365,18 +3419,7 @@ export async function upsertPreference(
 
   await runner.lockNode(ns, L_PROFILE, profileId);
   const current = await getPreference(runner, ns, pid);
-  if (
-    current !== null &&
-    (current.subject_entity !== pref.subject_entity ||
-      current.stance !== pref.stance ||
-      current.key !== ids.normalizeText(pref.key) ||
-      current.value_entity !== pref.value_entity)
-  ) {
-    throw new ValidationError(
-      `preference ${pyRepr(pid)} already exists with different subject/stance/key/value; ` +
-        "these identify the preference and are immutable; create a new preference to change them",
-    );
-  }
+  if (current !== null) requireSamePreference(pid, preferenceIdentity(current), preferenceIdentity(pref));
   const eventTime = named ?? current?.event_time ?? null;
   const strength = current === null || pref.strength != null ? pref.strength : current.strength;
   const aboutEntity = current === null || pref.about_entity != null ? pref.about_entity : current.about_entity;

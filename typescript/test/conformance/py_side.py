@@ -1218,6 +1218,26 @@ async def write(graph):
     else:
         raise AssertionError("relation id was accepted with a different destination")
     assert await graph.entities.get("thing:rejected") is None
+    try:
+        await graph.insert.facts(
+            {
+                "entities": [{"type": "Thing", "name": "Rejected Preference"}],
+                "preferences": [
+                    {
+                        "id": pref,
+                        "subject_entity": "person:jane-doe",
+                        "key": "database",
+                        "value_entity": "thing:rejected-preference",
+                    }
+                ],
+            },
+            source_id="rejected",
+        )
+    except ValidationError as exc:
+        out["rejected_preference"] = str(exc)
+    else:
+        raise AssertionError("preference id was accepted with a different value")
+    assert await graph.entities.get("thing:rejected-preference") is None
     out["context_boundary"] = await context_boundary(graph)
     capped = SelfGraph(store=graph.store, namespace=graph.namespace, schema=USES_SPEC, contradiction="supersede")
     await capped.insert.facts(

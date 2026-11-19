@@ -1,7 +1,7 @@
 import pytest
 from helpers import KUZU, fresh_graph, new_graph, run, t_entities
 
-from selfgraph import Extraction, ValidationError, relation_id
+from selfgraph import Extraction, ValidationError, preference_id, relation_id
 
 PAYLOAD = {
     "entities": [
@@ -230,6 +230,44 @@ def test_conflicting_relation_id_does_not_write_any_facts(collision):
         assert relation.to_entity == "person:bob"
     else:
         assert relation is None
+
+
+@pytest.mark.parametrize("collision", ["stored", "batch", "generated"])
+def test_conflicting_preference_id_does_not_write_any_facts(collision):
+    g = fresh_graph("preference_identity")
+    run(g.entities.create("Ada", "Person"))
+    run(g.entities.create("Bob", "Person"))
+    run(g.entities.create("Tea", "Drink"))
+    run(g.entities.create("Coffee", "Drink"))
+    original = {"id": "preference:fav", "subject_entity": "person:ada", "key": "drink", "value_entity": "drink:tea"}
+    conflicting = {**original, "subject_entity": "person:bob", "value_entity": "drink:coffee"}
+    if collision == "generated":
+        original["id"] = preference_id("person:bob", "preference", "drink", "drink:coffee")
+        del conflicting["id"]
+    stored = collision != "batch"
+    if stored:
+        run(g.preferences.create("person:ada", "drink", "drink:tea", id=original["id"]))
+
+    with pytest.raises(ValidationError, match="already exists with different subject/stance/key/value"):
+        run(
+            g.insert.facts(
+                {
+                    "entities": [{"type": "Person", "name": "Cy"}],
+                    "relations": [{"from_entity": "person:cy", "type": "KNOWS", "to_entity": "person:ada"}],
+                    "preferences": [conflicting] if stored else [original, conflicting],
+                },
+                source_id="bad-import",
+            )
+        )
+
+    assert run(g.entities.get("person:cy")) is None
+    assert run(g.relations.list()).items == []
+    assert run(g.store.match_nodes(g.namespace, "SourceVersion")) == []
+    preference = run(g.preferences.get(original["id"]))
+    if stored:
+        assert (preference.subject_entity, preference.value_entity) == ("person:ada", "drink:tea")
+    else:
+        assert preference is None
 
 
 def test_facts_bare_years_and_string_strengths_are_rejected():
