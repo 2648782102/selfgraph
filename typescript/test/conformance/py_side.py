@@ -1231,13 +1231,18 @@ async def write(graph):
                     }
                 ],
             },
-            source_id="rejected",
+            source_id="rejected-preference",
         )
     except ValidationError as exc:
         out["rejected_preference"] = str(exc)
     else:
         raise AssertionError("preference id was accepted with a different value")
     assert await graph.entities.get("thing:rejected-preference") is None
+    assert (await graph.preferences.get(pref)).value_entity == "database:hydradb"
+    assert (
+        await graph.store.match_nodes(graph.namespace, "SourceVersion", equals={"source_id": "rejected-preference"})
+        == []
+    )
     out["context_boundary"] = await context_boundary(graph)
     capped = SelfGraph(store=graph.store, namespace=graph.namespace, schema=USES_SPEC, contradiction="supersede")
     await capped.insert.facts(

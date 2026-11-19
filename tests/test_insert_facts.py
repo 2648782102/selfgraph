@@ -270,6 +270,26 @@ def test_conflicting_preference_id_does_not_write_any_facts(collision):
         assert preference is None
 
 
+@pytest.mark.parametrize("restate", ["batch", "stored"])
+def test_matching_preference_ids_still_merge(restate):
+    g = fresh_graph("preference_identity")
+    run(g.entities.create("Ada", "Person"))
+    run(g.entities.create("Tea", "Drink"))
+    pref = {"id": "preference:fav", "subject_entity": "person:ada", "key": "drink", "value_entity": "drink:tea"}
+    if restate == "stored":
+        run(g.preferences.create("person:ada", "drink", "drink:tea", id="preference:fav", strength=0.2))
+        batch = [{**pref, "strength": 0.9}]
+    else:
+        batch = [{**pref, "strength": 0.2}, {**pref, "strength": 0.9}]
+
+    result = run(g.insert.facts({"preferences": batch}, source_id="restated"))
+
+    assert [p.id for p in result.preferences] == ["preference:fav"]
+    preference = run(g.preferences.get("preference:fav"))
+    assert (preference.subject_entity, preference.key, preference.strength) == ("person:ada", "drink", 0.9)
+    assert len(run(g.preferences.versions("preference:fav"))) == 2
+
+
 def test_facts_bare_years_and_string_strengths_are_rejected():
     g = new_graph()
     t_entities(g, "a", "b")

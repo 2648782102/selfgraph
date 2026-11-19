@@ -280,6 +280,28 @@ function suite(spec: StoreSpec) {
     },
   );
 
+  it.each(["batch", "stored"])("still merges matching preference ids (%s)", async (restate) => {
+    const g = fresh();
+    await g.entities.create("Ada", "Person");
+    await g.entities.create("Tea", "Drink");
+    const pref = { id: "preference:fav", subject_entity: "person:ada", key: "drink", value_entity: "drink:tea" };
+    let batch = [
+      { ...pref, strength: 0.2 },
+      { ...pref, strength: 0.9 },
+    ];
+    if (restate === "stored") {
+      await g.preferences.create("person:ada", "drink", "drink:tea", { id: "preference:fav", strength: 0.2 });
+      batch = [{ ...pref, strength: 0.9 }];
+    }
+
+    const result = await g.insert.facts({ preferences: batch }, { source_id: "restated" });
+
+    expect(result.preferences.map((p) => p.id)).toEqual(["preference:fav"]);
+    const preference = await g.preferences.get("preference:fav");
+    expect([preference?.subject_entity, preference?.key, preference?.strength]).toEqual(["person:ada", "drink", 0.9]);
+    expect(await g.preferences.versions("preference:fav")).toHaveLength(2);
+  });
+
   it.runIf(spec.name === "kuzu")("batches relation ID preflight reads", async () => {
     const g = fresh();
     await g.entities.create("Ada", "Person");
