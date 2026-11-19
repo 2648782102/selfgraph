@@ -216,4 +216,6 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 | A second `KuzuStore` on an open path with other options | `KuzuStore('<path>') is already open with different options: <option> <open> vs <new>` (`ValidationError`) |
 | A HydraDB row over the write cap | `HydraDB rejects this write at <n> bytes; ...` |
 
+A URI in these messages, and in the address errors raised before connecting, shows `***` in place of its user and password, as in `redis://***@host:6379`.
+
 More connection messages are in [Errors](errors.md#connections).

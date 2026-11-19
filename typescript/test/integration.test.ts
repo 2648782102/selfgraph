@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as chunking from "../src/chunking.js";
-import { surfaceHint } from "../src/errors.js";
+import { maskUri, redactUri, surfaceHint } from "../src/errors.js";
 import type { Extractor, GraphPrimitives, GraphStore, JsonObject, Strategy } from "../src/index.js";
 import {
   ConflictError,
@@ -22,7 +22,7 @@ import {
 import { childEdgeId, LABELS } from "../src/labels.js";
 import { Extraction, parseOrThrow } from "../src/models.js";
 import { HUB_DEGREE } from "../src/retrieval.js";
-import { boltError, parseAuth, queryError } from "../src/stores/bolt.js";
+import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { forEachStore, freshGraphs, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
@@ -1407,6 +1407,45 @@ describe("store setup errors", () => {
     const down = err("ServiceUnavailable", "Failed to connect to server");
     expect(boltError(down, "bolt://h:1", null)?.message).toMatch(/^could not connect to bolt:\/\/h:1: /);
     expect(boltError(err("Neo.ClientError.Statement.SyntaxError", "bad"), "bolt://h:1", null)).toBeNull();
+  });
+
+  it("hides the user and password of a store URI in every error", () => {
+    expect(maskUri("redis://u:pw@host:1")).toBe("redis://***@host:1");
+    expect(maskUri("redis://u:p@ss@host:1/db")).toBe("redis://***@host:1/db");
+    expect(maskUri("u:pw@host:1")).toBe("***@host:1");
+    expect(maskUri("bolt://host:7687")).toBe("bolt://host:7687");
+    expect(maskUri("/tmp/graph.kuzu")).toBe("/tmp/graph.kuzu");
+    expect(redactUri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1")).toBe(
+      "Given URI: 'bolt://***@h:1'",
+    );
+    const leaks = ["hun", "ter2"];
+    for (const [store, uri] of [
+      ["falkordb", "redis://u:hunter2@host:99999"],
+      ["falkordb", "http://u:hunter2@host:1"],
+      ["falkordb", "u:hunter2@host:6379/0"],
+      ["falkordb", "redis://u:hun\nter2@host:99999"],
+      ["neo4j", "u:hunter2@host/db"],
+    ] as const) {
+      let message = "";
+      try {
+        SelfGraph.connect({ store, uri });
+      } catch (exc) {
+        message = (exc as Error).message;
+      }
+      expect(message).toContain("***@host");
+      for (const leak of leaks) expect(message).not.toContain(leak);
+    }
+    expect(() => openDriver("http://u:hunter2@h:1", null, {})).toThrow(
+      new StoreError("'http://***@h:1' is not a Bolt URI; use bolt://host:port"),
+    );
+    const denied = err("Neo.ClientError.Security.Unauthorized", "invalid credentials");
+    expect(boltError(denied, "bolt://u:hunter2@h:1", null)?.message).toBe(
+      "authentication failed for bolt://***@h:1: check the token/password",
+    );
+    const down = err("ServiceUnavailable", "Couldn't connect to bolt://u:hunter2@h:1");
+    const message = boltError(down, "bolt://u:hunter2@h:1", null)?.message ?? "";
+    expect(message).toMatch(/^could not connect to bolt:\/\/\*\*\*@h:1: /);
+    expect(message).not.toContain("hunter2");
   });
 
   it("validates addresses, trims syntax errors, and names a missing HydraDB token or another engine", async () => {

@@ -10,7 +10,7 @@ from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
 from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
 from selfgraph._serde import LABELS
-from selfgraph.errors import StoreError, TransientError, ValidationError, surface_hint
+from selfgraph.errors import StoreError, TransientError, ValidationError, mask_uri, redact_uri, surface_hint
 from selfgraph.models import CypherResult
 from selfgraph.runtime import (
     GraphSettings,
@@ -23,7 +23,7 @@ from selfgraph.runtime import (
     to_jsonable,
 )
 from selfgraph.stores import cypher
-from selfgraph.stores._cypher import bolt_auth, bolt_error, parse_auth, query_error
+from selfgraph.stores._cypher import bolt_auth, bolt_driver, bolt_error, parse_auth, query_error
 from selfgraph.stores.cypher import CypherStore
 from selfgraph.stores.hydradb import HydraDBStore
 from selfgraph.stores.kuzu import _kuzu_error
@@ -256,6 +256,41 @@ def test_store_errors_are_plain_and_actionable():
     assert str(authed._error(unauthorized)).startswith("authentication failed for bolt://127.0.0.1:1")
     run(store.close())
     run(authed.close())
+
+
+def test_store_errors_hide_uri_credentials():
+    assert mask_uri("redis://u:pw@host:1") == "redis://***@host:1"
+    assert mask_uri("redis://u:p@ss@host:1/db") == "redis://***@host:1/db"
+    assert mask_uri("u:pw@host:1") == "***@host:1"
+    assert mask_uri("bolt://host:7687") == "bolt://host:7687"
+    assert mask_uri("/tmp/graph.kuzu") == "/tmp/graph.kuzu"
+    assert redact_uri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1") == "Given URI: 'bolt://***@h:1'"
+    leaks = ("hun", "ter2")
+    for store, uri in (
+        ("falkordb", "redis://u:hunter2@host:99999"),
+        ("falkordb", "http://u:hunter2@host:1"),
+        ("falkordb", "u:hunter2@host:6379/0"),
+        ("falkordb", "redis://u:hun\nter2@host:99999"),
+        ("neo4j", "u:hunter2@host/db"),
+    ):
+        with pytest.raises(ValidationError) as caught:
+            build_graph(GraphSettings(store=store, uri=uri))
+        assert "***@host" in str(caught.value) and not any(x in str(caught.value) for x in leaks), uri
+    for uri in ("bolt://u:hunter2@host:7687", "bolt://u:hun\nter2@host:7687", "bolt://u:it's\"2@host:7687"):
+        with pytest.raises(StoreError) as caught:
+            bolt_driver(uri, None)
+        assert "bolt://***@host:7687" in str(caught.value) and not any(
+            x in str(caught.value) for x in (*leaks, "it")
+        ), uri
+    with pytest.raises(StoreError, match=r"^'http://\*\*\*@h:1' is not a Bolt URI"):
+        bolt_driver("http://u:hunter2@h:1", None)
+    denied = DriverError("Neo.ClientError.Security.Unauthorized", "invalid credentials")
+    assert str(bolt_error(denied, "bolt://u:hunter2@h:1", None)) == (
+        "authentication failed for bolt://***@h:1: check the token/password"
+    )
+    down = DriverError("", "Couldn't connect to bolt://u:hunter2@h:1")
+    assert str(bolt_error(down, "bolt://u:hunter2@h:1", None)).startswith("could not connect to bolt://***@h:1: ")
+    assert "hunter2" not in str(bolt_error(down, "bolt://u:hunter2@h:1", None))
 
 
 def test_bolt_initialize_skips_existing_constraints():

@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import type { SelfGraph } from "./client.js";
 import {
   LLM_HINT,
+  maskUri,
   NotFoundError,
   STORE_KUZU_HINT,
   StoreError,
@@ -425,7 +426,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : "";
   if (scheme && !FALKOR_SCHEMES.includes(scheme)) {
     throw new ValidationError(
-      `invalid FalkorDB address ${pyRepr(uri)}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
+      `invalid FalkorDB address ${pyRepr(maskUri(uri))}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
     );
   }
   let url: URL | null;
@@ -436,7 +437,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   }
   if (url === null || url.port === "0") {
     throw new ValidationError(
-      `invalid FalkorDB address ${pyRepr(uri)}: expected host:port with a port from 1 to 65535`,
+      `invalid FalkorDB address ${pyRepr(maskUri(uri))}: expected host:port with a port from 1 to 65535`,
     );
   }
   return { url, tls: scheme === "rediss" || scheme === "falkors" };
@@ -509,7 +510,7 @@ function requireStoreUri(kind: string, uri: string | null): void {
   }
   if (!uri.includes("://") && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
     throw new ValidationError(
-      `${pyRepr(uri)} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
+      `${pyRepr(maskUri(uri))} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
     );
   }
   if (kind === "falkordb") falkorAddress(uri);

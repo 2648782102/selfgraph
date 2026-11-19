@@ -17,7 +17,16 @@ from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
 from .client import SelfGraph
-from .errors import LLM_HINT, STORE_KUZU_HINT, NotFoundError, StoreError, ValidationError, setting_hint, surface_hint
+from .errors import (
+    LLM_HINT,
+    STORE_KUZU_HINT,
+    NotFoundError,
+    StoreError,
+    ValidationError,
+    mask_uri,
+    setting_hint,
+    surface_hint,
+)
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace
 from .llm.base import check_llm_config
@@ -404,7 +413,7 @@ def _require_server_uri(kind: str, uri: str) -> None:
     """
     if "://" not in uri and (uri.endswith(".kuzu") or "/" in uri or os.sep in uri):
         raise ValidationError(
-            f"{uri!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}"
+            f"{mask_uri(uri)!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}"
         )
 
 
@@ -419,14 +428,18 @@ def _falkor_address(uri: str) -> tuple[Any, int | None, bool]:
 
     scheme = uri.partition("://")[0].lower() if "://" in uri else ""
     if scheme and scheme not in _FALKOR_SCHEMES:
-        raise ValidationError(f"invalid FalkorDB address {uri!r}: the 'falkordb' store expects {_FALKOR_ADDRESS}")
+        raise ValidationError(
+            f"invalid FalkorDB address {mask_uri(uri)!r}: the 'falkordb' store expects {_FALKOR_ADDRESS}"
+        )
     parsed = urlparse(uri if scheme else f"//{uri}")
     try:
         port = parsed.port
     except ValueError:
         port = 0
     if port == 0:
-        raise ValidationError(f"invalid FalkorDB address {uri!r}: expected host:port with a port from 1 to 65535")
+        raise ValidationError(
+            f"invalid FalkorDB address {mask_uri(uri)!r}: expected host:port with a port from 1 to 65535"
+        )
     return parsed, port, scheme in ("rediss", "falkors")
 
 

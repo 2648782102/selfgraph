@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import re
 
 __all__ = [
@@ -108,6 +109,32 @@ def surface_hint(message: str) -> str:
     for library, surface in _SURFACE_HINTS:
         message = message.replace(library, surface)
     return message
+
+
+def redact_uri(text: str, uri: str | None) -> str:
+    """Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+
+    @param text (str): the message, which may quote the URI or repeat a driver's text about it.
+    @param uri (str | None): the configured URI; its userinfo runs from after any scheme to the last @.
+    @return (str): the message with each raw, repr, or JSON rendering of the userinfo replaced by ***.
+    """
+    if not uri:
+        return text
+    userinfo, at, _ = uri.partition("://")[2].rpartition("@") if "://" in uri else uri.rpartition("@")
+    if not at or not userinfo:
+        return text
+    for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
+        text = text.replace(f"{form}@", "***@")
+    return text
+
+
+def mask_uri(uri: str) -> str:
+    """Hide the user and password of a URI so a message can show it.
+
+    @param uri (str): the URI, such as redis://user:pass@host:6379.
+    @return (str): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
+    """
+    return redact_uri(uri, uri)
 
 
 def _connect_failure(exc: BaseException | None, seen: set[int]) -> str:

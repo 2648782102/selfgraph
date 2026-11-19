@@ -91,6 +91,34 @@ export function surfaceHint(message: string): string {
 }
 
 /**
+ * Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+ *
+ * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
+ * @param uri (string | null | undefined): the configured URI; its userinfo runs from after any scheme to the last @.
+ * @return (string): the message with each raw, repr, or JSON rendering of the userinfo replaced by ***.
+ */
+export function redactUri(text: string, uri: string | null | undefined): string {
+  if (!uri) return text;
+  const rest = uri.includes("://") ? uri.slice(uri.indexOf("://") + 3) : uri;
+  const userinfo = rest.slice(0, Math.max(rest.lastIndexOf("@"), 0));
+  if (!userinfo) return text;
+  return [userinfo, pyRepr(userinfo).slice(1, -1), JSON.stringify(userinfo).slice(1, -1)].reduce(
+    (out, form) => out.replaceAll(`${form}@`, "***@"),
+    text,
+  );
+}
+
+/**
+ * Hide the user and password of a URI so a message can show it.
+ *
+ * @param uri (string): the URI, such as redis://user:pass@host:6379.
+ * @return (string): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
+ */
+export function maskUri(uri: string): string {
+  return redactUri(uri, uri);
+}
+
+/**
  * The message of a thrown value, or its text when it is not an Error.
  *
  * @param exc (unknown): the thrown value.
