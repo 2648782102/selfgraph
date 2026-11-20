@@ -1,7 +1,14 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { HINTS, WARNING_HINTS } from "../src/errors.js";
-import { buildGraph, DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
+import {
+  buildGraph,
+  DEFAULT_SETTINGS,
+  type GraphSettings,
+  type GraphStore,
+  SelfGraph,
+  toNeo4jOntology,
+} from "../src/index.js";
 import {
   buildServer,
   callTool,
@@ -105,6 +112,15 @@ it("graph_diff returns stored changes and validates the window", async () => {
 });
 
 describe("MCP run_cypher guard", () => {
+  it("recognizes adjacent keyword tokens", () => {
+    for (const fragment of ["42SET", ".5SET", "1.SET", "1.5e+2SET", "'text'SET", "/* text */SET", "]SET"]) {
+      expect(isBlockedQuery(`RETURN ${fragment}`), fragment).toBe(true);
+    }
+    for (const fragment of ["offset42SET", "n.set", "{set: 42}", "'42SET'", ".5e+2"]) {
+      expect(isBlockedQuery(`RETURN ${fragment}`), fragment).toBe(false);
+    }
+  });
+
   it("rejects INSERT, unicode escapes, bare keyword aliases, and chained admin statements", async () => {
     for (const q of BYPASSES) expect(isBlockedQuery(q), q).toBe(true);
     for (const q of READS) expect(isBlockedQuery(q), q).toBe(false);
@@ -124,6 +140,35 @@ describe("MCP run_cypher guard", () => {
       tool: "update_relation",
     });
   });
+});
+
+it("enforces raw Cypher limits before store dispatch", async () => {
+  const result = { columns: [], rows: [], counters: {}, warnings: [] };
+  const store = { initialize: vi.fn().mockResolvedValue(undefined), runCypher: vi.fn().mockResolvedValue(result) };
+  const graph = new SelfGraph(store as unknown as GraphStore);
+  const prefix = "RETURN 1 // ";
+  const exactBytes = prefix + "é".repeat((65_536 - prefix.length) / 2);
+  for (const [query, limit] of [
+    [`${exactBytes}é`, "maximum length of 65536 UTF-8 bytes"],
+    [`RETURN ${"([{item:".repeat(11)}1${"}])".repeat(11)}`, "maximum nesting depth of 32"],
+  ] as const) {
+    await expect(graph.runCypher(query)).rejects.toMatchObject({
+      message: `query exceeds the ${limit}`,
+      code: "cypher_query_limit",
+      field: "query",
+    });
+  }
+  expect(store.initialize).not.toHaveBeenCalled();
+  expect(store.runCypher).not.toHaveBeenCalled();
+  const ignored = "([{ ".repeat(33);
+  for (const query of [
+    exactBytes,
+    `RETURN ${"(".repeat(32)}1${")".repeat(32)}`,
+    `RETURN '${ignored}' AS \`${ignored}\` /* ${ignored} */`,
+  ]) {
+    await expect(graph.runCypher(query)).resolves.toEqual(result);
+    expect(store.runCypher).toHaveBeenLastCalledWith(query, undefined);
+  }
 });
 
 /**

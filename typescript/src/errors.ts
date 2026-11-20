@@ -30,6 +30,7 @@ export const HINTS = {
     "A custom entity resolver returned a bad decision. Return a `ResolutionDecision` whose target is one of the offered entities, with a confidence and a reason.",
   read_only_query:
     "`run_cypher` runs a single read. Write through the typed tools instead. Do not reword the query to get a write past the guard.",
+  cypher_query_limit: "Shorten the Cypher statement or reduce its delimiter nesting before trying again.",
   missing_package: "An optional package is not installed. Run the install command in the message, or ask the user to.",
   not_found:
     "The object does not exist in the namespace the message names. Check the id and the namespace, and use the `did you mean` suggestion when there is one. Do not create a placeholder object just to make the call pass.",

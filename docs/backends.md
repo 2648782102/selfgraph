@@ -137,6 +137,10 @@ before each write, so a raise leaves that write undone.
 
 ## Raw Cypher
 
+The SDK, CLI, and MCP reject queries over 65,536 UTF-8 bytes or 32 levels of
+parentheses, brackets, and braces before dispatching to a backend. Delimiters
+inside strings, quoted identifiers, and comments do not count toward depth.
+
 `graph.run_cypher()` sends a statement straight to the backend. It sees the
 physical storage rather than the typed model, so it is not portable across
 backends.

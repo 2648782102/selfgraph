@@ -37,6 +37,7 @@ ErrorCode = Literal[
     "invalid_cursor",
     "invalid_resolver_decision",
     "read_only_query",
+    "cypher_query_limit",
     "missing_package",
     "not_found",
     "already_exists",
@@ -116,6 +117,7 @@ HINTS: dict[ErrorCode, str] = {
         "`run_cypher` runs a single read. Write through the typed tools instead. Do not reword the query to "
         "get a write past the guard."
     ),
+    "cypher_query_limit": "Shorten the Cypher statement or reduce its delimiter nesting before trying again.",
     "missing_package": (
         "An optional package is not installed. Run the install command in the message, or ask the user to."
     ),

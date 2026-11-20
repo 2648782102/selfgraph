@@ -204,6 +204,7 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
             {"entities": [{"name": "Cy", "type": "Person"}]}, resolver=_Resolver("person:nobody")
         ),
         "read_only_query": lambda: run_cypher("CREATE (n)"),
+        "cypher_query_limit": lambda: g.run_cypher("RETURN 1 // " + " " * 65_536),
         "missing_package": lambda: _without_kuzu(monkeypatch, str(tmp_path / "missing")),
         "not_found": lambda: g.entities.delete("person:nobody"),
         "already_exists": lambda: g.entities.create("Ada", "Person"),

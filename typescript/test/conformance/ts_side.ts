@@ -20,7 +20,7 @@ import {
 import { setLogger } from "../../src/internal/log.js";
 import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
-import { callTool } from "../../src/mcp.js";
+import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import { parseJson } from "../../src/runtime.js";
@@ -794,6 +794,8 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
   const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
   const bad = new Opaque() as never;
   return {
+    cypher_query_length: await errorOf(() => graph.runCypher(`RETURN 1 // ${"é".repeat(32_768)}`)),
+    cypher_keyword_boundary: { blocked: isBlockedQuery("RETURN 42SET") },
     proto_value_type: await errorOf(() =>
       graph.insert.facts({
         entities: [{ type: "Person", name: "Proto", external_ids: JSON.parse('{"__proto__":1}') }],

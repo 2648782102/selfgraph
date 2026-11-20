@@ -159,6 +159,7 @@ describe("error codes", () => {
       invalid_resolver_decision: () =>
         g.insert.facts({ entities: [{ name: "Cy", type: "Person" }] }, { resolver: resolver as never }),
       read_only_query: () => TOOLS.find((t) => t.name === "run_cypher")!.run(g, { query: "CREATE (n)" } as never),
+      cypher_query_limit: () => g.runCypher(`RETURN 1 // ${" ".repeat(65_536)}`),
       missing_package: () =>
         buildLlmClient({ provider: "cerebras", model: "m", api_key: "k" }).generate({
           system: "",
