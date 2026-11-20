@@ -724,13 +724,16 @@ def _quotable(version: dict | None, as_of: AsOf | None) -> bool:
         or not _ops._known_by(from_iso(version["created_at"]), as_of.known)
     ):
         return False
-    if as_of is None or as_of.known is None:
-        replaced = from_iso(version.get("replaced_at"))
-        return replaced is None or (as_of is not None and replaced > as_of.valid)
+    if as_of is None:
+        return version.get("replaced_at") is None
     return not any(
         from_iso(r["at"]) <= as_of.valid
-        and from_iso(r["known_at"]) <= as_of.known
-        and not (r["until"] and from_iso(r["until"]) <= as_of.known)
+        and _ops._known_by(from_iso(r["known_at"]), as_of.known)
+        and (
+            not r["until"]
+            or not _ops._known_by(from_iso(r["until"]), as_of.known)
+            or from_iso(r["valid_until"]) > as_of.valid
+        )
         for r in _loads(version.get("replacements_json"), [])
     )
 

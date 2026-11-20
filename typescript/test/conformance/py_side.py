@@ -1212,6 +1212,25 @@ async def write(graph):
         [v.revision, _serde.json_iso(v.invalidated_at) if v.invalidated_at else None]
         for v in await stored_src.relations.versions(stored_first.relations[0].id)
     ]
+    restored_src = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_restore_src", extraction="regex")
+    berlin, paris = "Ann works at Acme in Berlin.", "Ann works at Acme in Paris."
+    await restored_src.insert.text(berlin, source_id="note", event_time="2020-01-01T00:00:00Z")
+    await restored_src.insert.text(paris, source_id="note", event_time="2021-01-01T00:00:00Z", replace_source=True)
+    before_restore = datetime.now(timezone.utc)
+    await restored_src.insert.text(berlin, source_id="note", replace_source=True)
+
+    async def quoted(**at):
+        lines = (await restored_src.retrieve("Ann Acme Berlin Paris", **at)).context.splitlines()
+        return [text for text in (berlin, paris) if f"SOURCE | {text}" in lines]
+
+    out["restore_source"] = [
+        await quoted(as_of="2020-06-01T00:00:00Z"),
+        await quoted(as_of="2022-01-01T00:00:00Z"),
+        await quoted(as_of="2022-01-01T00:00:00Z", known_at=before_restore),
+        await quoted(as_of="2022-01-01T00:00:00Z", known_at=datetime.now(timezone.utc)),
+        await quoted(as_of="2099-01-01T00:00:00Z"),
+    ]
+    assert out["restore_source"] == [[berlin], [paris], [paris], [paris], [berlin]], out["restore_source"]
     await graph.insert.facts(
         {"entities": [{"type": "Database", "name": "HydraDB"}, {"type": "Company", "name": "Acme, Inc."}]},
         source_id="follow-up",
