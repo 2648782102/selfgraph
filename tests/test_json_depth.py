@@ -18,9 +18,12 @@ def test_parse_json_reports_a_deep_document_as_invalid_json():
     assert (raised.value.code, raised.value.field) == ("invalid_argument", "k")
 
 
-def test_parse_json_ignores_brackets_inside_strings():
-    text = json.dumps({"value": "[" * 1000 + "]" * 1000})
-    assert parse_json(text) == {"value": "[" * 1000 + "]" * 1000}
+def test_parse_json_counts_brackets_only_outside_strings():
+    deep_string = json.dumps({"value": "[" * 100000})
+    assert parse_json(deep_string) == {"value": "[" * 100000}
+    with pytest.raises(ValidationError) as raised:
+        parse_json("[" * 65, " in --schema", "schema")
+    assert str(raised.value) == "invalid JSON in --schema: too deeply nested; keep it under 64 levels"
 
 
 def test_read_json_names_the_path_for_a_deep_file(tmp_path):
