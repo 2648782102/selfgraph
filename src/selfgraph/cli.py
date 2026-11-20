@@ -6,11 +6,12 @@ import dataclasses
 import errno
 import logging
 import os
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, NoReturn, get_args
 
 from . import _ops
 from .errors import (
@@ -108,6 +109,41 @@ class _Text(str):
     pass
 
 
+class _Parser(argparse.ArgumentParser):
+    """An argument parser whose flag errors carry SelfGraph's code, field, and hint.
+
+    argparse normally prints a usage dump for an invalid `type=` or `choices=`.
+    Those failures are the same invalid_argument the API reports, so they go
+    through `error_text` like every other usage error.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        match = _ARGUMENT_ERROR.search(message)
+        flag = match.group(1) if match else None
+        if match and "invalid int value" in message:
+            kind = "an integer"
+        elif match and "invalid float value" in message:
+            kind = "a number"
+        else:
+            kind = None
+        if match and kind is not None:
+            value = message.rsplit(": ", 1)[-1]
+            text = f"argument {flag} expects {kind}, got {value}"
+        elif match and "invalid choice" in message:
+            _, _, detail = message.partition(": ")
+            value, _, choices = detail.removeprefix("invalid choice: ").partition(" (choose from ")
+            text = f"argument {flag} got {value}; choose from {choices.rstrip(')')}"
+        elif match:
+            text = message.removeprefix(f"argument {flag}: ")
+        else:
+            text = message
+        raise ValidationError(text, field=flag.removeprefix("--").replace("-", "_") if flag else None)
+
+
+_ARGUMENT_ERROR = re.compile(r"argument (--[\w-]+):")
+_ARGUMENT_VALUE = re.compile(r"^(?:argument --[\w-]+: )?(?:invalid \w+ value|invalid choice):? ?")
+
+
 def _time(field: str) -> Callable[[str], datetime | None]:
     """An argparse type that parses an ISO 8601 flag with the shared parser.
 
@@ -119,7 +155,7 @@ def _time(field: str) -> Callable[[str], datetime | None]:
         try:
             return parse_time(value, field)
         except ValidationError as exc:
-            raise argparse.ArgumentTypeError(str(exc)) from exc
+            raise ValidationError(str(exc), field=field) from exc
 
     return convert
 
@@ -468,7 +504,7 @@ def _finish(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="selfgraph",
         description="Build and read a SelfGraph knowledge graph. Connection flags may come before or after the "
         "subcommand.",
@@ -476,7 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-V", "--version", action="version", version=_installed_version())
     _add_globals(parser)
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     sub.add_parser(
         "init", help="check the connection and create the store's indexes or constraints where the backend has them"
@@ -949,16 +985,16 @@ class _StderrHandler(logging.Handler):
         print(f"selfgraph: {surface_hint(message)}{hint}", file=sys.stderr, flush=True)
 
 
-def _command_path(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+def _command_path(parser: argparse.ArgumentParser, args: argparse.Namespace | None) -> str:
     """Name the subcommand that ran, such as "selfgraph relation certify".
 
     @param parser (argparse.ArgumentParser): the CLI parser.
-    @param args (argparse.Namespace): the parsed command.
+    @param args (argparse.Namespace | None): the parsed command, or None when parsing itself failed.
     @return (str): the command.
     """
     words = ["selfgraph"]
     while sub := next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None):
-        name = getattr(args, sub.dest, None)
+        name = getattr(args, sub.dest, None) if args is not None else None
         if name is None:
             break
         words.append(name)
@@ -1006,7 +1042,11 @@ async def _run_with_diagnostics(args: argparse.Namespace, settings: GraphSetting
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except ValidationError as exc:
+        print(error_text(exc, _command_path(parser, None)), file=sys.stderr)
+        return 2
     settings = settings_from_env(**{key: getattr(args, key, None) for key in SETTING_KEYS})
     args.store, args.namespace = store_kind(settings), settings.namespace
     ignored = ignored_settings(settings) if args.command != "version" else []
