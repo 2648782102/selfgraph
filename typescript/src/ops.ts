@@ -1159,6 +1159,7 @@ export async function updateEntity(
   if (ids.slug(type) !== ids.slug(ids.normalizeText(existing.type))) {
     throw new ValidationError(`type is part of the id ${pyRepr(eid)}; create a new entity to change its type`, {
       code: "immutable_identity",
+      field: "type",
     });
   }
   if (!schemaTypes.has(type)) type = existing.type;

@@ -256,4 +256,13 @@ describe("error codes", () => {
   ] as const)("fails settings %o with %s", (overrides, code, field) => {
     expect(() => checkSettings(settingsFromEnv(overrides, {}))).toThrow(expect.objectContaining({ code, field }));
   });
+
+  it.each([
+    ["immutable_identity", (graph: SelfGraph) => graph.entities.update("person:ada", { type: "Robot" }), "type"],
+    ["invalid_cursor", (graph: SelfGraph) => graph.entities.list({ cursor: "bogus" }), "cursor"],
+  ] as const)("names %s at fault", async (code, call, field) => {
+    const graph = open();
+    await graph.insert.facts(PEOPLE);
+    await expect(call(graph)).rejects.toThrow(expect.objectContaining({ code, field }));
+  });
 });

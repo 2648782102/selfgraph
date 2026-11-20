@@ -1246,7 +1246,9 @@ async def update_entity(
     new_type = _clean_text(fields["type"]) if "type" in fields else existing.type
     if _ids.slug(new_type) != _ids.slug(_ids.normalize_text(existing.type)):
         raise ValidationError(
-            f"type is part of the id {eid!r}; create a new entity to change its type", code="immutable_identity"
+            f"type is part of the id {eid!r}; create a new entity to change its type",
+            code="immutable_identity",
+            field="type",
         )
     if new_type not in schema_types:
         new_type = existing.type
