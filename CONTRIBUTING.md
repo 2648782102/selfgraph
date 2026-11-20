@@ -31,6 +31,7 @@ to this repository.
 - Link an approved issue with `Closes #N`. You must be the issue author or an assignee. If not, a bot closes the PR.
 - Keep a maximum of 3 open PRs. If you open more, a bot closes your newest PR. Get an earlier PR merged or closed first. To ask, post in `#pr-discussion` on Discord.
 - Keep each PR small and change only what the issue asks for. If a PR is large or has unrelated changes, we ask you to split it.
+- A PR over 1,000 changed lines (additions plus deletions, lockfiles excluded) is not reviewed. Split it into stacked PRs: open the first against `main`, base each next one on the previous branch, and give the order in each description ("1/3", "2/3").
 - If your PR has a breaking change, describe it in the PR.
 - Raise every new error with a code and a hint, the same on the API, CLI, and MCP in both SDKs, and never show a password or token in it. [`AGENTS.md`](AGENTS.md) has the details.
 - Fill in the "AI Assistance" section of the PR template. Do not remove it. If the section is missing, the gate check fails. You are responsible for each line that you submit.
