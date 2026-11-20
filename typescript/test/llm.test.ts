@@ -5,6 +5,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { loadTokenizer } from "../src/chunking.js";
 import { assembleExtraction, LLMExtractor } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
 import {
@@ -109,6 +110,174 @@ function mockModel(
 const open = freshGraphs(KUZU_SPEC, "llm");
 
 describe("LLM extraction through the AI SDK", () => {
+  it.each([
+    [[null, "2020-01-01"], "2020-01-01"],
+    [["2020-01-01", null], "2020-01-01"],
+    [[null, null], null],
+    [["2020-01-01", "2020-01-01"], "2020-01-01"],
+    [["2020-01-01", "2022-01-01"], "2022-01-01"],
+    [["2022-01-01", "2020-01-01"], "2020-01-01"],
+    [[null, "2020-01-01", "2022-01-01"], "2022-01-01"],
+    [["not a date", "2020-01-01"], "2020-01-01"],
+    [["2020-01-01", "not a date"], "2020-01-01"],
+    [["0001", null], "0001-01-01"],
+  ] as Array<[(string | null)[], string | null]>)(
+    "keeps the last valid date from repeated extracted relations: %j",
+    (dates, expected) => {
+      const facts = assembleExtraction(
+        [
+          { type: "Person", name: "Jane" },
+          { type: "Company", name: "Acme" },
+        ],
+        dates.map((event_time) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", event_time })),
+        [],
+        [],
+      );
+      expect(facts.relations).toHaveLength(1);
+      expect(facts.relations[0]!.event_time?.toISOString() ?? null).toBe(
+        expected === null ? null : `${expected}T00:00:00.000Z`,
+      );
+      expect(facts.relations[0]).toMatchObject({
+        from_entity: "person:jane",
+        type: "WORKS_AT",
+        to_entity: "company:acme",
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "merges dates, properties and evidence for repeated extracted relations (multiple chunks: %s)",
+    async (multipleChunks) => {
+      const first = [
+        { event_time: "2020-01-01", properties: { role: "Engineer", remove: "old", nested: { old: 1 } } },
+        { event_time: null, properties: { team: "Platform" } },
+      ];
+      const later = [
+        { event_time: "2022-01-01", properties: { role: "Lead", remove: null, nested: { new: 2 } } },
+        { event_time: "not a date", properties: { office: "London" } },
+        { event_time: null },
+      ];
+      const text = `Jane works at Acme.${multipleChunks ? " context".repeat(650) : ""}`;
+      const chunks = (await loadTokenizer()).chunkText(text);
+      expect(chunks.length > 1).toBe(multipleChunks);
+      let relationCalls = 0;
+      const llm = {
+        async generate({ output }: { output: z.ZodType }) {
+          const [kind] = Object.keys((output as z.ZodObject).shape);
+          if (kind === "entities")
+            return {
+              entities: [
+                { type: "Person", name: "Jane", aliases: [] },
+                { type: "Company", name: "Acme", aliases: [] },
+              ],
+            };
+          if (kind === "relations") {
+            relationCalls++;
+            const rows = multipleChunks ? (relationCalls === 1 ? first : later) : [...first, ...later];
+            return { relations: rows.map((row) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", ...row })) };
+          }
+          return { [kind!]: [] };
+        },
+      } as unknown as LLMClient;
+      const g = open({ llm, resolver: "exact" });
+      const result = await g.insert.text(text, { source_id: "dated-chunks" });
+      const [rel] = (await g.relations.list()).items;
+      expect(rel!.event_time?.toISOString()).toBe("2022-01-01T00:00:00.000Z");
+      expect(rel!.properties).toEqual({ role: "Lead", team: "Platform", office: "London", nested: { new: 2 } });
+      expect(result.relations).toHaveLength(1);
+      expect(relationCalls).toBe(chunks.length);
+      const evidence = (await g.relations.evidence(rel!.id)).items;
+      expect(new Set(evidence.map((e) => e.chunk_id))).toEqual(
+        new Set(chunks.map((c) => ids.chunkId(result.source_version!, c.index))),
+      );
+      expect(rel!.source_count).toBe(1);
+      expect((await g.retrieve("Jane", { as_of: "2023-01-01" })).subgraph.relations.map((r) => r.id)).toEqual([
+        rel!.id,
+      ]);
+    },
+  );
+
+  const relationsLlm = (rows: Array<Record<string, unknown>>) =>
+    ({
+      async generate({ output }: { output: z.ZodType }) {
+        const [kind] = Object.keys((output as z.ZodObject).shape);
+        if (kind === "entities")
+          return {
+            entities: [
+              { type: "Person", name: "Jane", aliases: [] },
+              { type: "Company", name: "Acme", aliases: [] },
+            ],
+          };
+        if (kind === "relations")
+          return {
+            relations: rows.map((row) => ({
+              from_name: "Jane",
+              type: "WORKS_AT",
+              to_name: "Acme",
+              event_time: null,
+              ...row,
+            })),
+          };
+        return { [kind!]: [] };
+      },
+    }) as unknown as LLMClient;
+
+  it.each([
+    [[{ properties: { role: null } }], { team: "Platform" }],
+    [
+      [{ properties: { role: "a", office: "London" } }, { properties: { role: null } }],
+      { team: "Platform", office: "London" },
+    ],
+    [[{ properties: { role: null } }, { properties: { role: "b" } }], { team: "Platform", role: "b" }],
+  ])("lets an extracted null property clear the stored key: %j", async (rows, expected) => {
+    const g = open({ llm: relationsLlm(rows), resolver: "exact" });
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "Jane" },
+        { type: "Company", name: "Acme" },
+      ],
+      relations: [
+        {
+          from_entity: "person:jane",
+          type: "WORKS_AT",
+          to_entity: "company:acme",
+          properties: { role: "x", team: "Platform" },
+        },
+      ],
+    });
+    const res = await g.insert.text("Jane works at Acme.", { source_id: "null-props" });
+    expect(res.warnings).toEqual([]);
+    const [rel] = (await g.relations.list()).items;
+    expect(rel!.properties).toEqual(expected);
+    expect(rel!.revision).toBe(2);
+  });
+
+  it("drops an extracted relation with a proto or control property key or a non-JSON value with a warning", async () => {
+    const bad = [
+      JSON.parse('{"__proto__": 1}'),
+      JSON.parse('{"nested": {"__proto__": {}}}'),
+      { "a\u0000b": 1 },
+      { nested: [{ "a\u0000b": 1 }] },
+      { when: new Date("2022-01-01T00:00:00Z") },
+      { p: Number.POSITIVE_INFINITY },
+      { p: Number.NaN },
+    ];
+    const rows = [{ properties: { ok: 1 } }, ...bad.map((properties) => ({ properties, event_time: "2022-01-01" }))];
+    const g = open({ llm: relationsLlm(rows), resolver: "exact" });
+    const res = await g.insert.text("Jane works at Acme.", { source_id: "bad-prop-keys" });
+    const proto = "dropped an extracted relation: property and external id keys cannot be '__proto__'";
+    const control =
+      "dropped an extracted relation: relation property keys cannot contain control or surrogate characters";
+    const date = "dropped an extracted relation: relation property cannot hold Date values; use an ISO 8601 string";
+    const finite =
+      "dropped an extracted relation: relation property cannot hold NaN or Infinity; use a finite number or a string";
+    expect(res.warnings.map((w) => [w.code, w.message])).toEqual(
+      [proto, proto, control, control, date, finite, finite].map((m) => ["extraction_partial_failure", m]),
+    );
+    const [rel] = (await g.relations.list()).items;
+    expect([rel!.properties, rel!.event_time]).toEqual([{ ok: 1 }, null]);
+  });
+
   it("extracts and resolves names to deterministic ids the way Python does", async () => {
     const seen: Array<{ kind: Kind; system: string; user: string }> = [];
     const signals: unknown[] = [];

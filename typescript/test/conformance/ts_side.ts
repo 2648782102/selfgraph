@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 
 import { kv } from "../../src/cli.js";
-import { lenientTime } from "../../src/extraction/extractor.js";
+import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
   FalkorDBStore,
@@ -20,7 +20,7 @@ import { setLogger } from "../../src/internal/log.js";
 import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
 import { callTool } from "../../src/mcp.js";
-import { Extraction, parseOrThrow } from "../../src/models.js";
+import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import { parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
@@ -393,6 +393,35 @@ function tablesReferenceErrors(): string[] {
 }
 
 /**
+ * Assemble repeated extracted relations, including rows with a __proto__ or NUL property key, with their warnings.
+ *
+ * @return ({ extraction: unknown; warnings: unknown }): the assembled facts and the warnings for the dropped rows.
+ */
+function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown } {
+  const rows = [
+    { event_time: "2022-01-01", properties: { role: "Engineer", remove: "old", nested: { a: 1 } } },
+    { event_time: null, properties: { office: "London" } },
+    { event_time: "2020-01-01", properties: { role: "Lead", remove: null, nested: { b: 2 } } },
+    { event_time: "not a date" },
+    { event_time: "2024-01-01", properties: JSON.parse('{"__proto__": 1}') },
+    { event_time: "2024-01-01", properties: JSON.parse('{"nested": {"__proto__": {}}}') },
+    { event_time: "2024-01-01", properties: { "a\u0000b": 1 } },
+    { event_time: "2024-01-01", properties: { nested: [{ "a\u0000b": 1 }] } },
+    { type: "FOUNDED", properties: JSON.parse('{"__proto__": 1}') },
+    { type: "ADVISES", properties: { "a\u0000b": 1 } },
+  ];
+  const warnings: InsertWarning[] = [];
+  const extraction = assembleExtraction(
+    [],
+    rows.map((row) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", ...row })),
+    [],
+    [],
+    warnings,
+  );
+  return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
+}
+
+/**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
  * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; tables_errors: string[]; term_forms: unknown; terms: unknown[]; shared_term_forms: unknown; shared_terms: string[][]; neo4j_dropped: string; ossie: { doc: unknown; warnings: string } }): one list per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the forms and expansion of a definition shared by two entities, the fields the Neo4j export drops, the Ossie export document and warnings, and how NaN and Infinity parse.
@@ -418,6 +447,7 @@ export function schemaWarnings(): {
   ossie: { doc: unknown; warnings: string };
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
+  repeated_extracted_relations: { extraction: unknown; warnings: unknown };
 } {
   const terms = Schema.parse(TERMS_SPEC);
   const sharedSchema = Schema.parse(SHARED_DEFINITION_SPEC);
@@ -566,6 +596,7 @@ export function schemaWarnings(): {
     terms_subtypes: ["Employees", "staff", "personnel"].map((q) =>
       [...expandTokens(tokens(q), subSchema, tokens)].sort(comparePy),
     ),
+    repeated_extracted_relations: repeatedExtractedRelations(),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);
       return parsed === null ? null : jsonIso(parsed);
