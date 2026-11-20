@@ -479,7 +479,12 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
             "strength",
             "--strength expects a number, got 'x'",
         ),
-        (["diff", "--since", "nope"], "invalid_argument", "since", "invalid since: 'nope' is not an ISO 8601 date or time"),
+        (
+            ["diff", "--since", "nope"],
+            "invalid_argument",
+            "since",
+            "invalid since: 'nope' is not an ISO 8601 date or time",
+        ),
         (
             ["--store", "bogus", "entity", "list"],
             "invalid_setting",
