@@ -3842,7 +3842,7 @@ export async function getTrace(runner: Runner, ns: string, tid: string): Promise
 }
 
 /**
- * Fetch many decision traces by id, in the order given, skipping ids with no trace. A store that reads the children of many parents at once (childrenOf) loads every trace's steps in one read.
+ * Fetch many decision traces by id, in the order given, skipping ids with no trace.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -3850,17 +3850,47 @@ export async function getTrace(runner: Runner, ns: string, tid: string): Promise
  * @return (DecisionTrace[]): the traces found.
  */
 export async function getTraces(runner: Runner, ns: string, tids: readonly string[]): Promise<DecisionTrace[]> {
-  if (!runner.childrenOf) {
-    const traces: DecisionTrace[] = [];
-    for (const tid of tids) {
-      const trace = await getTrace(runner, ns, tid);
-      if (trace !== null) traces.push(trace);
-    }
-    return traces;
-  }
   const nodes = await nodesById(runner, ns, L_TRACE, tids);
-  const steps = await runner.childrenOf(ns, L_TRACE, [...nodes.keys()], R_HAS_STEP, L_STEP);
-  return tids.filter((tid) => nodes.has(tid)).map((tid) => decodeTrace(nodes.get(tid)!, stepsOf(steps.get(tid) ?? [])));
+  const rows = tids.filter((tid) => nodes.has(tid)).map((tid) => nodes.get(tid)!);
+  return decodeTraces(runner, ns, rows);
+}
+
+/**
+ * Rebuild stored decision traces with their steps, in the order given, reading every trace's steps at once.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rows (readonly Props[]): the stored decision trace nodes.
+ * @return (DecisionTrace[]): the traces.
+ */
+export async function decodeTraces(runner: Runner, ns: string, rows: readonly Props[]): Promise<DecisionTrace[]> {
+  const tids = rows.map(idOf);
+  let steps: Map<string, Props[]>;
+  if (runner.childrenOf) {
+    steps = await runner.childrenOf(ns, L_TRACE, tids, R_HAS_STEP, L_STEP);
+  } else {
+    const edges = await edgesAt(
+      runner,
+      ns,
+      { from_label: L_TRACE, to_label: L_STEP, type: R_HAS_STEP },
+      "from_in",
+      tids,
+    );
+    const nodes = await nodesById(
+      runner,
+      ns,
+      L_STEP,
+      edges.map((edge) => edge.to_id),
+    );
+    steps = new Map();
+    for (const edge of edges) {
+      const node = nodes.get(edge.to_id);
+      if (!node) continue;
+      if (!steps.has(edge.from_id)) steps.set(edge.from_id, []);
+      steps.get(edge.from_id)!.push(node);
+    }
+  }
+  return rows.map((row) => decodeTrace(row, stepsOf(steps.get(idOf(row)) ?? [])));
 }
 
 /**
@@ -4180,9 +4210,7 @@ export async function listTraces(
   if (args.actor_entity != null) equals.actor_entity = ids.canonicalId(args.actor_entity);
   if (args.status != null) equals.status = args.status;
   const rows = await runner.matchNodes(ns, L_TRACE, { equals, skip: args.skip, limit: args.limit, id_gt: args.after });
-  const traces: DecisionTrace[] = [];
-  for (const props of rows) traces.push(decodeTrace(props, await readSteps(runner, ns, idOf(props))));
-  return traces;
+  return decodeTraces(runner, ns, rows);
 }
 
 export async function deleteTrace(runner: Runner, ns: string, tid: string): Promise<DeleteResult> {

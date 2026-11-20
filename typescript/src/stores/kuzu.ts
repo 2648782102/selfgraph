@@ -734,7 +734,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     const res = await this._run(
       `MATCH (a:N)-[r:R]->(b:N) WHERE ${where.join(" AND ")} ` +
         `RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et ` +
-        `ORDER BY r.sid, r.revision SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
+        `ORDER BY r.sid, r.revision, a.id, b.id, r.etype SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
       params,
     );
     return res.rows.map(edgeRow);

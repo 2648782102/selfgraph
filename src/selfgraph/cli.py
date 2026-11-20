@@ -165,21 +165,35 @@ async def _diff(graph, args):
     lines = [f"Changes ({result.since.isoformat()}, {result.until.isoformat()}]"]
     lines += [f"Note: {limitation}" for limitation in result.limitations]
     lines += [f"+ entity {e.id}" for e in result.entities_created]
-    lines += [
-        f"+ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
-        for r in result.relations_added
-    ]
-    lines += [
-        f"~ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
-        for r in result.relations_revised
-    ]
+    for mark, relations in (("+", result.relations_added), ("~", result.relations_revised)):
+        lines += [
+            f"{mark} relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+            for r in relations
+        ]
     lines += [
         f"- relation {r.id}: {r.from_entity} -[{r.type}]-> {r.to_entity} invalidated_by={r.invalidated_by}"
         for r in result.relations_retired
     ]
+    for action, relations in (("certified", result.relations_certified), ("uncertified", result.relations_uncertified)):
+        lines += [f"* {action} relation {r.id} revision {r.revision}" for r in relations]
+    for mark, preferences in (("+", result.preferences_added), ("~", result.preferences_revised)):
+        lines += [
+            f"{mark} preference {p.id} revision {p.revision}: {p.subject_entity} {p.key} -> {p.value_entity}"
+            for p in preferences
+        ]
+    for mark, decisions in (("+", result.decisions_created), ("~", result.decisions_updated)):
+        lines += [f"{mark} decision {d.id}: {d.title}" for d in decisions]
+    lines += [f"+ merge {m.id}: {m.absorbed_id} into {m.survivor_id}" for m in result.entities_merged]
+    lines += [f"- merge {m.id}: {m.absorbed_id} out of {m.survivor_id}" for m in result.entities_unmerged]
+    lines += [f"+ source {v.source_id} version {v.id}" for v in result.source_versions_added]
     lines.append(
         f"{len(result.entities_created)} entities created, {len(result.relations_added)} relations added, "
-        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired"
+        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired, "
+        f"{len(result.relations_certified)} certified, {len(result.relations_uncertified)} uncertified, "
+        f"{len(result.preferences_added)} preferences added, {len(result.preferences_revised)} revised, "
+        f"{len(result.decisions_created)} decisions created, {len(result.decisions_updated)} updated, "
+        f"{len(result.entities_merged)} merges, {len(result.entities_unmerged)} unmerges, "
+        f"{len(result.source_versions_added)} source versions added"
     )
     return _Text("\n".join(lines))
 

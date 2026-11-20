@@ -77,7 +77,8 @@ function mask(value: unknown): unknown {
       Object.entries(value).map(([k, v]) => {
         if (k === "invalidated_at" && String((value as Record<string, unknown>).invalidated_by).startsWith("sv:"))
           return [k, "<ts>"];
-        if (["created_at", "updated_at", "invalidated_known_at", "since", "until"].includes(k)) return [k, "<ts>"];
+        if (["created_at", "updated_at", "invalidated_known_at", "reverted_at", "since", "until"].includes(k))
+          return [k, "<ts>"];
         if (k === "ns") return [k, "<ns>"];
         if (k === "message") return [k, "<message>"];
         if (k === "evidence_json" && typeof v === "string") return [k, mask(v)];

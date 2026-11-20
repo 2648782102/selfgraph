@@ -258,8 +258,11 @@ selfgraph diff --since 2026-01-01T00:00:00Z --until 2026-02-01T00:00:00Z
 selfgraph diff --since 2026-01-01T00:00:00Z --json
 ```
 
-The default output lists `+` additions, `~` revisions, and `-` retirements with
-relation endpoints and `invalidated_by`. `--json` returns the typed result as JSON.
+The default output lists one line per change: `+` for created entities, added
+relations, preferences, decisions, merges, and source versions; `~` for revised
+relations and preferences and updated decisions; `-` for retired relations (with
+`invalidated_by`) and undone merges; `*` for certified and uncertified relations.
+A last line counts each list. `--json` returns the typed result as JSON.
 The known-time window is `(since, until]`; `until` defaults to now.
-Deletes and merges are not visible. JSON includes this note in `limitations`.
+Deletes and entity edits are not visible. JSON includes this note in `limitations`.
 See [diff semantics and limits](retrieval.md#changes-between-known-times).

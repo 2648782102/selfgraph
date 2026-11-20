@@ -1299,6 +1299,18 @@ export async function listMerges(
   if (!rows.length && skip === 0 && !(await runner.nodeExists(ns, L_ENTITY, entityId))) {
     throw await ops.missingEntity(runner, ns, entityId);
   }
+  return decodeMerges(runner, ns, rows);
+}
+
+/**
+ * Rebuild stored merge records with their source and rewrite entries, in the order given.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rows (readonly Props[]): the stored merge record nodes.
+ * @return (MergeRecord[]): the records.
+ */
+export async function decodeMerges(runner: Runner, ns: string, rows: readonly Props[]): Promise<MergeRecord[]> {
   const entries = await loadEntries(runner, ns, rows);
   return rows.map((r) => decodeMerge(r, entries.get(r.id as string)));
 }

@@ -573,7 +573,7 @@ class KuzuStore(AutoCommitStore):
         res = await self._run(
             f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et "
-            f"ORDER BY {ob} SKIP {int(skip)} LIMIT {int(limit)}",
+            f"ORDER BY {ob}, a.id, b.id, r.etype SKIP {int(skip)} LIMIT {int(limit)}",
             params,
         )
         return [edge_row(r) for r in res.rows]

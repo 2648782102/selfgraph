@@ -1107,7 +1107,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
         "RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob, r.revision AS __rev " +
-        "ORDER BY __ob, __rev SKIP $skip LIMIT $limit",
+        "ORDER BY __ob, __rev, fa, tb, et SKIP $skip LIMIT $limit",
       params,
     );
     return res.rows.map(edgeRow);

@@ -864,7 +864,7 @@ class HydraDBStore(AutoCommitStore):
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob{tie_break} "
-            f"ORDER BY {order} SKIP $skip LIMIT $limit",
+            f"ORDER BY {order}, fa, tb, et SKIP $skip LIMIT $limit",
             params,
         )
         return [edge_row(r) for r in res.rows]

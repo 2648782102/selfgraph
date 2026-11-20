@@ -1137,6 +1137,17 @@ async def list_merges(runner: Any, ns: str, entity_id: str, *, skip: int, limit:
     )
     if not rows and skip == 0 and not await runner.node_exists(ns, L_ENTITY, entity_id):
         raise await _ops.missing_entity(runner, ns, entity_id)
+    return await decode_merges(runner, ns, rows)
+
+
+async def decode_merges(runner: Any, ns: str, rows: list[dict[str, Any]]) -> list[MergeRecord]:
+    """Rebuild stored merge records with their source and rewrite entries, in the order given.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param rows (list[dict[str, Any]]): the stored merge record nodes.
+    @return (list[MergeRecord]): the records.
+    """
     entries = await _load_entries(runner, ns, rows)
     return [_decode_merge(r, entries[r["id"]]) for r in rows]
 

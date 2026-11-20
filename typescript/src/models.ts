@@ -153,16 +153,6 @@ export interface Relation {
   certifications: Certification[];
 }
 
-export interface GraphDiff {
-  since: Date;
-  until: Date;
-  relations_added: Relation[];
-  relations_retired: Relation[];
-  relations_revised: Relation[];
-  entities_created: Entity[];
-  limitations: string[];
-}
-
 export interface Preference {
   id: string;
   revision: number;
@@ -250,6 +240,34 @@ export interface SourceDiff {
   kept: string[];
   added: string[];
   retired: string[];
+}
+
+export interface SourceVersion {
+  id: string;
+  source_id: string;
+  media_type: string;
+  metadata: JsonObject;
+  event_time: Date | null;
+  created_at: Date;
+}
+
+export interface GraphDiff {
+  since: Date;
+  until: Date;
+  relations_added: Relation[];
+  relations_retired: Relation[];
+  relations_revised: Relation[];
+  entities_created: Entity[];
+  relations_certified: Relation[];
+  relations_uncertified: Relation[];
+  preferences_added: Preference[];
+  preferences_revised: Preference[];
+  decisions_created: DecisionTrace[];
+  decisions_updated: DecisionTrace[];
+  entities_merged: MergeRecord[];
+  entities_unmerged: MergeRecord[];
+  source_versions_added: SourceVersion[];
+  limitations: string[];
 }
 
 export interface InsertResult {

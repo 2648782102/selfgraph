@@ -860,8 +860,39 @@ export function buildParser(): Command<[], GlobalOptions> {
           lines.push(
             `- relation ${r.id}: ${r.from_entity} -[${r.type}]-> ${r.to_entity} invalidated_by=${r.invalidated_by ?? "None"}`,
           );
+        for (const [action, relations] of [
+          ["certified", result.relations_certified],
+          ["uncertified", result.relations_uncertified],
+        ] as const) {
+          for (const r of relations) lines.push(`* ${action} relation ${r.id} revision ${r.revision}`);
+        }
+        for (const [mark, preferences] of [
+          ["+", result.preferences_added],
+          ["~", result.preferences_revised],
+        ] as const) {
+          for (const p of preferences)
+            lines.push(
+              `${mark} preference ${p.id} revision ${p.revision}: ${p.subject_entity} ${p.key} -> ${p.value_entity}`,
+            );
+        }
+        for (const [mark, decisions] of [
+          ["+", result.decisions_created],
+          ["~", result.decisions_updated],
+        ] as const) {
+          for (const d of decisions) lines.push(`${mark} decision ${d.id}: ${d.title}`);
+        }
+        for (const m of result.entities_merged) lines.push(`+ merge ${m.id}: ${m.absorbed_id} into ${m.survivor_id}`);
+        for (const m of result.entities_unmerged)
+          lines.push(`- merge ${m.id}: ${m.absorbed_id} out of ${m.survivor_id}`);
+        for (const v of result.source_versions_added) lines.push(`+ source ${v.source_id} version ${v.id}`);
         lines.push(
-          `${result.entities_created.length} entities created, ${result.relations_added.length} relations added, ${result.relations_revised.length} revised, ${result.relations_retired.length} retired`,
+          `${result.entities_created.length} entities created, ${result.relations_added.length} relations added, ` +
+            `${result.relations_revised.length} revised, ${result.relations_retired.length} retired, ` +
+            `${result.relations_certified.length} certified, ${result.relations_uncertified.length} uncertified, ` +
+            `${result.preferences_added.length} preferences added, ${result.preferences_revised.length} revised, ` +
+            `${result.decisions_created.length} decisions created, ${result.decisions_updated.length} updated, ` +
+            `${result.entities_merged.length} merges, ${result.entities_unmerged.length} unmerges, ` +
+            `${result.source_versions_added.length} source versions added`,
         );
         return new Text(lines.join("\n"));
       }),
