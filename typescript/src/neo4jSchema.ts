@@ -69,7 +69,8 @@ function mapping(value: unknown, where: string): Obj {
 function items(data: Obj, key: string, where: string): unknown[] {
   const value = data[key];
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) throw new ValidationError(`${where}.${key} must be a list, got ${typeName(value)}`, { field: key });
+  if (!Array.isArray(value))
+    throw new ValidationError(`${where}.${key} must be a list, got ${typeName(value)}`, { field: key });
   return [...value];
 }
 
