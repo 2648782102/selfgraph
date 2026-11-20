@@ -13,7 +13,7 @@ from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, 
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _kv
-from selfgraph.errors import SelfGraphError
+from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris
 from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
@@ -492,6 +492,26 @@ def schema_warnings():
         ],
         "lenient_event_times": [json_iso(_lenient_event_time(value)) for value in LENIENT_EVENT_TIMES],
         "repeated_extracted_relations": repeated_extracted_relations(),
+        "credential_masking": credential_masking(),
+    }
+
+
+def credential_masking():
+    """Mask store and LLM credentials the way the error helpers do, for byte-for-byte parity with TypeScript.
+
+    @return (dict): the masked URI, one and two URIs redacted from a message, and the wrapped internal error text.
+    """
+
+    class Error(Exception):
+        pass
+
+    uri = "bolt://user:store-secret@db.example:7687"
+    base = "https://proxy:llm-secret@llm.example/v1"
+    return {
+        "mask": mask_uri(uri),
+        "redact": redact_uri(f"driver error reaching {uri}", uri),
+        "redact_many": redact_uris(f"call to {uri} and {base} failed", uri, base),
+        "internal": str(internal_error(Error(f"boom at {uri} and {base}"), uri, base)),
     }
 
 

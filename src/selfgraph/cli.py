@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any, get_args
 
 from . import _ops
-from .errors import WARNING_HINTS, NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
+from .errors import (
+    WARNING_HINTS,
+    NotFoundError,
+    PromptTemplateError,
+    SelfGraphError,
+    ValidationError,
+    internal_error,
+    redact_uris,
+    surface_hint,
+)
 from .models import Stance, Status
 from .resolution import ResolverMode
 from .resources._common import DEFAULT_PAGE_LIMIT
@@ -1000,11 +1009,16 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except (SelfGraphError, FileNotFoundError, RuntimeError) as exc:
+        command = _command_path(parser, args)
         if isinstance(exc, SelfGraphError):
-            print(error_text(exc, _command_path(parser, args)), file=sys.stderr)
-        else:
-            print(f"error: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
-        return 2 if isinstance(exc, _USAGE_ERRORS) else 1
+            print(error_text(exc, command), file=sys.stderr)
+            return 2 if isinstance(exc, _USAGE_ERRORS) else 1
+        if isinstance(exc, FileNotFoundError):
+            masked = redact_uris(str(exc), settings.uri, settings.llm_base_url)
+            print(f"error: {surface_hint(masked).rstrip()}", file=sys.stderr)
+            return 2
+        print(error_text(internal_error(exc, settings.uri, settings.llm_base_url), command), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

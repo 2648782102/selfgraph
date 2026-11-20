@@ -17,7 +17,7 @@ import {
   SelfGraph,
   ValidationError,
 } from "../src/index.js";
-import { summarizeError } from "../src/llm/index.js";
+import { fatalError, summarizeError } from "../src/llm/index.js";
 import type { InsertWarning } from "../src/models.js";
 import type { LLMClient } from "../src/protocols.js";
 import { captureLog, freshGraphs, KUZU_SPEC } from "./helpers.js";
@@ -626,6 +626,25 @@ describe("LLM extraction through the AI SDK", () => {
     });
     expect(facts.relations).toHaveLength(1);
     expect(facts.relations[0]!.properties).toEqual({ role: "cto" });
+  });
+
+  it("masks base_url credentials in the model-not-found error", () => {
+    const exc = Object.assign(new Error("Not Found"), { statusCode: 404 });
+    const err = fatalError(exc, {
+      provider: "openai",
+      model: "m",
+      base_url: "https://proxyuser:hunter2@llm.example/v1",
+    });
+    expect(err?.message).toContain('LLM model "m" was not found for provider openai at https://***@llm.example/v1');
+    expect(err?.message).not.toContain("hunter2");
+    expect(err?.code).toBe("llm_model_not_found");
+  });
+
+  it("masks a base_url the provider quotes in a summarized error", () => {
+    const exc = new Error("APICallError: request to https://u:secret@llm.example/v1/chat failed");
+    const summary = summarizeError(exc, "https://u:secret@llm.example/v1");
+    expect(summary).not.toContain("secret");
+    expect(summary).toContain("https://***@llm.example/v1");
   });
 
   it("uses chat completions for the openai provider with a base_url and reports a refused connection as its root cause", async () => {

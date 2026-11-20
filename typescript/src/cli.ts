@@ -13,6 +13,7 @@ import {
 
 import { SelfGraph } from "./client.js";
 import {
+  internalError,
   NotFoundError,
   PromptTemplateError,
   SelfGraphError,
@@ -246,10 +247,14 @@ const listOrNull = (items: string[]): string[] | null => (items.length ? items :
 
 const checkedSettings = new WeakMap<object, GraphSettings>();
 
+let lastSettings: GraphSettings | null = null;
+
 function settingsOf(cmd: { optsWithGlobals(): GlobalOptions }): GraphSettings {
   const o: Record<string, string | undefined> = cmd.optsWithGlobals();
   const flag = (key: string) => key.replace(/_(\w)/g, (_, c: string) => c.toUpperCase());
-  return settingsFromEnv(Object.fromEntries(SETTING_KEYS.map((key) => [key, o[flag(key)]])));
+  const settings = settingsFromEnv(Object.fromEntries(SETTING_KEYS.map((key) => [key, o[flag(key)]])));
+  lastSettings = settings;
+  return settings;
 }
 
 /**
@@ -1060,7 +1065,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return usage ? 2 : 1;
     }
     if ((exc as NodeJS.ErrnoException).code === "EPIPE") return 141;
-    process.stderr.write(`error: ${(exc instanceof Error ? exc.message : String(exc)).trimEnd()}\n`);
+    const settings = lastSettings ?? settingsFromEnv();
+    const coded = internalError(exc, settings.uri, settings.llm_base_url);
+    process.stderr.write(`${errorText(coded, words.join(" "))}\n`);
     return 1;
   } finally {
     setLogger(previous);

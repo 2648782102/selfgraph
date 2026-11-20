@@ -265,6 +265,12 @@ such as `neo4j`.
 A single node or edge row is larger than HydraDB accepts in one message. Split
 large property values or text. Do not cut data without asking the user.
 
+#### `internal_error`
+
+An unexpected error reached the CLI or MCP boundary and was not mapped to a
+specific code. The message keeps the original error with any credentials masked.
+Report it with the message if it persists.
+
 ## Messages
 
 Python and TypeScript produce the same message text, with the same paths. Both

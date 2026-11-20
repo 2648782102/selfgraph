@@ -61,6 +61,8 @@ export const HINTS = {
   write_conflict:
     "A concurrent write conflicted and the SDK's own retries ran out. Run the same call again: ids are deterministic and inserts are upserts, so a retry does not duplicate anything.",
   store_busy: "The server timed out or was too busy to take the query. Run the same call again after a moment.",
+  internal_error:
+    "An unexpected error reached the CLI or MCP boundary and was not mapped to a specific code. The message keeps the original error with any credentials masked. Report it with the message if it persists.",
 } as const;
 export type ErrorCode = keyof typeof HINTS;
 export const WARNING_HINTS: Readonly<Record<string, string>> = {
@@ -260,6 +262,10 @@ export class TransientError extends StoreError {
   static override readonly code: ErrorCode = "write_conflict";
 }
 
+export class InternalError extends SelfGraphError {
+  static override readonly code: ErrorCode = "internal_error";
+}
+
 export const LLM_HINT = "pass llm in the SelfGraph options (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)";
 export const STORE_CLOSED_MESSAGE = "this store is closed; create a new store for each SelfGraph";
 export const TOKEN_HINT = "pass auth: TOKEN in the HydraDBStore options (or set SELFGRAPH_AUTH)";
@@ -423,6 +429,17 @@ export function redactUri(text: string, uri: string | null | undefined): string 
 }
 
 /**
+ * Mask the userinfo of each configured URI wherever a message shows it.
+ *
+ * @param text (string): the message.
+ * @param uris ((string | null | undefined)[]): the configured URIs, such as the store URI and the LLM base_url; empty entries are skipped.
+ * @return (string): the message with every URI's credentials replaced by ***.
+ */
+export function redactUris(text: string, ...uris: (string | null | undefined)[]): string {
+  return uris.reduce<string>((out, uri) => redactUri(out, uri), text);
+}
+
+/**
  * The message of a thrown value, or its text when it is not an Error.
  *
  * @param exc (unknown): the thrown value.
@@ -430,6 +447,18 @@ export function redactUri(text: string, uri: string | null | undefined): string 
  */
 export function errorMessage(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
+}
+
+/**
+ * Wrap an unexpected error that reached a boundary as a coded InternalError with every URI's credentials masked.
+ *
+ * @param exc (unknown): the unmapped error.
+ * @param uris ((string | null | undefined)[]): the configured URIs to mask, such as the store URI and the LLM base_url.
+ * @return (InternalError): the coded error, safe to print.
+ */
+export function internalError(exc: unknown, ...uris: (string | null | undefined)[]): InternalError {
+  const name = exc instanceof Error ? exc.name : "Error";
+  return new InternalError(redactUris(`${name}: ${errorMessage(exc)}`, ...uris));
 }
 
 const CONNECT_CODES: Readonly<Record<string, string>> = {

@@ -478,3 +478,19 @@ def test_proto_keys_are_rejected_by_mcp():
                     {"entities": [{"name": "Ann", "type": "Person", "properties": {"nested": [{"__proto__": "x"}]}}]}
                 )
             )
+
+
+@needs_mcp
+def test_unexpected_tool_errors_come_back_coded_and_mask_credentials(monkeypatch):
+    uri = "bolt://user:store-secret@db.example:7687"
+    base_url = "https://proxy:llm-secret@llm.example/v1"
+    monkeypatch.setattr(srv, "_settings", srv.GraphSettings(store="neo4j", uri=uri, llm_base_url=base_url))
+
+    async def insert_facts(**kwargs):
+        raise RuntimeError(f"driver blew up talking to {uri} and {base_url}")
+
+    error = run(srv._tool(insert_facts, set())()).structured_content
+    assert (error["error_type"], error["code"]) == ("InternalError", "internal_error")
+    assert "store-secret" not in error["error"] and "llm-secret" not in error["error"]
+    assert "bolt://***@db.example:7687" in error["error"]
+    assert "https://***@llm.example/v1" in error["error"]

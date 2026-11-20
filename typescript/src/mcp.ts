@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { SelfGraph } from "./client.js";
-import { errorMessage, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
+import { internalError, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
 import { toOssie } from "./export.js";
 import { Lazy } from "./internal/lazy.js";
 import { loadOptional } from "./internal/optional.js";
@@ -827,11 +827,12 @@ export async function callTool(
       isError: false,
     };
   } catch (exc) {
+    const tool = t?.name ?? String(target);
     if (exc instanceof SelfGraphError) {
-      return { result: errorResult(exc, t?.name ?? String(target), hinted), isError: true };
+      return { result: errorResult(exc, tool, hinted), isError: true };
     }
-    const name = exc instanceof Error ? exc.name : "Error";
-    return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };
+    const coded = internalError(exc, settings?.uri, settings?.llm_base_url);
+    return { result: errorResult(coded, tool, hinted), isError: true };
   }
 }
 

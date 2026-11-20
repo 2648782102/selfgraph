@@ -287,7 +287,7 @@ class TopInputModel(InputModel):
         try:
             super().__init__(**data)
         except PydanticValidationError as exc:
-            raise validation_error(f"invalid {self.input_label}", exc) from exc
+            raise validation_error(f"invalid {self.input_label}", exc) from None
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -306,7 +306,7 @@ def as_input(model: type[M], value: Any, what: str) -> M | None:
     try:
         return model.model_validate(value)
     except PydanticValidationError as exc:
-        raise validation_error(f"invalid {what}", exc) from exc
+        raise validation_error(f"invalid {what}", exc) from None
 
 
 def _issue_message(err: Mapping[str, Any]) -> str:

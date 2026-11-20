@@ -468,6 +468,25 @@ describe("MCP tools over Kuzu", () => {
   });
 });
 
+it("wraps an unexpected tool error as a coded, credential-masked internal error", async () => {
+  const baseUrl = "https://proxy:llm-secret@llm.example/v1";
+  await configure({ namespace: "mcp_internal", llm_base_url: baseUrl });
+  const tool = {
+    name: "insert_facts",
+    input: {},
+    run: () => {
+      throw new Error(`driver blew up talking to ${baseUrl}`);
+    },
+  };
+  const { result, isError } = await callTool(tool as never, {});
+  const error = result as { error: string; error_type: string; code: string };
+  expect(isError).toBe(true);
+  expect(error.error_type).toBe("InternalError");
+  expect(error.code).toBe("internal_error");
+  expect(error.error).not.toContain("llm-secret");
+  expect(error.error).toContain("https://***@llm.example/v1");
+});
+
 it("rejects proto keys before MCP argument parsing drops them", async () => {
   await configure({ namespace: "proto_rejection" });
   for (const [name, args] of [

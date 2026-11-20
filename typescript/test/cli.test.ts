@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { beforeAll, describe, expect, it } from "vitest";
-import { buildParser } from "../src/cli.js";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { buildParser, main } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
 import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
 import { pyRepr } from "../src/internal/py.js";
@@ -643,6 +643,45 @@ describe("CLI settings", () => {
     for (const uri of ["graph.kuzu", join(dir, "db")]) {
       expect(() => SelfGraph.connect({ uri })).toThrow('this looks like a Kuzu path; pass store: "kuzu"');
     }
+  });
+
+  it("wraps an unexpected CLI error as a coded, credential-masked internal error", async () => {
+    const uri = "bolt://user:store-secret@db.example:7687";
+    const baseUrl = "https://proxy:llm-secret@llm.example/v1";
+    const connect = vi.spyOn(SelfGraph, "connect").mockImplementation(() => {
+      throw new Error(`driver crashed talking to ${uri} with ${baseUrl}`);
+    });
+    const chunks: string[] = [];
+    const write = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+    try {
+      const code = await main([
+        "--store",
+        "neo4j",
+        "--uri",
+        uri,
+        "--llm-provider",
+        "openai",
+        "--llm-model",
+        "m",
+        "--llm-base-url",
+        baseUrl,
+        "entity",
+        "list",
+      ]);
+      expect(code).toBe(1);
+    } finally {
+      write.mockRestore();
+      connect.mockRestore();
+    }
+    const err = chunks.join("");
+    expect(err).toContain("error[internal_error]:");
+    expect(err).not.toContain("store-secret");
+    expect(err).not.toContain("llm-secret");
+    expect(err).toContain("bolt://***@db.example:7687");
+    expect(err).toContain("https://***@llm.example/v1");
   });
 
   it("accepts an auth pair, a provider-prefixed model, and names an unknown setting", () => {
