@@ -469,6 +469,7 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
 
 
 def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
+    pytest.importorskip("kuzu")
     bad = tmp_path / "schema.json"
     bad.write_bytes(b"\xff\xfe{")
 
