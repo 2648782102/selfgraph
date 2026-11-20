@@ -391,15 +391,16 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
 def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):
     g = fresh_graph("export-error")
     run(g.entities.create("Ada", "Person"))
-    target = tmp_path / "notes"
-    target.write_text("not a directory")
+    parent = tmp_path / "notes"
+    parent.write_text("not a directory")
+    target = parent / "nested"
     capsys.readouterr()
 
     with pytest.raises(SelfGraphError) as raised:
         cli(g, ["export", "obsidian", str(target)], capsys)
     assert raised.value.code == "invalid_argument"
     assert raised.value.field == "directory"
-    assert "File exists" in str(raised.value)
+    assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
 
 
 def test_version_and_help_text(capsys):

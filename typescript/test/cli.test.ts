@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildParser } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
 import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
+import { pyRepr } from "../src/internal/py.js";
 import {
   bindParams,
   buildLlm,
@@ -75,13 +76,16 @@ describe("built CLI against Kuzu", () => {
   it("reports an export filesystem error with a code, a field, and no traceback", () => {
     const ns = ["--namespace", "cli_export_error"];
     seed(ns, "Ada");
-    const target = join(dir, "notes");
-    writeFileSync(target, "not a directory");
+    const parent = join(dir, "notes");
+    writeFileSync(parent, "not a directory");
+    const target = join(parent, "nested");
 
     const result = cli([...kuzu, ...ns, "export", "obsidian", target]);
 
     expect(result.code).toBe(2);
-    expect(result.err).toContain("error[invalid_argument]: cannot write the vault to");
+    expect(result.err).toContain(
+      `error[invalid_argument]: cannot write the vault to ${pyRepr(target)}: not a directory`,
+    );
     expect(result.err).toContain("field: directory");
     expect(result.err).not.toContain("stack");
   });

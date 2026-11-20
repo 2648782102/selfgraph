@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import errno
 import logging
 import os
 import sys
@@ -281,8 +282,15 @@ async def _export_obsidian(graph, args):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
     except OSError as exc:
+        kind = {
+            errno.EEXIST: "file exists",
+            errno.ENOTDIR: "not a directory",
+            errno.EACCES: "permission denied",
+            errno.EPERM: "permission denied",
+            errno.ENOENT: "no such directory",
+        }.get(exc.errno)
         raise ValidationError(
-            f"cannot write the vault to {str(folder)!r}: {exc.strerror or exc}", field="directory"
+            f"cannot write the vault to {str(folder)!r}: {kind or exc.strerror or exc}", field="directory"
         ) from exc
     return {"directory": str(folder), "notes": len(notes)}
 

@@ -812,8 +812,15 @@ export function buildParser(): Command<[], GlobalOptions> {
             writeFileSync(target, text, "utf8");
           }
         } catch (exc) {
-          const reason = (exc as NodeJS.ErrnoException).message;
-          throw new ValidationError(`cannot write the vault to ${pyRepr(directory)}: ${reason}`, {
+          const kind =
+            {
+              EEXIST: "file exists",
+              ENOTDIR: "not a directory",
+              EACCES: "permission denied",
+              EPERM: "permission denied",
+              ENOENT: "no such directory",
+            }[(exc as NodeJS.ErrnoException).code ?? ""] ?? (exc as Error).message;
+          throw new ValidationError(`cannot write the vault to ${pyRepr(directory)}: ${kind}`, {
             field: "directory",
           });
         }
