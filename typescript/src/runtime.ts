@@ -193,7 +193,9 @@ export function readText(path: string): string {
     const bytes = readFileSync(input);
     const text = bytes.toString("utf8");
     if (text.includes("\uFFFD") && !bytes.equals(Buffer.from(text, "utf8"))) {
-      throw new ValidationError(`cannot read ${pyRepr(path)}: not valid UTF-8; save the file as UTF-8 and try again`);
+      throw new ValidationError(`cannot read ${pyRepr(path)}: not valid UTF-8; save the file as UTF-8 and try again`, {
+        field: "path",
+      });
     }
     return text;
   } catch (exc) {
