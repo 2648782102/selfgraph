@@ -1923,6 +1923,25 @@ function capSlots(
   return cap.limits.map(([side, limit]) => [[cap.canonical, side, side === "from" ? fromEntity : toEntity], limit]);
 }
 
+/**
+ * The entity ids to lock before a relation write: every source, and every endpoint a max_count constrains.
+ *
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @param ends (ReadonlyArray<readonly [string, string, string]>): each relation's (normalized type, source id, destination id).
+ * @return (string[]): the entity ids to lock, in id order.
+ */
+function relationLockIds(
+  caps: ReadonlyMap<string, RelationCap> | null | undefined,
+  ends: ReadonlyArray<readonly [string, string, string]>,
+): string[] {
+  const targets = new Set<string>();
+  for (const [rtype, fromEntity, toEntity] of ends) {
+    targets.add(fromEntity);
+    if (caps) for (const [[, , endpoint]] of capSlots(caps, rtype, fromEntity, toEntity)) targets.add(endpoint);
+  }
+  return [...targets].sort();
+}
+
 export class Contradictions {
   private readonly groups = new Map<string, Map<string, Rank>>();
   private readonly past = new Map<string, Map<string, Rank>>();
@@ -2595,7 +2614,11 @@ export async function upsertRelations(
     rejectReservedRelType(rtype, rtype);
     return { rid: rel.id || ids.relationId(rel.from_entity, rtype, rel.to_entity), rtype, rel, evidence };
   });
-  for (const from of new Set(keyed.map((k) => k.rel.from_entity))) await runner.lockNode(ns, L_ENTITY, from);
+  for (const eid of relationLockIds(
+    options.caps,
+    keyed.map((k) => [k.rtype, k.rel.from_entity, k.rel.to_entity] as const),
+  ))
+    await runner.lockNode(ns, L_ENTITY, eid);
   const rids = dedupList(keyed.map((k) => k.rid));
   const stored = await currentRelations(
     runner,
@@ -2786,7 +2809,8 @@ export async function createRelation(
   const properties = mergeProps(null, args.properties);
   const ends = { from_entity: args.from_entity, type: rtype, to_entity: args.to_entity };
   await schemaCheck?.(runner, { entities: [], relations: [{ id: args.id || null, ...ends, properties }] });
-  await runner.lockNode(ns, L_ENTITY, args.from_entity);
+  for (const eid of relationLockIds(options.caps, [[rtype, args.from_entity, args.to_entity]]))
+    await runner.lockNode(ns, L_ENTITY, eid);
   const prior = await newestRelation(runner, ns, rid);
   if (prior !== null) {
     if (prior.is_current || prior.invalidated_at === null) throw new ConflictError("Relation", rid);

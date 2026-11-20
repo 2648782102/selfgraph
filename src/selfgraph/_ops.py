@@ -1935,6 +1935,22 @@ def _cap_slots(
     return [((cap.canonical, side, from_entity if side == "from" else to_entity), limit) for side, limit in cap.limits]
 
 
+def _relation_lock_ids(caps: Mapping[str, RelationCap] | None, ends: Iterable[tuple[str, str, str]]) -> list[str]:
+    """The entity ids to lock before a relation write: every source, and every endpoint a max_count constrains.
+
+    @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits, or None without a schema.
+    @param ends (Iterable[tuple[str, str, str]]): each relation's (normalized type, source id, destination id).
+    @return (list[str]): the entity ids to lock, in id order.
+    """
+    targets: set[str] = set()
+    for rtype, from_entity, to_entity in ends:
+        targets.add(from_entity)
+        if caps is not None:
+            for (_, _, endpoint), _ in _cap_slots(caps, rtype, from_entity, to_entity):
+                targets.add(endpoint)
+    return sorted(targets)
+
+
 class Contradictions:
     def __init__(
         self,
@@ -2483,8 +2499,8 @@ async def upsert_relations(
         rtype = _ids.normalize_rel_type(rel.type)
         _reject_reserved_rel_type(rtype, rtype)
         keyed.append((rel.id or _ids.relation_id(rel.from_entity, rtype, rel.to_entity), rtype, rel, evidence))
-    for from_entity in _dedup_list(rel.from_entity for _, _, rel, _ in keyed):
-        await runner.lock_node(ns, L_ENTITY, from_entity)
+    for eid in _relation_lock_ids(caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]):
+        await runner.lock_node(ns, L_ENTITY, eid)
     rids = _dedup_list(rid for rid, *_ in keyed)
     stored = await _current_relations(runner, ns, [(rid, rel) for rid, _, rel, _ in keyed])
     records, gained = await _plan_evidence(
@@ -2663,7 +2679,8 @@ async def create_relation(
     if schema_check is not None:
         subject = RelationInput(id=id, from_entity=from_entity, type=rtype, to_entity=to_entity, properties=properties)
         await schema_check(runner, Extraction(relations=[subject]))
-    await runner.lock_node(ns, L_ENTITY, from_entity)
+    for eid in _relation_lock_ids(caps, [(rtype, from_entity, to_entity)]):
+        await runner.lock_node(ns, L_ENTITY, eid)
     newest = await _newest_edge(runner, ns, rid, _is_relation_type)
     prior = None if newest is None else _relation_of(newest)
     if prior is not None:
