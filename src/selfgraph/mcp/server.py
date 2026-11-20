@@ -14,7 +14,7 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
 from ..client import SelfGraph
-from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, surface_hint
+from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, internal_error, surface_hint
 from ..ids import type_name
 from ..models import Stance, Status, check_options, validation_error
 from ..resources._common import DEFAULT_PAGE_LIMIT
@@ -146,7 +146,9 @@ def _tool(fn: Callable[..., Awaitable[Any]], hinted: set[str]) -> Callable[..., 
         except SelfGraphError as exc:
             return _error_result(exc, fn.__name__, hinted)
         except Exception as exc:  # noqa: BLE001
-            return _json_result({"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}, error=True)
+            uri = _settings.uri if _settings is not None else None
+            base_url = _settings.llm_base_url if _settings is not None else None
+            return _error_result(internal_error(exc, uri, base_url), fn.__name__, hinted)
         if result is None or isinstance(result, list):
             return _json_result(result)
         return _with_warning_hints(result, hinted) if isinstance(result, dict) else result

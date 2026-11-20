@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { connectionReason, HINTS, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
+import { connectionReason, HINTS, internalError, SelfGraphError, WARNING_HINTS } from "../src/errors.js";
 import {
   Extraction,
   FalkorDBStore,
@@ -185,6 +185,7 @@ describe("error codes", () => {
       write_too_large: () => hydradb.upsertNode("n", "Entity", "x", { id: "x", blob: "x".repeat(3_000_000) }),
       write_conflict: () => mapError(hydradb, "", "transaction conflict"),
       store_busy: () => busy.runCypher("RETURN 1"),
+      internal_error: () => raise(internalError(new Error("boom"))),
     };
     for (const [code, call] of Object.entries(triggers)) codes[code] = await codeOf(call);
     expect(codes).toEqual(Object.fromEntries(Object.keys(HINTS).map((code) => [code, code])));

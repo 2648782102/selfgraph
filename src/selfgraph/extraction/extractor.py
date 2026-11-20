@@ -282,7 +282,10 @@ class LLMExtractor(_WarningSink):
                 except Exception as exc:  # noqa: BLE001
                     return InsertWarning(
                         code="extraction_partial_failure",
-                        message=f"{kind} extraction failed on chunk {chunk.index}: {summarize_error(exc)}",
+                        message=(
+                            f"{kind} extraction failed on chunk {chunk.index}: "
+                            f"{summarize_error(exc, getattr(self._llm, 'base_url', None))}"
+                        ),
                         source_id=self._source_id,
                         chunk_id=chunk_id(chunk),
                     )

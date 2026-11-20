@@ -72,6 +72,41 @@ def test_non_retryable_errors_map_to_one_clear_message():
     assert _fatal(RuntimeError("rate limited"), config, "gemini/x") is None
 
 
+def test_llm_model_not_found_masks_base_url_credentials():
+    config = LLMConfig(provider="openai", model="gpt-x", base_url="https://proxyuser:hunter2@llm.example/v1")
+    err = _fatal(NotFoundError("not found"), config, "openai/gpt-x")
+    text = str(err)
+    assert "hunter2" not in text and "proxyuser" not in text
+    assert "was not found for provider openai at https://***@llm.example/v1" in text
+
+
+def test_summarize_error_masks_a_base_url_the_provider_quotes():
+    exc = RuntimeError("APIConnectionError: request to https://u:secret@llm.example/v1/chat failed")
+    summary = summarize_error(exc, "https://u:secret@llm.example/v1")
+    assert "secret" not in summary and "u:secret@" not in summary
+    assert "https://***@llm.example/v1" in summary
+
+
+def test_llm_config_errors_never_leak_the_api_key_in_a_traceback():
+    import traceback
+
+    def tb(exc: BaseException) -> str:
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+    secret = "sk-" + "s3cr3t"
+    missing_model = {"provider": "openai", "api_key": secret}
+    with pytest.raises(ValidationError) as caught:
+        LLMConfig(**missing_model)
+    assert secret not in tb(caught.value)
+    bad_key = {"provider": "openai", "model": "m", "api_key": [secret]}
+    with pytest.raises(ValidationError) as caught:
+        LLMConfig(**bad_key)
+    assert secret not in tb(caught.value)
+    with pytest.raises(ValidationError) as caught:
+        resolve_llm(missing_model)
+    assert secret not in tb(caught.value)
+
+
 def test_errors_are_summarized_to_one_capped_line_and_gemini_gets_no_temperature():
     wrapped = InstructorRetryException(ValueError("\x1b[1mNo tool calls\x1b[0m\nModelResponse(...)"))
     assert summarize_error(wrapped) == "ValueError: No tool calls"

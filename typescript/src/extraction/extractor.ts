@@ -511,6 +511,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
 
     const version =
       this.sourceId === null ? null : ids.sourceVersionId(this.sourceId, ids.contentHash(utf8(document.text)));
+    const baseUrl = (this.llm as { base_url?: string | null }).base_url ?? null;
     calls.forEach(({ chunk, kind }, i) => {
       const outcome = outcomes[i]!;
       const chunkId = version === null ? null : ids.chunkId(version, chunk.index);
@@ -520,7 +521,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
         this.warnings.push({
           ...insertWarning(
             "extraction_partial_failure",
-            `${kind} extraction failed on chunk ${chunk.index}: ${summarizeError(outcome.error)}`,
+            `${kind} extraction failed on chunk ${chunk.index}: ${summarizeError(outcome.error, baseUrl)}`,
           ),
           source_id: this.sourceId,
           chunk_id: chunkId,

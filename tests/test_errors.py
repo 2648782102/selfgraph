@@ -22,7 +22,7 @@ from selfgraph import (
     StoreError,
     TransientError,
 )
-from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason
+from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason, internal_error
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
 from selfgraph.resolution import ResolutionDecision
@@ -229,6 +229,7 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "write_too_large": lambda: hydradb.upsert_node("n", "Entity", "x", {"id": "x", "blob": "x" * 3_000_000}),
         "write_conflict": lambda: _raise(hydradb._error(DriverError("", "transaction conflict"))),
         "store_busy": lambda: _busy_falkordb(monkeypatch).run_cypher("RETURN 1"),
+        "internal_error": lambda: _raise(internal_error(RuntimeError("boom"))),
     }
     codes |= {code: _code(call) for code, call in triggers.items()}
     assert codes == {code: code for code in HINTS}

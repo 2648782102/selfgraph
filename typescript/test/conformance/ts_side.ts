@@ -1,6 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 
 import { kv } from "../../src/cli.js";
+import { internalError, maskUri, redactUri, redactUris } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
@@ -448,6 +449,7 @@ export function schemaWarnings(): {
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
+  credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
   const terms = Schema.parse(TERMS_SPEC);
   const sharedSchema = Schema.parse(SHARED_DEFINITION_SPEC);
@@ -601,6 +603,23 @@ export function schemaWarnings(): {
       const parsed = lenientTime(value);
       return parsed === null ? null : jsonIso(parsed);
     }),
+    credential_masking: credentialMasking(),
+  };
+}
+
+/**
+ * Mask store and LLM credentials the way the error helpers do, for byte-for-byte parity with Python.
+ *
+ * @return ({ mask: string; redact: string; redact_many: string; internal: string }): the masked URI, one and two URIs redacted from a message, and the wrapped internal error text.
+ */
+function credentialMasking(): { mask: string; redact: string; redact_many: string; internal: string } {
+  const uri = "bolt://user:store-secret@db.example:7687";
+  const base = "https://proxy:llm-secret@llm.example/v1";
+  return {
+    mask: maskUri(uri),
+    redact: redactUri(`driver error reaching ${uri}`, uri),
+    redact_many: redactUris(`call to ${uri} and ${base} failed`, uri, base),
+    internal: internalError(new Error(`boom at ${uri} and ${base}`), uri, base).message,
   };
 }
 
