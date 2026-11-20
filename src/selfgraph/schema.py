@@ -43,6 +43,17 @@ ContradictionMode = Literal["off", "warn", "supersede", "llm"]
 _log = logging.getLogger("selfgraph")
 
 
+def _non_blank_name(value: str) -> str:
+    """Reject a blank schema name, keeping the value unchanged otherwise.
+
+    @param value (str): the entity, relation, or property name to check.
+    @return (str): the name unchanged; raises ValueError when it is blank.
+    """
+    if not value.strip():
+        raise ValueError(f"must be a non-empty string, got {value!r}")
+    return value
+
+
 class PropertySpec(InputModel):
     input_label: ClassVar[str] = "property"
 
@@ -50,6 +61,8 @@ class PropertySpec(InputModel):
     type: PropertyType = "string"
     required: bool = False
     description: str | None = None
+
+    _non_blank = field_validator("name")(_non_blank_name)
 
 
 class TermMapping(InputModel):
@@ -82,6 +95,8 @@ class EntityType(InputModel):
     mappings: list[TermMapping] = Field(default_factory=list)
     definitions: list[Definition] = Field(default_factory=list)
     certified: bool = False
+
+    _non_blank = field_validator("name")(_non_blank_name)
 
 
 _COUNT_RANGE = "count_range"
@@ -159,6 +174,8 @@ class RelationType(InputModel):
     properties: list[PropertySpec] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
+
+    _non_blank = field_validator("type")(_non_blank_name)
 
 
 class Schema(TopInputModel):
