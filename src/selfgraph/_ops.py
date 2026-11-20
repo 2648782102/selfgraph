@@ -678,32 +678,64 @@ async def _nodes_by_id(runner: Any, ns: str, label: str, ids: list[str]) -> dict
     return found
 
 
+DIRECT = ""
+
+
+def evidence_via(props: dict[str, Any]) -> list[str]:
+    """The statements that wrote one stored evidence row, as recorded in its via property.
+
+    Each entry is DIRECT for a statement no merge rewrote, or the space-separated, sorted ids of the merges whose
+    rewrite carried the statement onto the row's target. A row written before via was recorded counts as direct.
+
+    @param props (dict[str, Any]): the stored evidence row.
+    @return (list[str]): the row's statements.
+    """
+    return list(props.get("via") or [DIRECT])
+
+
+def via_of(merge_ids: Iterable[str]) -> str:
+    """The via entry of a statement that the given merges rewrote, or DIRECT for none.
+
+    @param merge_ids (Iterable[str]): the merge ids.
+    @return (str): the entry.
+    """
+    return " ".join(sorted(set(merge_ids)))
+
+
 async def _plan_evidence(
-    runner: Any, ns: str, items: list[tuple[str, Evidence]], *, new_targets: set[str]
+    runner: Any,
+    ns: str,
+    items: list[tuple[str, Evidence]],
+    *,
+    new_targets: set[str],
+    via: list[list[str]] | None = None,
 ) -> tuple[list[tuple[str, dict]], dict[str, int]]:
     """Find which evidence records are not stored yet and how many distinct sources each target gains.
 
     Records are looked up by id first; only a target missing a record is then checked for any record from that
     source. A target with no stored version has no stored evidence, so targets in new_targets skip both lookups.
+    Each record also lists the statements that wrote it (see evidence_via), so an unmerge moves exactly the rows a
+    merge carried; a stored record that gains a statement is rewritten with its original created_at.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param items (list[tuple[str, Evidence]]): (target id, evidence) pairs to record.
     @param new_targets (set[str]): targets known to have no stored evidence.
+    @param via (list[list[str]] | None): each item's statements, as via_of gives them; None for all direct.
     @return (tuple[list[tuple[str, dict]], dict[str, int]]): the records to write, and the sources gained per target.
     """
-    pending: dict[str, tuple[str, Evidence]] = {}
-    for target, ev in items:
+    pending: dict[str, tuple[str, Evidence, dict[str, None]]] = {}
+    for i, (target, ev) in enumerate(items):
         evid = _ids.evidence_id(
             target, ev.source_id, ev.source_version, ev.chunk_id, ev.quote, ev.start_offset, ev.end_offset
         )
-        pending.setdefault(evid, (target, ev))
-    known = [evid for evid, (target, _) in pending.items() if target not in new_targets]
-    stored_ids = set(await _nodes_by_id(runner, ns, L_EVIDENCE, known))
+        pending.setdefault(evid, (target, ev, {}))[2].update(dict.fromkeys([DIRECT] if via is None else via[i]))
+    known = [evid for evid, (target, *_) in pending.items() if target not in new_targets]
+    stored = await _nodes_by_id(runner, ns, L_EVIDENCE, known)
     by_source: dict[str, dict[str, None]] = {}
     for evid in known:
-        if evid not in stored_ids:
-            target, ev = pending[evid]
+        if evid not in stored:
+            target, ev, _ = pending[evid]
             by_source.setdefault(ev.source_id, {})[target] = None
     seen: set[tuple[str, str]] = set()
     for source_id, targets in by_source.items():
@@ -711,10 +743,17 @@ async def _plan_evidence(
         seen |= {(props["target_id"], source_id) for props in rows}
     records: list[tuple[str, dict]] = []
     gained: dict[str, int] = {}
-    for evid, (target, ev) in pending.items():
-        if evid in stored_ids:
+    for evid, (target, ev, statements) in pending.items():
+        if evid in stored:
+            held = evidence_via(stored[evid])
+            added = [s for s in statements if s not in held]
+            if added:
+                records.append((evid, {**stored[evid], "via": [*held, *added]}))
             continue
-        records.append((evid, encode_evidence_props(ns=ns, id=evid, target_id=target, evidence=ev)))
+        props = encode_evidence_props(ns=ns, id=evid, target_id=target, evidence=ev)
+        if list(statements) != [DIRECT]:
+            props["via"] = list(statements)
+        records.append((evid, props))
         if (target, ev.source_id) not in seen:
             seen.add((target, ev.source_id))
             gained[target] = gained.get(target, 0) + 1
@@ -722,7 +761,9 @@ async def _plan_evidence(
 
 
 async def _write_evidence(runner: Any, ns: str, records: list[tuple[str, dict]], known: datetime) -> None:
-    """Write new evidence records, each stamped with the write that recorded it, for known_at reads.
+    """Write evidence records, each new one stamped with the write that recorded it, for known_at reads.
+
+    A stored record rewritten with more statements keeps the created_at it already has.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -732,7 +773,7 @@ async def _write_evidence(runner: Any, ns: str, records: list[tuple[str, dict]],
     """
     if records:
         stamp = to_iso(known)
-        await runner.upsert_nodes(ns, L_EVIDENCE, [(evid, {**props, "created_at": stamp}) for evid, props in records])
+        await runner.upsert_nodes(ns, L_EVIDENCE, [(evid, {"created_at": stamp, **props}) for evid, props in records])
 
 
 async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip: int, limit: int) -> list[Evidence]:
@@ -2407,6 +2448,7 @@ async def upsert_relations(
     contradiction: str = "off",
     caps: Mapping[str, RelationCap] | None = None,
     warnings: list[InsertWarning] | None = None,
+    via: list[list[list[str]]] | None = None,
 ) -> list[Relation]:
     """Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
 
@@ -2428,6 +2470,8 @@ async def upsert_relations(
     @param contradiction (str): "off", "warn", or "supersede", applied where caps set a max_count.
     @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits by relation type.
     @param warnings (list[InsertWarning] | None): receives the contradiction warnings.
+    @param via (list[list[list[str]]] | None): for each input, each evidence record's statements (see _plan_evidence);
+        None for all direct.
     @return (list[Relation]): each input's stored version, in input order.
     """
     keyed = []
@@ -2445,6 +2489,7 @@ async def upsert_relations(
         ns,
         [(rid, ev) for rid, _, _, evidence in keyed for ev in evidence],
         new_targets=set(rids) - set(stored),
+        via=None if via is None else [statements for item in via for statements in item],
     )
     tracker, existing = await _contradiction_check(
         runner, ns, contradiction, caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]

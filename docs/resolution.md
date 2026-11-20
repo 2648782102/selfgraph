@@ -218,9 +218,14 @@ absorbed id would fold them, so unmerging restores them too.
 - Removes from the survivor only what the merge added. Its aliases, external ids,
   and properties end up exactly as they were before.
 - Moves each rewritten object back between its original endpoints, with the
-  current properties, event time, and evidence, and deletes the redirected one.
-  An object that existed before the merge stays, and the original is added beside
-  it. Decision steps follow moved relations. A moved decision keeps a step list
+  current properties and event time, and deletes the redirected one. An object
+  that existed before the merge stays, and the original is added beside it.
+- Moves exactly the evidence the merge carried. Each evidence row records the
+  merges whose rewrite wrote it, so a row stated directly, or carried by another
+  merge, stays on the survivor's relation. A survivor relation that still has
+  such evidence, or that another live merge rewrote a different fact onto, is
+  kept, with its `source_count` recounted and its decision steps in place.
+  Decision steps follow relations the unmerge deletes. A moved decision keeps a step list
   edited after the merge instead of replaying its original steps. A moved relation that a
   [replaced source](inserting.md#replacing-a-source) retired is written back
   retired, so an unmerge never brings back a withdrawn fact. One a contradiction
