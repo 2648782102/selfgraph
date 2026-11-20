@@ -1223,6 +1223,29 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     v.revision,
     v.invalidated_at ? jsonIso(v.invalidated_at) : null,
   ]);
+  const restoredSrc = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}_restore_src`,
+    extraction: "regex",
+  });
+  const [berlin, paris] = ["Ann works at Acme in Berlin.", "Ann works at Acme in Paris."];
+  await restoredSrc.insert.text(berlin, { source_id: "note", event_time: "2020-01-01T00:00:00Z" });
+  await restoredSrc.insert.text(paris, { source_id: "note", event_time: "2021-01-01T00:00:00Z", replace_source: true });
+  const beforeRestore = new Date();
+  await restoredSrc.insert.text(berlin, { source_id: "note", replace_source: true });
+  const quoted = async (at: { as_of: string; known_at?: Date }) => {
+    const lines = (await restoredSrc.retrieve("Ann Acme Berlin Paris", at)).context.split("\n");
+    return [berlin, paris].filter((text) => lines.includes(`SOURCE | ${text}`));
+  };
+  out.restore_source = [
+    await quoted({ as_of: "2020-06-01T00:00:00Z" }),
+    await quoted({ as_of: "2022-01-01T00:00:00Z" }),
+    await quoted({ as_of: "2022-01-01T00:00:00Z", known_at: beforeRestore }),
+    await quoted({ as_of: "2022-01-01T00:00:00Z", known_at: new Date() }),
+    await quoted({ as_of: "2099-01-01T00:00:00Z" }),
+  ];
+  if (JSON.stringify(out.restore_source) !== JSON.stringify([[berlin], [paris], [paris], [paris], [berlin]])) {
+    throw new Error(`restored source quoted wrongly: ${JSON.stringify(out.restore_source)}`);
+  }
   await graph.insert.facts(
     {
       entities: [

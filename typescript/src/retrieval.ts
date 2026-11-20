@@ -751,18 +751,11 @@ function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
   }
   if (asOf === null) return version.replaced_at == null;
   const valid = epochMicros(asOf.valid);
-  const history = loads<Array<Record<string, string | null>>>(version.replacements_json, []);
-  if (history.length === 0 && asOf.known === null) {
-    const replaced = fromIso(version.replaced_at);
-    return replaced == null || epochMicros(replaced) > valid;
-  }
-  return !history.some(
+  return !loads<Array<Record<string, string | null>>>(version.replacements_json, []).some(
     (r) =>
       epochMicros(fromIso(r.at)!) <= valid &&
       ops.knownBy(fromIso(r.known_at), asOf.known) &&
-      (!r.until ||
-        !ops.knownBy(fromIso(r.until), asOf.known) ||
-        (r.valid_until != null && epochMicros(fromIso(r.valid_until)!) > valid)),
+      (!r.until || !ops.knownBy(fromIso(r.until), asOf.known) || epochMicros(fromIso(r.valid_until)!) > valid),
   );
 }
 
