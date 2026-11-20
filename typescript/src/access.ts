@@ -1,4 +1,4 @@
-import { LLM_HINT, StoreError, TransientError, ValidationError } from "./errors.js";
+import { needsLlm, StoreError, TransientError, ValidationError } from "./errors.js";
 import { Lazy } from "./internal/lazy.js";
 import { sleep } from "./internal/time.js";
 import type { RelationCap, SchemaCheck } from "./ops.js";
@@ -39,7 +39,7 @@ export interface TierSetup {
 export function contradictionTier(mode: unknown, llm: LLMClient | null, maxTier: Level): ContradictionMode {
   requireContradictionMode(mode);
   const tier = clamp("contradiction", mode as string, maxTier) as ContradictionMode;
-  if (tier === "llm" && llm === null) throw new ValidationError(`contradiction 'llm' needs an LLM: ${LLM_HINT}`);
+  if (tier === "llm" && llm === null) throw needsLlm("contradiction 'llm'");
   return tier;
 }
 
@@ -55,7 +55,9 @@ export function seedTier(seeds: unknown, embedder: Embedder | null, maxTier: Lev
   requireTier("seeds", seeds);
   const tier = clamp("seeds", seeds, maxTier) as SeedTier;
   if (tier === "embeddings" && embedder === null) {
-    throw new ValidationError("seeds 'embeddings' needs an embedder: pass embedder in the SelfGraph options");
+    throw new ValidationError("seeds 'embeddings' needs an embedder: pass embedder in the SelfGraph options", {
+      code: "embedder_required",
+    });
   }
   return tier;
 }
@@ -145,7 +147,7 @@ export class GraphAccess {
   }
 
   private requireOpen(): void {
-    if (this.closed) throw new StoreError(CLOSED_MESSAGE);
+    if (this.closed) throw new StoreError(CLOSED_MESSAGE, { code: "graph_closed" });
   }
 
   /**
@@ -178,7 +180,7 @@ export class GraphAccess {
           throw new TransientError(
             `write contention: could not commit after ${MAX_TX_RETRIES} retries; ` +
               "retry the write or serialize concurrent writers to this edge",
-            { cause: exc },
+            { cause: exc, code: exc.code },
           );
         }
         await sleep(Math.random() * Math.min(TX_RETRY_BASE_DELAY_MS * 2 ** attempt, TX_RETRY_MAX_DELAY_MS));

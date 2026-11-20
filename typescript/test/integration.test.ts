@@ -1411,7 +1411,10 @@ describe("store setup errors", () => {
 
   it("validates addresses, trims syntax errors, and names a missing HydraDB token or another engine", async () => {
     expect(() => SelfGraph.connect({ store: "falkordb", uri: "nonsense:abc" })).toThrow(
-      new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535"),
+      new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535", {
+        code: "invalid_setting",
+        field: "uri",
+      }),
     );
     expect(() => new HydraDBStore("http://127.0.0.1:1")).toThrow(/is not a Bolt URI; use bolt:\/\/host:port$/);
     const tokens = Array.from({ length: 80 }, (_, i) => `'T${i}'`).join(", ");
@@ -1638,8 +1641,9 @@ describe("store setup errors", () => {
       else delete process.env.USERPROFILE;
       rmSync(home, { recursive: true, force: true });
     }
-    expect(kuzuError(new Error("IO exception: Could not set lock on file : /x"), "open").message).toMatch(
-      /Kuzu allows one process at a time$/,
+    const kuzuLock = "IO exception: Could not set lock on file : /x\nSee the docs: https://docs.kuzudb.com/concurrency";
+    expect(kuzuError(new Error(kuzuLock), "open").message).toBe(
+      "open: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time",
     );
     expect(kuzuError(new Error("Buffer manager exception: Mmap for size 1 failed."), "q").message).toMatch(
       /pass a smaller max_db_size$/,
@@ -2072,5 +2076,9 @@ it.each([
 ] as const)("keeps other external id value type errors: %j", (external_ids, key) => {
   expect(() =>
     parseOrThrow(Extraction, { entities: [{ type: "Person", name: "Ann", external_ids }] }, "facts"),
-  ).toThrowError(new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`));
+  ).toThrowError(
+    new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`, {
+      field: `entities[0].external_ids.${key}`,
+    }),
+  );
 });

@@ -90,7 +90,7 @@ class Preferences(Resource):
         reader = await self._c._reader()
         versions = await _ops.list_preference_versions(reader, self._c.namespace, id, newest_first=newest_first)
         if not versions:
-            raise NotFoundError("Preference", id)
+            raise NotFoundError("Preference", id, namespace=self._c.namespace)
         return versions
 
     async def update(

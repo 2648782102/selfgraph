@@ -12,7 +12,9 @@ from typing import Any
 
 import pytest
 
+import selfgraph
 from selfgraph import Neo4jStore, SelfGraph
+from selfgraph.errors import HINTS
 
 
 def _env(*names, default=None):
@@ -204,6 +206,34 @@ def cli(g: SelfGraph, argv: list[str], capsys: Any) -> Any:
 
     run(dispatch(g, build_parser().parse_args(argv)))
     return json.loads(capsys.readouterr().out)
+
+
+def error_links(code: str) -> dict[str, str]:
+    """The hint and both docs links an error of a code carries.
+
+    @param code (str): the error code.
+    @return (dict[str, str]): hint, docs, and agent_guide.
+    """
+    return {
+        "hint": HINTS[code],
+        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#{code}",
+        "agent_guide": f"site-packages/selfgraph/errors.md#{code}",
+    }
+
+
+def cli_error(code: str, message: str, command: str, field: str | None = None) -> str:
+    """The stderr text the CLI prints for a SelfGraph error.
+
+    @param code (str): the error code.
+    @param message (str): the message.
+    @param command (str): the command that failed, such as "selfgraph entity get".
+    @param field (str | None): the field at fault, when one is.
+    @return (str): the lines, ending in a newline.
+    """
+    links = error_links(code)
+    lines = [f"error[{code}]: {message}", f"command: {command}", *([f"field: {field}"] if field else [])]
+    lines += [f"hint: {links['hint']}", f"docs: {links['docs']}", f"agent guide: {links['agent_guide']}"]
+    return "\n".join(lines) + "\n"
 
 
 def kuzu_main(tmp_path: Any, *argv: str) -> int:

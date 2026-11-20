@@ -22,13 +22,13 @@ export function isMissing(exc: unknown, name: string): boolean {
  *
  * @param name (string): the package name.
  * @param message (string): the error message when the package is not installed.
- * @param ErrorClass (new (message: string, options?: { cause?: unknown }) => SelfGraphError): the SelfGraph error type to raise.
+ * @param ErrorClass (typeof SelfGraphError): the SelfGraph error type to raise.
  * @return (T): the module namespace.
  */
 export async function loadOptional<T = unknown>(
   name: string,
   message: string,
-  ErrorClass: new (message: string, options?: { cause?: unknown }) => SelfGraphError,
+  ErrorClass: typeof SelfGraphError,
 ): Promise<T> {
   let module = modules.get(name);
   if (module === undefined) {
@@ -38,7 +38,7 @@ export async function loadOptional<T = unknown>(
   try {
     return (await module.get()) as T;
   } catch (exc) {
-    if (isMissing(exc, name)) throw new ErrorClass(message, { cause: exc });
+    if (isMissing(exc, name)) throw new ErrorClass(message, { cause: exc, code: "missing_package" });
     throw exc;
   }
 }

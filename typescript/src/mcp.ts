@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { SelfGraph } from "./client.js";
-import { errorMessage, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
+import { errorMessage, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
 import { toOssie } from "./export.js";
 import { Lazy } from "./internal/lazy.js";
 import { loadOptional } from "./internal/optional.js";
@@ -14,7 +14,7 @@ import {
   type ExtractionPrompts,
   Stance,
   Status,
-  validationMessage,
+  validationError,
 } from "./models.js";
 import { toNeo4jOntology } from "./neo4jSchema.js";
 import { DECISION_CLEARABLE, PREFERENCE_CLEARABLE, requireChanges } from "./ops.js";
@@ -643,7 +643,7 @@ export const TOOLS: Tool[] = [
       "literals that differ from a stored entity name only by case or spacing.",
     input: { query: str, params: optObj },
     run: async (g, a) => {
-      if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE);
+      if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE, { code: "read_only_query" });
       return checkedCypher(g, a.query, bindParams(a.query, a.params));
     },
   }),
@@ -763,15 +763,55 @@ export async function close(): Promise<void> {
 }
 
 /**
- * Validate the arguments and run a tool, turning an error into a structured {error, error_type} result flagged as an MCP error.
+ * The structured result for a failed tool, with the hint and links only the first time the session sees its code.
+ *
+ * @param exc (SelfGraphError): the error.
+ * @param tool (string): the tool that failed.
+ * @param hinted (Set<string>): the codes the session has seen.
+ * @return (Record<string, unknown>): the error fields, worded for the server, with the tool name.
+ */
+function errorResult(exc: SelfGraphError, tool: string, hinted: Set<string>): Record<string, unknown> {
+  const fields: Record<string, unknown> = { ...exc.toJSON(), error: surfaceHint(exc.message), tool };
+  const code = exc.code;
+  const seen = hinted.has(code);
+  hinted.add(code);
+  if (!seen) return fields;
+  const { hint: _hint, docs: _docs, agent_guide: _guide, ...rest } = fields;
+  return rest;
+}
+
+/**
+ * Add the hint of each warning code in a result that the session has not seen yet, as warning_hints.
+ *
+ * @param result (unknown): the tool result.
+ * @param hinted (Set<string>): the codes the session has seen.
+ * @return (unknown): the result, with warning_hints when a warning code is new.
+ */
+function withWarningHints(result: unknown, hinted: Set<string>): unknown {
+  const warnings = (result as { warnings?: unknown } | null)?.warnings;
+  if (!Array.isArray(warnings)) return result;
+  const codes = new Set(warnings.map((w) => (w as { code?: unknown })?.code).filter((c) => typeof c === "string"));
+  const fresh: string[] = [];
+  for (const code of [...codes].filter((code) => WARNING_HINTS[code] !== undefined).sort()) {
+    if (!hinted.has(code)) fresh.push(code);
+    hinted.add(code);
+  }
+  const hints = Object.fromEntries(fresh.map((code) => [code, WARNING_HINTS[code]]));
+  return fresh.length ? { ...(result as object), warning_hints: hints } : result;
+}
+
+/**
+ * Validate the arguments and run a tool, turning an error into a structured {error, error_type, code, retryable, docs} result flagged as an MCP error.
  *
  * @param target (Tool | string): the tool, or its name.
  * @param args (Record<string, unknown>): the arguments.
+ * @param hinted (Set<string>): the codes the session has seen; a new set makes the call its own session.
  * @return ({ result: unknown; isError: boolean }): the JSON-ready result, and whether it is an error.
  */
 export async function callTool(
   target: Tool | string,
   args: Record<string, unknown> = {},
+  hinted: Set<string> = new Set(),
 ): Promise<{ result: unknown; isError: boolean }> {
   const t = typeof target === "string" ? TOOLS.find((tool) => tool.name === target) : target;
   try {
@@ -780,19 +820,15 @@ export async function callTool(
     for (const field of ["properties", "set_properties", "external_ids"]) {
       if (field in t.input) rejectProtoKeys(args[field]);
     }
-  } catch (exc) {
-    return { result: { error: (exc as Error).message, error_type: "ValidationError" }, isError: true };
-  }
-  const parsed = z.object(t.input).safeParse(args);
-  if (!parsed.success) {
-    const error = validationMessage("invalid arguments", parsed.error, args);
-    return { result: { error, error_type: "ValidationError" }, isError: true };
-  }
-  try {
-    return { result: toJsonable(await t.run(await graph.get(), parsed.data)), isError: false };
+    const parsed = z.object(t.input).safeParse(args);
+    if (!parsed.success) throw validationError("invalid arguments", parsed.error, args);
+    return {
+      result: withWarningHints(toJsonable(await t.run(await graph.get(), parsed.data)), hinted),
+      isError: false,
+    };
   } catch (exc) {
     if (exc instanceof SelfGraphError) {
-      return { result: { error: surfaceHint(exc.message), error_type: exc.name }, isError: true };
+      return { result: errorResult(exc, t?.name ?? String(target), hinted), isError: true };
     }
     const name = exc instanceof Error ? exc.name : "Error";
     return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };
@@ -858,10 +894,11 @@ interface McpServerLike {
  *
  * @param target (Tool | string): the tool, or its name.
  * @param args (Record<string, unknown>): the arguments.
+ * @param hinted (Set<string>): the codes the server's session has seen.
  * @return (Promise<object>): the content, structured content, and error flag.
  */
-async function respond(target: Tool | string, args: Record<string, unknown>) {
-  const { result, isError } = await callTool(target, args);
+async function respond(target: Tool | string, args: Record<string, unknown>, hinted: Set<string>) {
+  const { result, isError } = await callTool(target, args, hinted);
   const content = [{ type: "text", text: JSON.stringify(result, null, 2) }];
   const structured = result !== null && typeof result === "object" && !Array.isArray(result) ? result : { result };
   return { content, structuredContent: structured, isError };
@@ -888,15 +925,16 @@ export async function buildServer(name = "selfgraph"): Promise<McpServerLike> {
   );
   const server = new McpServer({ name, version }, { instructions: INSTRUCTIONS });
   server.validateToolInput = async (_tool, args) => args;
+  const hinted = new Set<string>();
   for (const t of TOOLS) {
     server.registerTool(
       t.name,
       { description: t.description, inputSchema: z.looseObject(t.input), annotations: toolAnnotations(t.name) },
-      (args) => respond(t, args),
+      (args) => respond(t, args, hinted),
     );
   }
   server.server.setRequestHandler(CallToolRequestSchema, (request: CallToolRequest) =>
-    respond(request.params.name, request.params.arguments ?? {}),
+    respond(request.params.name, request.params.arguments ?? {}, hinted),
   );
   return server;
 }

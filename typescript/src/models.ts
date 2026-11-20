@@ -464,7 +464,10 @@ export function requireMatchingPrefix(provider: string, model: string, baseUrl: 
   const other = prefix.toLowerCase();
   if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return;
   if ((SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other)) {
-    throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`);
+    throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`, {
+      code: "invalid_setting",
+      field: "provider",
+    });
   }
 }
 
@@ -595,34 +598,42 @@ function shapeOf(schema: z.core.$ZodType): Record<string, z.core.$ZodType> | nul
 }
 
 /**
- * Walk raw input against an object schema and describe the first unknown key, depth first in declared order.
+ * Walk raw input against an object schema and report the first unknown key, depth first in declared order.
  *
  * @param schema (z.core.$ZodType): the schema the value should match.
  * @param value (unknown): the raw input.
- * @param where (string): the location of the value, for the message.
- * @return (string | null): the error message, or null when every key is known.
+ * @param label (string): what the input is, for the message.
+ * @param path (string): the location of the value inside the input, such as "entities[0]".
+ * @return (ValidationError | null): the error, or null when every key is known.
  */
-function unknownKey(schema: z.core.$ZodType, value: unknown, where: string): string | null {
+function unknownKey(schema: z.core.$ZodType, value: unknown, label: string, path = ""): ValidationError | null {
   const shape = shapeOf(unwrapSchema(schema));
   if (shape === null || !isPlainObject(value)) return null;
   const keys = Object.keys(shape);
   const unknown = Object.keys(value)
     .filter((k) => !keys.includes(k))
     .sort(comparePy);
-  if (unknown.length) return `unknown key ${pyRepr(unknown[0])} in ${where}${keyHint(unknown[0]!, keys)}`;
+  if (unknown.length) {
+    const where = path ? `${label}.${path}` : label;
+    return new ValidationError(`unknown key ${pyRepr(unknown[0])} in ${where}${keyHint(unknown[0]!, keys)}`, {
+      code: "unknown_key",
+      field: path ? `${path}.${unknown[0]}` : unknown[0]!,
+    });
+  }
   for (const key of keys) {
     if (!Object.hasOwn(value, key)) continue;
     const field = unwrapSchema(shape[key]!);
+    const at = path ? `${path}.${key}` : key;
     const def = field._zod.def as { type: string; element?: z.core.$ZodType };
     if (def.type === "array" && def.element) {
       const items = value[key];
       if (!Array.isArray(items)) continue;
       for (const [i, item] of items.entries()) {
-        const found = unknownKey(def.element, item, `${where}.${key}[${i}]`);
+        const found = unknownKey(def.element, item, label, `${at}[${i}]`);
         if (found !== null) return found;
       }
     } else {
-      const found = unknownKey(field, value[key], `${where}.${key}`);
+      const found = unknownKey(field, value[key], label, at);
       if (found !== null) return found;
     }
   }
@@ -639,10 +650,10 @@ function unknownKey(schema: z.core.$ZodType, value: unknown, where: string): str
  */
 export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
   const unknown = unknownKey(schema, value, what);
-  if (unknown !== null) throw new ValidationError(unknown);
+  if (unknown !== null) throw unknown;
   const result = schema.safeParse(value);
   if (result.success) return result.data;
-  throw new ValidationError(validationMessage(`invalid ${what}`, result.error, value), { cause: result.error });
+  throw validationError(`invalid ${what}`, result.error, value);
 }
 
 const JSON_TYPES: Record<string, string> = { int: "integer", record: "object", map: "object", tuple: "array" };
@@ -714,16 +725,19 @@ export function issueLine(issue: z.core.$ZodIssue, value: unknown): string {
 }
 
 /**
- * Format a zod error as one "path: message" line per issue, with entities[0].name paths. One issue stays inline after the heading; several go on indented lines.
+ * Turn a zod error into SelfGraph's ValidationError, one "path: message" line per issue, at the first issue's field. One issue stays inline after the heading; several go on indented lines.
  *
  * @param head (string): what failed, such as "invalid facts".
  * @param error (z.ZodError): the error.
  * @param value (unknown): the input that was parsed.
- * @return (string): the message.
+ * @return (ValidationError): the error.
  */
-export function validationMessage(head: string, error: z.ZodError, value: unknown): string {
+export function validationError(head: string, error: z.ZodError, value: unknown): ValidationError {
   const lines = error.issues.map((issue) => issueLine(issue, value));
-  return lines.length === 1 ? `${head}: ${lines[0]}` : `${head}:${lines.map((line) => `\n  ${line}`).join("")}`;
+  const message =
+    lines.length === 1 ? `${head}: ${lines[0]}` : `${head}:${lines.map((line) => `\n  ${line}`).join("")}`;
+  const field = errorPath(error.issues[0]!.path);
+  return new ValidationError(message, { cause: error, ...(field ? { field } : {}) });
 }
 
 /**

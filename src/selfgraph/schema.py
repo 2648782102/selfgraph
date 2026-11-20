@@ -380,7 +380,7 @@ def require_schema_for_mode(mode: object, schema: object) -> None:
     @param schema (object): the schema, a schema source, or None.
     """
     if mode == "strict" and schema is None:
-        raise ValidationError("schema_mode 'strict' needs a schema")
+        raise ValidationError("schema_mode 'strict' needs a schema", code="schema_required")
 
 
 def require_contradiction_mode(mode: object) -> None:
@@ -844,7 +844,7 @@ async def enforce_schema(
         known = {(w.code, w.message) for w in await check(before)}
         warnings = [w for w in warnings if (w.code, w.message) not in known]
     if mode == "strict" and warnings:
-        raise ValidationError("; ".join(w.message for w in warnings))
+        raise ValidationError("; ".join(w.message for w in warnings), code="schema_violation")
     return warnings
 
 

@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError, TransientError, error_reason
+from ..errors import StoreError, TransientError, connection_reason
 from ..models import CypherResult, check_options
 from ._cypher import WRITE_COUNTERS, AutoCommitStore, CypherPrimitives, graph_properties
 
@@ -53,7 +53,8 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
             from falkordb.asyncio import FalkorDB
         except ImportError as exc:  # pragma: no cover
             raise StoreError(
-                "the 'falkordb' package is required for FalkorDBStore; pip install \"selfgraph[falkordb]\""
+                "the 'falkordb' package is required for FalkorDBStore; pip install \"selfgraph[falkordb]\"",
+                code="missing_package",
             ) from exc
         client_options = [
             p for p in inspect.signature(FalkorDB.__init__).parameters if p not in {"self", "host", "port"}
@@ -75,7 +76,8 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
                 self._graph = self._db.select_graph(self._graph_name)
             except Exception as exc:  # noqa: BLE001
                 raise StoreError(
-                    f"failed connecting to FalkorDB at {self._host}:{self._port}: {error_reason(exc)}"
+                    f"failed connecting to FalkorDB at {self._host}:{self._port}: {connection_reason(exc)}",
+                    code="store_unreachable",
                 ) from exc
 
     async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
@@ -86,7 +88,7 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
         except Exception as exc:  # noqa: BLE001
             lowered = str(exc).lower()
             if any(k in lowered for k in _TRANSIENT_MARKERS):
-                raise TransientError(f"FalkorDB transient error: {exc}") from exc
+                raise TransientError(f"FalkorDB transient error: {exc}", code="store_busy") from exc
             raise StoreError(f"FalkorDB query failed: {exc}") from exc
         columns = [head[-1] for head in (res.header or [])]
         rows = [{col: _to_json(val) for col, val in zip(columns, row, strict=False)} for row in (res.result_set or [])]

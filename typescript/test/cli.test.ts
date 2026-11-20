@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildParser } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
-import { surfaceHint, ValidationError } from "../src/errors.js";
+import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
 import {
   bindParams,
   buildLlm,
@@ -16,7 +16,17 @@ import {
   storeKind,
   version,
 } from "../src/runtime.js";
-import { A_KNOWS_B, ANN_AT_ACME, buildCli, CLI, captureWarnings, runCli, SINGLE_EMPLOYER, tempDir } from "./helpers.js";
+import {
+  A_KNOWS_B,
+  ANN_AT_ACME,
+  buildCli,
+  CLI,
+  captureWarnings,
+  cliError,
+  runCli,
+  SINGLE_EMPLOYER,
+  tempDir,
+} from "./helpers.js";
 
 const dir = tempDir("sg-cli-");
 
@@ -97,7 +107,7 @@ describe("built CLI against Kuzu", () => {
       [
         ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
         {},
-        "error: provider 'anthropic' conflicts with model prefix 'gemini'\n",
+        "error[invalid_setting]: provider 'anthropic' conflicts with model prefix 'gemini'\n",
       ],
       [["--llm-provider", "nonesuch", "--llm-model", "m"], {}, "unknown LLM provider 'nonesuch'"],
       [["--llm-provider", "nonesuch"], {}, "an LLM needs a model"],
@@ -109,7 +119,11 @@ describe("built CLI against Kuzu", () => {
       [["--prompts", "/nonexistent/prompts.json"], {}, "cannot read '/nonexistent/prompts.json'"],
       [["--prompts", prompts("x", "1")], {}, "{text}"],
       [["--prompts", prompts("{text} {bogus}", "1")], {}, "unknown variable {bogus}"],
-      [[], { SELFGRAPH_PROMPTS: prompts("{text}") }, "error: invalid prompts: entities.version: field required\n"],
+      [
+        [],
+        { SELFGRAPH_PROMPTS: prompts("{text}") },
+        "error[invalid_argument]: invalid prompts: entities.version: field required\n",
+      ],
       [["--instructions", "{nope"], {}, "invalid JSON in the inline instructions"],
       [["--instructions", join(dir, "nofile.json")], {}, "cannot read"],
       [["--uri", "graph.kuzu"], {}, "this looks like a Kuzu path; pass --store kuzu (or SELFGRAPH_STORE=kuzu)"],
@@ -198,11 +212,19 @@ describe("built CLI against Kuzu", () => {
       expect([res.code, res.err], args.join(" ")).toEqual([2, expect.stringContaining(message)]);
       expect(res.err).not.toMatch(/isoformat|SelfGraph options/);
     }
+    expect(cli([...kuzu, "retrieve", "x", "--k", "0"]).err).toBe(
+      cliError("invalid_argument", "k must be >= 1, got 0", "selfgraph retrieve", "k"),
+    );
     const bad = cli([...kuzu, "insert", "facts", "-"], {
       input: JSON.stringify({ entities: [{ type: "P" }, { name: 3, type: "P" }] }),
     });
     expect(bad.err).toBe(
-      "error: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n",
+      cliError(
+        "invalid_argument",
+        "invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string",
+        "selfgraph insert facts",
+        "entities[0].name",
+      ),
     );
   });
 
@@ -379,10 +401,19 @@ describe("built CLI against Kuzu", () => {
       "looks like a SelfGraph schema, not a Neo4j one",
     );
     const warned = cli([...kuzu, "--namespace", "cli_warn", "--schema", schema, "insert", "facts", "-"], {
-      input: JSON.stringify({ entities: [{ name: "B", type: "Company" }] }),
+      input: JSON.stringify({
+        entities: [
+          { name: "B", type: "Company" },
+          { name: "C", type: "Company" },
+        ],
+      }),
     });
-    expect(warned.err).toContain("selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n");
-    expect(warned.out).toMatchObject({ warnings: [{ code: "unknown_entity_type" }] });
+    expect(warned.err).toBe(
+      "selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n" +
+        `hint: ${WARNING_HINTS.unknown_entity_type}\n` +
+        "selfgraph: unknown_entity_type: entity company:c has unknown type 'Company'\n",
+    );
+    expect(warned.out).toMatchObject({ warnings: [{ code: "unknown_entity_type" }, { code: "unknown_entity_type" }] });
   });
 
   it("explains a retired relation on get and supersedes from now on create", () => {
@@ -414,7 +445,14 @@ describe("built CLI against Kuzu", () => {
     expect(res.err).toContain(`relation ${acme!.id} was invalidated by ${acme!.invalidated_by} at `);
     expect(res.err).toContain("; use relation versions or relation list --include-invalidated");
     const none = cli([...g, "relation", "versions", "relation:ghost"]);
-    expect([none.code, none.err]).toEqual([1, "error: Relation 'relation:ghost' does not exist\n"]);
+    expect([none.code, none.err]).toEqual([
+      1,
+      cliError(
+        "not_found",
+        "Relation 'relation:ghost' does not exist in namespace 'default'",
+        "selfgraph relation versions",
+      ),
+    ]);
   });
 
   it("takes connection flags after the subcommand and parses time flags", () => {

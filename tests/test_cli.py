@@ -10,6 +10,7 @@ from helpers import (
     AB_FACTS,
     RAW_CYPHER,
     cli,
+    cli_error,
     extracting_llm,
     fresh_graph,
     json_file,
@@ -25,7 +26,7 @@ from helpers import (
 import selfgraph
 from selfgraph._serde import from_iso
 from selfgraph.cli import _metadata, build_parser, main
-from selfgraph.errors import ValidationError
+from selfgraph.errors import WARNING_HINTS, ValidationError
 from selfgraph.runtime import parse_time, read_json
 
 
@@ -144,7 +145,7 @@ def _subcommands(parser):
         (
             [],
             {"SELFGRAPH_PROMPTS": '{"entities": {"system": "s", "user": "{text}"}}'},
-            "error: invalid prompts: entities.version: field required\n",
+            "error[invalid_argument]: invalid prompts: entities.version: field required\n",
         ),
         (["--instructions", "{nope"], {}, "invalid JSON in the inline instructions"),
         (["--instructions", "/nonexistent/instructions.json"], {}, "cannot read"),
@@ -314,22 +315,30 @@ def test_store_settings_warnings_params_and_inline_schema(capsys, tmp_path, monk
 def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
     bad = json_file(tmp_path, "bad.json", {"entities": [{"type": "P"}, {"name": 3, "type": "P"}]})
     assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
-    expected = "error: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n"
+    message = "invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string"
+    expected = cli_error("invalid_argument", message, "selfgraph insert facts", field="entities[0].name")
     assert capsys.readouterr().err == expected
     schema = json_file(tmp_path, "schema.json", {"entities": [{"name": "Person"}]})
     assert kuzu_main(tmp_path, "schema", "import", schema) == 2
     assert "looks like a SelfGraph schema, not a Neo4j one" in capsys.readouterr().err
-    facts = json_file(tmp_path, "facts.json", {"entities": [{"name": "B", "type": "Company"}]})
+    facts = json_file(
+        tmp_path, "facts.json", {"entities": [{"name": "B", "type": "Company"}, {"name": "C", "type": "Company"}]}
+    )
     assert kuzu_main(tmp_path, "--schema", schema, "insert", "facts", facts) == 0
     captured = capsys.readouterr()
-    assert "selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n" in captured.err
+    hint = f"hint: {WARNING_HINTS['unknown_entity_type']}"
+    assert captured.err == (
+        f"selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n{hint}\n"
+        "selfgraph: unknown_entity_type: entity company:c has unknown type 'Company'\n"
+    )
     assert json.loads(captured.out)["warnings"][0]["code"] == "unknown_entity_type"
 
 
 def test_null_facts_file_fails_cleanly(capsys, tmp_path):
     null = json_file(tmp_path, "null.json", None)
     assert kuzu_main(tmp_path, "insert", "facts", null) == 2
-    assert capsys.readouterr().err == "error: invalid facts: expected object\n"
+    expected = cli_error("invalid_argument", "invalid facts: expected object", "selfgraph insert facts")
+    assert capsys.readouterr().err == expected
 
 
 def test_facts_file_with_a_bare_year_or_a_text_strength_fails_like_typescript(capsys, tmp_path):
@@ -338,7 +347,7 @@ def test_facts_file_with_a_bare_year_or_a_text_strength_fails_like_typescript(ca
     bad = json_file(tmp_path, "bad.json", {"relations": [rel], "preferences": [pref]})
     assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
     err = capsys.readouterr().err
-    assert "error: invalid facts:\n" in err
+    assert "error[invalid_argument]: invalid facts:\n" in err
     assert '  relations[0].event_time: invalid ISO 8601 string: "2021"\n' in err
     assert "  preferences[0].strength: expected number\n" in err
 
@@ -414,9 +423,11 @@ def test_exit_codes_and_context_only(capsys, tmp_path):
     assert kuzu_main(tmp_path, "insert", "facts", str(tmp_path / "nofile.json")) == 2
     capsys.readouterr()
     assert kuzu_main(tmp_path, "retrieve", "x", "--depth", "-1", "--k", "0", "--budget-tokens", "0") == 2
-    assert capsys.readouterr().err == "error: depth must be >= 0, got -1\n"
+    assert capsys.readouterr().err == cli_error(
+        "invalid_argument", "depth must be >= 0, got -1", "selfgraph retrieve", "depth"
+    )
     assert kuzu_main(tmp_path, "retrieve", "x", "--k", "0") == 2
-    assert capsys.readouterr().err == "error: k must be >= 1, got 0\n"
+    assert capsys.readouterr().err == cli_error("invalid_argument", "k must be >= 1, got 0", "selfgraph retrieve", "k")
     facts = json_file(tmp_path, "ab.json", AB_FACTS)
     assert kuzu_main(tmp_path, "insert", "facts", facts) == 0
     capsys.readouterr()

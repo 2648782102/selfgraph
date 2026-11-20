@@ -195,19 +195,44 @@ process can exit, and the next call reopens it.
 | `build_server()`: returns the server | `await buildServer()` |
 | `run_stdio(settings=None)`: configures and serves over stdio | `await runStdio(settings?)` |
 | `await close()` | `await close()` |
-| `TOOLS`: the tool functions | `TOOLS`, plus `callTool(tool, args)`, which runs one tool without a server and resolves to `{ result, isError }` |
+| `TOOLS`: the tool functions | `TOOLS`, plus `callTool(tool, args, hinted?)`, which runs one tool without a server and resolves to `{ result, isError }`; pass the same `hinted` set across calls to send each code's hint once, as a server session does |
 
 ## Errors
 
-A failing tool returns an MCP error result with the error flag set.
+A failing tool returns an MCP error result with the error flag set. Its
+structured content is the error with its [code](errors.md#codes) and the tool
+that failed, and its text is the same object as JSON:
 
-| SDK | Content |
-|-----|---------|
-| Python | `ErrorType: message`, such as `NotFoundError: Entity 'person:nobody' does not exist` |
-| TypeScript | `{error, error_type}` |
+```json
+{
+  "error": "Entity 'person:ad' does not exist in namespace 'default'; did you mean 'person:ada'?",
+  "error_type": "NotFoundError",
+  "code": "not_found",
+  "hint": "The object does not exist in the namespace the message names. Check the id and the namespace, and use the `did you mean` suggestion when there is one. Do not create a placeholder object just to make the call pass.",
+  "retryable": false,
+  "docs": "https://github.com/hydra-db/selfgraph/blob/v<version>/docs/errors.md#not_found",
+  "agent_guide": "site-packages/selfgraph/errors.md#not_found",
+  "tool": "update_entity"
+}
+```
 
-- Arguments that do not match a tool's schema fail the same way, as a
-  `ValidationError` with one `path: message` line per problem
+An error about one argument or key also carries `field`, such as
+`"field": "limit"`. The `hint`, `docs`, and `agent_guide` fields come with the
+first error of each code in a session, and are left out after that, so a
+repeated failure costs fewer tokens. Each server built with `build_server()`
+(`buildServer()` in TypeScript) is its own session, so two servers in one
+process do not share it; `configure` changes the backend and keeps the session.
+
+A result with warnings, such as an insert, carries `warning_hints`, the hint
+of each [warning code](errors.md#warning-codes) the session has not seen yet.
+Each warning in `warnings` keeps its code every time; only the hint is sent once.
+
+An error that is not a SelfGraph error has `error_type` `InternalError` and no
+code.
+
+- Arguments that do not match a tool's schema fail as the result above, a
+  `ValidationError` with code `invalid_argument` (`unknown_key` for an unknown
+  argument), `field`, and one `path: message` line per problem
   (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`).
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.

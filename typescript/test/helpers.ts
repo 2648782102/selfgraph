@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, afterEach, describe, vi } from "vitest";
-
+import { version } from "../package.json";
+import { type ErrorCode, HINTS } from "../src/errors.js";
 import {
   CypherStore,
   type Entity,
@@ -290,4 +291,40 @@ export function runCli(
     out = JSON.parse(res.stdout);
   } catch {}
   return { code: res.status ?? -1, out, err: res.stderr };
+}
+
+/**
+ * The hint and both docs links an error of a code carries.
+ *
+ * @param code (ErrorCode): the error code.
+ * @return ({ hint: string; docs: string; agent_guide: string }): the fields.
+ */
+export function errorLinks(code: ErrorCode): { hint: string; docs: string; agent_guide: string } {
+  return {
+    hint: HINTS[code],
+    docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#${code}`,
+    agent_guide: `node_modules/@hydradb/selfgraph/errors.md#${code}`,
+  };
+}
+
+/**
+ * The stderr text the CLI prints for a SelfGraph error.
+ *
+ * @param code (ErrorCode): the error code.
+ * @param message (string): the message.
+ * @param command (string): the command that failed, such as "selfgraph entity get".
+ * @param field (string | undefined): the field at fault, when one is.
+ * @return (string): the lines, ending in a newline.
+ */
+export function cliError(code: ErrorCode, message: string, command: string, field?: string): string {
+  const { hint, docs, agent_guide } = errorLinks(code);
+  return [
+    `error[${code}]: ${message}`,
+    `command: ${command}`,
+    ...(field === undefined ? [] : [`field: ${field}`]),
+    `hint: ${hint}`,
+    `docs: ${docs}`,
+    `agent guide: ${agent_guide}`,
+    "",
+  ].join("\n");
 }

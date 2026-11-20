@@ -59,9 +59,9 @@ def _cursor_text(cursor: str | None, valid: Callable[[str], bool]) -> str | None
     try:
         text = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
     except (ValueError, binascii.Error):
-        raise ValidationError(f"invalid cursor {cursor!r}") from None
+        raise ValidationError(f"invalid cursor {cursor!r}", code="invalid_cursor") from None
     if not text or encode_cursor(text) != cursor or not valid(text):
-        raise ValidationError(f"invalid cursor {cursor!r}")
+        raise ValidationError(f"invalid cursor {cursor!r}", code="invalid_cursor")
     return text
 
 
@@ -128,9 +128,9 @@ class Resource:
         """
         _require_int("limit", limit)
         if limit < 1:
-            raise ValidationError(f"limit must be >= 1, got {limit}")
+            raise ValidationError(f"limit must be >= 1, got {limit}", field="limit")
         if limit > _MAX_LIMIT:
-            raise ValidationError(f"limit must be <= {_MAX_LIMIT}, got {limit}")
+            raise ValidationError(f"limit must be <= {_MAX_LIMIT}, got {limit}", field="limit")
         reader, ns = await self._c._reader(), self._c.namespace
         if by_id is not None:
             after = decode_key_cursor(cursor, by_id)

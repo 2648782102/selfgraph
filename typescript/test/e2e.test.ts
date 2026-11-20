@@ -5,6 +5,7 @@ import {
   buildCli,
   CLI,
   runCli as cli,
+  errorLinks,
   NEO4J_PASSWORD,
   NEO4J_URI,
   reachable,
@@ -103,8 +104,12 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
       const missing = await client.callTool({ name: "delete_entity", arguments: { id: "agent:nobody" } });
       expect(missing.isError).toBe(true);
       expect(missing.structuredContent).toEqual({
-        error: "Entity 'agent:nobody' does not exist",
+        error: `Entity 'agent:nobody' does not exist in namespace '${ns}'`,
         error_type: "NotFoundError",
+        code: "not_found",
+        retryable: false,
+        ...errorLinks("not_found"),
+        tool: "delete_entity",
       });
       const write = await client.callTool({ name: "run_cypher", arguments: { query: "MATCH (n) DETACH DELETE n" } });
       expect(write.isError).toBe(true);

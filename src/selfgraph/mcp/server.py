@@ -14,9 +14,9 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
 from ..client import SelfGraph
-from ..errors import SelfGraphError, ValidationError, surface_hint
+from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, surface_hint
 from ..ids import type_name
-from ..models import Stance, Status, check_options, validation_message
+from ..models import Stance, Status, check_options, validation_error
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
     _BLANK,
@@ -85,12 +85,57 @@ def _is_blocked_query(query: str) -> bool:
     return any(head and _READ_OPENERS.match(head) is None for head in heads)
 
 
-def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Callable[..., Awaitable[Any]]:
-    """Wrap a tool so any error fails the call with the error type and message, flagged as an MCP error, and a
-    null or list result is sent as one JSON text content alongside the structured result.
+def _json_result(result: Any, *, error: bool = False) -> Any:
+    """Send a result as one JSON text content alongside its structured form: an object as is, else {"result": ...}.
+
+    @param result (Any): the JSON-ready result.
+    @param error (bool): whether the call failed.
+    @return (CallToolResult): the tool result.
+    """
+    from mcp.types import CallToolResult
+
+    text = json.dumps(result, indent=2, ensure_ascii=False)
+    structured = result if isinstance(result, dict) else {"result": result}
+    return CallToolResult.model_validate(
+        {"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": error}
+    )
+
+
+def _error_result(exc: SelfGraphError, tool: str, hinted: set[str]) -> Any:
+    """The error result for a failed tool, with the hint and links only the first time the session sees its code.
+
+    @param exc (SelfGraphError): the error.
+    @param tool (str): the tool that failed.
+    @param hinted (set[str]): the codes the session has seen.
+    @return (CallToolResult): the error fields, worded for the server, with the tool name.
+    """
+    fields = {**exc.to_dict(), "error": surface_hint(str(exc)), "tool": tool}
+    code = exc.code
+    if code in hinted:
+        for key in ("hint", "docs", "agent_guide"):
+            del fields[key]
+    hinted.add(code)
+    return _json_result(fields, error=True)
+
+
+def _with_warning_hints(result: dict[str, Any], hinted: set[str]) -> dict[str, Any]:
+    """Add the hint of each warning code in a result that the session has not seen yet, as warning_hints.
+
+    @param result (dict[str, Any]): the tool result.
+    @param hinted (set[str]): the codes the session has seen.
+    @return (dict[str, Any]): the result, with warning_hints when a warning code is new.
+    """
+    codes = {w.get("code") for w in result.get("warnings") or [] if isinstance(w, dict)} & WARNING_HINTS.keys()
+    hints = {code: WARNING_HINTS[code] for code in sorted(codes - hinted)}
+    hinted.update(codes)
+    return {**result, "warning_hints": hints} if hints else result
+
+
+def _tool(fn: Callable[..., Awaitable[Any]], hinted: set[str]) -> Callable[..., Awaitable[Any]]:
+    """Wrap a tool so an error fails the call with a structured error result and a null or list result is sent as JSON.
 
     @param fn (Callable[..., Awaitable[Any]]): the tool coroutine to wrap.
-    @param tool_error (type[Exception]): the SDK's ToolError, which the server reports with the error flag set.
+    @param hinted (set[str]): the codes the server's session has seen.
     @return (Callable[..., Awaitable[Any]]): the wrapped tool.
     """
 
@@ -99,17 +144,12 @@ def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Cal
         try:
             result = await fn(*args, **kwargs)
         except SelfGraphError as exc:
-            raise tool_error(f"{type(exc).__name__}: {surface_hint(str(exc))}") from exc
+            return _error_result(exc, fn.__name__, hinted)
         except Exception as exc:  # noqa: BLE001
-            raise tool_error(f"InternalError: {type(exc).__name__}: {exc}") from exc
+            return _json_result({"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}, error=True)
         if result is None or isinstance(result, list):
-            from mcp.types import CallToolResult
-
-            text = json.dumps(result, indent=2, ensure_ascii=False)
-            return CallToolResult.model_validate(
-                {"content": [{"type": "text", "text": text}], "structuredContent": {"result": result}}
-            )
-        return result
+            return _json_result(result)
+        return _with_warning_hints(result, hinted) if isinstance(result, dict) else result
 
     return wrapper
 
@@ -745,7 +785,8 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
             "CALL, LOAD, COPY, IMPORT, EXPORT, INSTALL, UNINSTALL, ATTACH, USE, COMMENT, GRANT, REVOKE, DENY, and "
             "transaction or admin commands such as BEGIN, COMMIT, TERMINATE), even as a bare alias or variable "
             "name (backtick-quote it), and no unicode escape (pass such text as a parameter). Use the typed "
-            "resources or insert for writes."
+            "resources or insert for writes.",
+            code="read_only_query",
         )
     bound = bind_params(query, params)
     g = await _graph_handle()
@@ -929,60 +970,60 @@ def _annotations(name: str) -> dict[str, bool]:
 
 
 def _server_class():
-    """The MCP server and tool-error classes across SDK versions: MCPServer (mcp >= 2) or FastMCP (mcp 1.x).
+    """The MCP server class across SDK versions: MCPServer (mcp >= 2) or FastMCP (mcp 1.x).
 
-    @return (tuple[type, type[Exception]]): the server class and its ToolError.
+    @return (type): the server class.
     """
     try:
         from mcp.server.mcpserver import MCPServer
-        from mcp.server.mcpserver.exceptions import ToolError
 
-        return MCPServer, ToolError
+        return MCPServer
     except ImportError:
         pass
     try:
         from mcp.server.fastmcp import FastMCP
-        from mcp.server.fastmcp.exceptions import ToolError
 
-        return FastMCP, ToolError
+        return FastMCP
     except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError(
-            "the 'mcp' package is required to run the MCP server; pip install \"selfgraph[mcp]\""
+        raise SelfGraphError(
+            "the 'mcp' package is required to run the MCP server; pip install \"selfgraph[mcp]\"",
+            code="missing_package",
         ) from exc
 
 
-class _ArgumentError(PydanticValidationError):
-    def __str__(self) -> str:
-        return self.title
-
-
-def _check_arguments(server: Any, name: str) -> None:
-    """Make a registered tool reject undeclared argument names and report bad arguments as "path: message" lines.
-
-    The replacement still raises a pydantic ValidationError, which the SDK reports as a tool error with its text.
+def _check_arguments(server: Any, name: str, hinted: set[str]) -> None:
+    """Make a registered tool reject undeclared argument names and return bad arguments as a structured error result.
 
     @param server (Any): the MCP server holding the tool.
     @param name (str): the tool name.
-    @return (None): nothing; the tool's argument model is replaced in place.
+    @param hinted (set[str]): the codes the server's session has seen.
+    @return (None): nothing; the tool's argument model and run method are replaced in place.
     """
     tool = server._tool_manager.get_tool(name)
     model = tool.fn_metadata.arg_model
     allowed = [field.alias or key for key, field in model.model_fields.items()]
+    run = tool.run
 
     def validate(cls: Any, obj: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(obj, dict):
+            check_options(name, obj, allowed)
         try:
-            if isinstance(obj, dict):
-                check_options(name, obj, allowed)
             return super(checked, cls).model_validate(obj, *args, **kwargs)
-        except ValidationError as exc:
-            message = str(exc)
         except PydanticValidationError as exc:
-            message = validation_message("invalid arguments", exc)
-        raise _ArgumentError.from_exception_data(f"ValidationError: {message}", [])
+            raise validation_error("invalid arguments", exc) from None
+
+    async def checked_run(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await run(*args, **kwargs)
+        except Exception as exc:
+            if isinstance(exc.__cause__, SelfGraphError):
+                return _error_result(exc.__cause__, name, hinted)
+            raise
 
     checked = create_model(model.__name__, __base__=model)
     checked.model_validate = classmethod(validate)  # type: ignore[method-assign]
     tool.fn_metadata.arg_model = checked
+    object.__setattr__(tool, "run", checked_run)
 
 
 def build_server(name: str = "selfgraph"):
@@ -993,7 +1034,7 @@ def build_server(name: str = "selfgraph"):
     """
     from .. import __version__
 
-    server_class, tool_error = _server_class()
+    server_class = _server_class()
     if "version" in inspect.signature(server_class).parameters:
         server = server_class(name, version=__version__, instructions=INSTRUCTIONS, log_level="WARNING")
     else:
@@ -1001,14 +1042,15 @@ def build_server(name: str = "selfgraph"):
         server._mcp_server.version = __version__
     logging.getLogger("mcp").setLevel(logging.WARNING)
     options = inspect.signature(server.tool).parameters
+    hinted: set[str] = set()
     for fn in TOOLS:
         kwargs: dict[str, Any] = {"structured_output": True} if "structured_output" in options else {}
         if "annotations" in options:
             from mcp.types import ToolAnnotations
 
             kwargs["annotations"] = ToolAnnotations(**_annotations(fn.__name__))
-        server.tool(**kwargs)(_tool(fn, tool_error))
-        _check_arguments(server, fn.__name__)
+        server.tool(**kwargs)(_tool(fn, hinted))
+        _check_arguments(server, fn.__name__, hinted)
     return server
 
 

@@ -17,7 +17,7 @@ from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
 from .client import SelfGraph
-from .errors import LLM_HINT, STORE_KUZU_HINT, NotFoundError, StoreError, ValidationError, setting_hint, surface_hint
+from .errors import STORE_KUZU_HINT, NotFoundError, StoreError, ValidationError, needs_llm, setting_hint, surface_hint
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace
 from .llm.base import check_llm_config
@@ -327,7 +327,7 @@ async def checked_cypher(graph: SelfGraph, query: str, params: Mapping[str, Any]
     except StoreError as exc:
         notes = await _cypher_notes(graph, query)
         if notes:
-            raise StoreError(f"{exc}; {'; '.join(notes)}") from exc
+            raise type(exc)(f"{exc}; {'; '.join(notes)}", code=exc.code) from exc
         raise
     if not result.rows:
         result.warnings = await _cypher_notes(graph, query)
@@ -404,7 +404,9 @@ def _require_server_uri(kind: str, uri: str) -> None:
     """
     if "://" not in uri and (uri.endswith(".kuzu") or "/" in uri or os.sep in uri):
         raise ValidationError(
-            f"{uri!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}"
+            f"{uri!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}",
+            code="invalid_setting",
+            field="uri",
         )
 
 
@@ -419,14 +421,22 @@ def _falkor_address(uri: str) -> tuple[Any, int | None, bool]:
 
     scheme = uri.partition("://")[0].lower() if "://" in uri else ""
     if scheme and scheme not in _FALKOR_SCHEMES:
-        raise ValidationError(f"invalid FalkorDB address {uri!r}: the 'falkordb' store expects {_FALKOR_ADDRESS}")
+        raise ValidationError(
+            f"invalid FalkorDB address {uri!r}: the 'falkordb' store expects {_FALKOR_ADDRESS}",
+            code="invalid_setting",
+            field="uri",
+        )
     parsed = urlparse(uri if scheme else f"//{uri}")
     try:
         port = parsed.port
     except ValueError:
         port = 0
     if port == 0:
-        raise ValidationError(f"invalid FalkorDB address {uri!r}: expected host:port with a port from 1 to 65535")
+        raise ValidationError(
+            f"invalid FalkorDB address {uri!r}: expected host:port with a port from 1 to 65535",
+            code="invalid_setting",
+            field="uri",
+        )
     return parsed, port, scheme in ("rediss", "falkors")
 
 
@@ -469,11 +479,12 @@ def _build_store(settings: GraphSettings) -> GraphStore:
         try:
             return KuzuStore(path)
         except StoreError as exc:
-            if settings.store:
+            if settings.store or exc.code != "missing_package":
                 raise
             raise ValidationError(
                 "no store configured, so SelfGraph defaults to the embedded Kuzu backend, which needs the kuzu "
-                'extra: pip install "selfgraph[kuzu]", or set SELFGRAPH_STORE and SELFGRAPH_URI for a server'
+                'extra: pip install "selfgraph[kuzu]", or set SELFGRAPH_STORE and SELFGRAPH_URI for a server',
+                code="missing_package",
             ) from exc
     if kind in ("neo4j", "cypher", "memgraph"):
         from .stores.cypher import CypherStore, Neo4jStore
@@ -500,7 +511,11 @@ def _llm_timeout(value: float | str | None) -> float:
     except (TypeError, ValueError):
         seconds = math.nan
     if not seconds > 0 or math.isinf(seconds):
-        raise ValidationError(f"llm_timeout must be a positive number of seconds, got {value!r}")
+        raise ValidationError(
+            f"llm_timeout must be a positive number of seconds, got {value!r}",
+            code="invalid_setting",
+            field="llm_timeout",
+        )
     return seconds
 
 
@@ -516,7 +531,11 @@ def _llm_concurrency(value: int | str | None) -> int:
     if isinstance(text, str) and text.lstrip("+").isdecimal():
         text = int(text)
     if type(text) is not int or text < 1:
-        raise ValidationError(f"llm_concurrency must be a positive integer, got {value!r}")
+        raise ValidationError(
+            f"llm_concurrency must be a positive integer, got {value!r}",
+            code="invalid_setting",
+            field="llm_concurrency",
+        )
     return text
 
 
@@ -527,11 +546,17 @@ def _build_llm(settings: GraphSettings) -> LLMConfig | None:
     if not provider and settings.llm_model and "/" in settings.llm_model:
         provider = settings.llm_model.partition("/")[0]
     if not settings.llm_model:
-        raise ValidationError(f"an LLM needs a model; pass {setting_hint('llm_model')}, e.g. gpt-4o-mini")
+        raise ValidationError(
+            f"an LLM needs a model; pass {setting_hint('llm_model')}, e.g. gpt-4o-mini",
+            code="invalid_setting",
+            field="llm_model",
+        )
     if not provider:
         raise ValidationError(
             f"an LLM needs a provider; pass {setting_hint('llm_provider')}, or a provider-prefixed "
-            "model such as openai/gpt-4o-mini"
+            "model such as openai/gpt-4o-mini",
+            code="invalid_setting",
+            field="llm_provider",
         )
     return LLMConfig(
         provider=provider,
@@ -554,14 +579,24 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
     """
     _require_namespace("default" if settings.namespace is None else settings.namespace)
     if settings.uri is not None and not settings.uri.strip():
-        raise ValidationError(f"uri cannot be empty; omit {setting_hint('uri')} to use the default store")
+        raise ValidationError(
+            f"uri cannot be empty; omit {setting_hint('uri')} to use the default store",
+            code="invalid_setting",
+            field="uri",
+        )
     kind = store_kind(settings)
     if kind not in STORES:
-        raise ValidationError(f"unknown store {settings.store!r}; choose one of {', '.join(STORES)}")
+        raise ValidationError(
+            f"unknown store {settings.store!r}; choose one of {', '.join(STORES)}",
+            code="invalid_setting",
+            field="store",
+        )
     if kind != "kuzu":
         if not settings.uri:
             address = _FALKOR_ADDRESS if kind == "falkordb" else "a Bolt URI"
-            raise ValidationError(f"the {kind!r} store needs {address}; pass {setting_hint('uri')}")
+            raise ValidationError(
+                f"the {kind!r} store needs {address}; pass {setting_hint('uri')}", code="invalid_setting", field="uri"
+            )
         _require_server_uri(kind, settings.uri)
         if kind == "falkordb":
             _falkor_address(settings.uri)
@@ -581,12 +616,12 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
         level = settings.level or "balanced"
         cap = settings.max_tier or "max"
         if level == "max" and cap == "max":
-            raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
+            raise needs_llm("level 'max'")
         preset = PRESETS[level]
         if clamp("resolution", settings.resolver or preset["resolution"], cap) == "llm":
-            raise ValidationError(f"resolver 'llm' needs an LLM: {LLM_HINT}")
+            raise needs_llm("resolver 'llm'")
         if clamp("contradiction", settings.contradiction or preset["contradiction"], cap) == "llm":
-            raise ValidationError(f"contradiction 'llm' needs an LLM: {LLM_HINT}")
+            raise needs_llm("contradiction 'llm'")
     schema = as_schema(_json_setting(settings.schema, "schema"))
     require_schema_for_mode(settings.schema_mode, schema)
     instructions = as_input(

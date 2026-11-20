@@ -30,7 +30,7 @@ export function encodeCursor(position: number | string): string {
 function cursorText(cursor: unknown, valid: (text: string) => boolean): string | null {
   if (cursor === null || cursor === undefined) return null;
   if (typeof cursor !== "string") throw new ValidationError(`cursor must be a string, got ${typeName(cursor)}`);
-  const invalid = new ValidationError(`invalid cursor ${pyRepr(cursor)}`);
+  const invalid = new ValidationError(`invalid cursor ${pyRepr(cursor)}`, { code: "invalid_cursor" });
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(cursor, "base64url"));
@@ -131,8 +131,8 @@ export const VERSIONS_KEYS = ["newest_first"];
 function pageLimit(options: PageOptions): number {
   const limit: unknown = options.limit ?? DEFAULT_PAGE_LIMIT;
   requireInt("limit", limit);
-  if (limit < 1) throw new ValidationError(`limit must be >= 1, got ${limit}`);
-  if (limit > MAX_LIMIT) throw new ValidationError(`limit must be <= ${MAX_LIMIT}, got ${limit}`);
+  if (limit < 1) throw new ValidationError(`limit must be >= 1, got ${limit}`, { field: "limit" });
+  if (limit > MAX_LIMIT) throw new ValidationError(`limit must be <= ${MAX_LIMIT}, got ${limit}`, { field: "limit" });
   return limit;
 }
 

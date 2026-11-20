@@ -236,6 +236,16 @@ selfgraph mcp
 
 `selfgraph mcp` serves 39 tools over stdio that mirror the SDK (listed in `docs/mcp.md`). Configure with flags or `SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_DATABASE`, `SELFGRAPH_NAMESPACE`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`, `SELFGRAPH_LLM_API_KEY`, `SELFGRAPH_LLM_BASE_URL`, `SELFGRAPH_LLM_TIMEOUT`, `SELFGRAPH_LLM_CONCURRENCY`, `SELFGRAPH_SCHEMA`, `SELFGRAPH_SCHEMA_MODE`, `SELFGRAPH_RESOLVER`, `SELFGRAPH_CONTRADICTION`, `SELFGRAPH_LEVEL`, `SELFGRAPH_MAX_TIER`, `SELFGRAPH_INSTRUCTIONS`, and `SELFGRAPH_PROMPTS`. With no store and no URI they use embedded Kuzu at `~/.selfgraph/default.kuzu`. Time arguments are ISO 8601 text; no offset means UTC. The MCP `run_cypher` tool is read-only and not namespace-scoped, so filter on `ns`. CLI exit codes: 0 success, 1 runtime failure, 2 invalid input, 130 interrupted, 141 closed stdout (`docs/cli.md`).
 
+## Errors
+
+Every error is a `SelfGraphError` with a stable `code`, a `hint` that says how to repair it, `retryable`, a `docs` link, an `agent_guide` path to the same section in the installed package (`errors.md`, beside this file), and `field` when one argument, key, or setting is at fault. Branch on `code`, never on the message text, and follow the `hint`. The CLI prints the code, message, command, field, hint, and both links on stderr. An MCP error result is `{error, error_type, code, field, hint, retryable, docs, agent_guide, tool}`; after the first error of a code in a session it leaves out `hint`, `docs`, and `agent_guide`.
+
+- Retry the same call only when `retryable` is true (`write_conflict`, `store_busy`). Inserts are idempotent upserts, so a retry never duplicates data.
+- Setup codes (`store_unreachable`, `store_locked`, `store_auth_failed`, `wrong_engine`, `invalid_setting`, `missing_package`) do not clear on retry; fix the setup the message names.
+- Fix what the hint names. Do not turn a check off to make an error go away: lowering `level`, switching schema mode, uncertifying a relation, or dropping a value is the user's decision.
+- `not_found` names the namespace and, for an entity id, the closest existing id. Check both before creating anything.
+- Insert warnings have codes too (`docs/errors.md#warning-codes`); the CLI and MCP server show each code's hint the first time it appears.
+
 ## TypeScript
 
 `npm install @hydradb/selfgraph` (Node 20+) gives the same API in pure TypeScript over the same graph. Methods are camelCase and options go in a trailing object; model fields and option keys keep their Python names.

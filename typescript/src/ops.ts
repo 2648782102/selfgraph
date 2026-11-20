@@ -86,6 +86,7 @@ import {
   requireStr,
   requireStrMapping,
   requireUnit,
+  suggestKey,
   typeName,
 } from "./validate.js";
 
@@ -655,9 +656,11 @@ export async function listEvidence(
   const targetId = kind === "entity" ? ids.canonicalEntityId(given) : given;
   const rows = await runner.matchNodes(ns, L_EVIDENCE, { equals: { target_id: targetId }, skip, limit });
   if (!rows.length && skip === 0) {
-    const exists =
-      kind === "entity" ? await runner.nodeExists(ns, L_ENTITY, targetId) : await relationExists(runner, ns, targetId);
-    if (!exists) throw new NotFoundError(kind === "entity" ? "Entity" : "Relation", targetId);
+    if (kind === "entity") {
+      if (!(await runner.nodeExists(ns, L_ENTITY, targetId))) throw await missingEntity(runner, ns, targetId);
+    } else if (!(await relationExists(runner, ns, targetId))) {
+      throw new NotFoundError("Relation", targetId, undefined, { namespace: ns });
+    }
   }
   return rows.map(decodeEvidence);
 }
@@ -711,6 +714,7 @@ async function requireEndpoints(
   if (missing.length) {
     throw new ValidationError(
       `relation endpoint${missing.length > 1 ? "s" : ""} not found (${missing.join(", ")}); ${hint}`,
+      { code: "unknown_reference" },
     );
   }
 }
@@ -724,7 +728,7 @@ async function requireEntity(
 ): Promise<void> {
   if (eid == null) return;
   if (!(await entityKnown(runner, ns, eid, known))) {
-    throw new ValidationError(`${context} references unknown entity ${pyRepr(eid)}`);
+    throw new ValidationError(`${context} references unknown entity ${pyRepr(eid)}`, { code: "unknown_reference" });
   }
 }
 
@@ -777,6 +781,30 @@ function canonicalRefs(facts: ParsedExtraction): ParsedExtraction {
         : d.alternative_entities,
     })),
   };
+}
+
+const SUGGEST_SCAN = 500;
+
+/**
+ * The error for an entity id that does not exist, suggesting the closest existing id of the same type.
+ *
+ * @param runner (Runner): the store.
+ * @param ns (string): namespace.
+ * @param eid (string): the missing entity id.
+ * @return (Promise<NotFoundError>): the error, naming the namespace, and the suggestion when an id is close.
+ */
+export async function missingEntity(runner: Runner, ns: string, eid: string): Promise<NotFoundError> {
+  const cut = eid.indexOf(":");
+  const [kind, name] = cut < 0 ? [eid, ""] : [eid.slice(0, cut), eid.slice(cut + 1)];
+  const chars = Array.from(name);
+  const ids = new Set<string>();
+  for (const stem of new Set([chars.slice(0, -2), chars.slice(0, 1), []].map((part) => `${kind}:${part.join("")}`))) {
+    for (const row of await runner.matchNodes(ns, L_ENTITY, { id_gt: stem, limit: SUGGEST_SCAN })) {
+      if ((row.id as string).startsWith(stem)) ids.add(row.id as string);
+    }
+  }
+  const suggestion = suggestKey(eid, [...ids]);
+  return new NotFoundError("Entity", eid, undefined, { namespace: ns, suggestion });
 }
 
 /**
@@ -842,7 +870,9 @@ export async function validateFacts(
     requireStr("preference key", pref.key);
     validateStrength(pref.strength);
     if (!(await entityKnown(runner, ns, pref.subject_entity, entities))) {
-      throw new ValidationError(`preference references unknown subject entity ${pyRepr(pref.subject_entity)}`);
+      throw new ValidationError(`preference references unknown subject entity ${pyRepr(pref.subject_entity)}`, {
+        code: "unknown_reference",
+      });
     }
     await requirePreferenceRefs(runner, ns, pref, entities);
   }
@@ -858,7 +888,9 @@ export async function validateFacts(
     requireList("decision alternative_entities", dec.alternative_entities);
     for (const relId of dec.steps) {
       if (!relations.has(relId) && !(await relationExists(runner, ns, relId))) {
-        throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`);
+        throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`, {
+          code: "unknown_reference",
+        });
       }
     }
     await requireTraceRefs(runner, ns, dec, entities);
@@ -1070,7 +1102,7 @@ export async function updateEntity(
   requireChanges(fields ?? {});
   const eid = ids.canonicalEntityId(given);
   let existing = await getEntity(runner, ns, eid);
-  if (existing === null) throw new NotFoundError("Entity", eid);
+  if (existing === null) throw await missingEntity(runner, ns, eid);
   for (const key of ["aliases", "remove_aliases", "remove_properties"] as const) {
     if (fields[key] !== undefined) requireList(key, fields[key]);
   }
@@ -1083,7 +1115,9 @@ export async function updateEntity(
   if (existing === null) throw new TransientError(`entity ${pyRepr(eid)} was changed concurrently; retry`);
   let type = fields.type !== undefined ? cleanText(fields.type) : existing.type;
   if (ids.slug(type) !== ids.slug(ids.normalizeText(existing.type))) {
-    throw new ValidationError(`type is part of the id ${pyRepr(eid)}; create a new entity to change its type`);
+    throw new ValidationError(`type is part of the id ${pyRepr(eid)}; create a new entity to change its type`, {
+      code: "immutable_identity",
+    });
   }
   if (!schemaTypes.has(type)) type = existing.type;
   const name = fields.name !== undefined ? cleanText(fields.name) : existing.name;
@@ -1321,7 +1355,7 @@ export async function deleteEntity(
   caps?: ReadonlyMap<string, RelationCap> | null,
 ): Promise<DeleteResult> {
   const eid = ids.canonicalEntityId(given);
-  if (!(await runner.nodeExists(ns, L_ENTITY, eid))) throw new NotFoundError("Entity", eid);
+  if (!(await runner.nodeExists(ns, L_ENTITY, eid))) throw await missingEntity(runner, ns, eid);
   return deleteEntities(runner, ns, [eid], caps);
 }
 
@@ -1577,6 +1611,7 @@ async function writeRelationVersion(
     await requireEndpoints(runner, ns, ends.from_entity, ends.to_entity, hint);
     throw new ValidationError(
       `relation endpoints not found (from=${pyRepr(ends.from_entity)}, to=${pyRepr(ends.to_entity)}); ${hint}`,
+      { code: "unknown_reference" },
     );
   }
   return decodeRelation(props, ends);
@@ -1623,6 +1658,7 @@ function requireSameEnds(
     throw new ValidationError(
       `relation ${pyRepr(rid)} already exists with different endpoints/type; ` +
         "endpoints and type are immutable; create a new relation to change them",
+      { code: "immutable_identity" },
     );
   }
 }
@@ -1993,6 +2029,7 @@ export class Contradictions {
           `relation ${rid} would exceed max_count ${limit} for ${canonical} at ${side} entity ${endpoint} ` +
             `(current: ${others}); schema_mode 'strict' rejects it; use contradiction='supersede' to ` +
             "retire the older relation instead",
+          { code: "schema_violation" },
         );
       }
       warnings.push(
@@ -2798,10 +2835,14 @@ async function lockCurrent<T>(
   const before = await get(runner, ns, id);
   if (before === null) {
     const latest = await newest(runner, ns, id);
-    if (latest === null) throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id);
+    if (latest === null) {
+      throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id, undefined, { namespace: ns });
+    }
     const ended = latest as Partial<Relation>;
     if (ended.invalidated_at != null) {
-      throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`);
+      throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`, {
+        code: "relation_invalidated",
+      });
     }
     throw new TransientError(`${kind} ${pyRepr(id)} has no current version right now (concurrent write); retry`);
   }
@@ -3188,8 +3229,10 @@ export async function certifyRelation(
   }
   if (edge === null || !isRelationType(edge.type)) {
     const newest = await newestRelation(runner, ns, rid);
-    if (newest === null) throw new NotFoundError("Relation", rid);
-    throw new ValidationError(`${invalidatedNote(newest)}; only a current relation can be certified`);
+    if (newest === null) throw new NotFoundError("Relation", rid, undefined, { namespace: ns });
+    throw new ValidationError(`${invalidatedNote(newest)}; only a current relation can be certified`, {
+      code: "relation_invalidated",
+    });
   }
   const current = relationOf(edge);
   const held = current.certifications.find((c) => c.until === null) ?? null;
@@ -3341,7 +3384,7 @@ export async function deleteRelation(
 ): Promise<DeleteResult> {
   requireStr("relation id", rid);
   const newest = newestEdge(await typedEdgeVersions(runner, ns, rid, isRelationType));
-  if (newest === null) throw new NotFoundError("Relation", rid);
+  if (newest === null) throw new NotFoundError("Relation", rid, undefined, { namespace: ns });
   const traceIds = await tracesTouchingRelations(runner, ns, [rid]);
   const deletedVersions = await runner.deleteEdges(ns, rid);
   await deleteEvidence(runner, ns, rid);
@@ -3359,7 +3402,9 @@ async function ensureProfile(runner: Runner, ns: string, subjectId: string, crea
   const pid = ids.profileId(subjectId);
   if (await runner.nodeExists(ns, L_PROFILE, pid)) return pid;
   if (!(await runner.nodeExists(ns, L_ENTITY, subjectId))) {
-    throw new ValidationError(`preference references unknown subject entity ${pyRepr(subjectId)}`);
+    throw new ValidationError(`preference references unknown subject entity ${pyRepr(subjectId)}`, {
+      code: "unknown_reference",
+    });
   }
   await runner.upsertNode(ns, L_PROFILE, pid, { id: pid, ns, subject_entity: subjectId, created_at: toIso(createdAt) });
   await runner.createEdge(ns, R_HAS_PROFILE, L_ENTITY, subjectId, L_PROFILE, pid, {
@@ -3438,6 +3483,7 @@ function requireSamePreference(pid: string, stored: string, given: string): void
     throw new ValidationError(
       `preference ${pyRepr(pid)} already exists with different subject/stance/key/value; ` +
         "these identify the preference and are immutable; create a new preference to change them",
+      { code: "immutable_identity" },
     );
   }
 }
@@ -3705,7 +3751,8 @@ export async function listPreferences(
 
 export async function deletePreference(runner: Runner, ns: string, pid: string): Promise<DeleteResult> {
   requireStr("preference id", pid);
-  if (!(await preferenceExists(runner, ns, pid))) throw new NotFoundError("Preference", pid);
+  if (!(await preferenceExists(runner, ns, pid)))
+    throw new NotFoundError("Preference", pid, undefined, { namespace: ns });
   return { ...NO_DELETES, deleted_preference_versions: await runner.deleteEdges(ns, pid) };
 }
 
@@ -3775,7 +3822,10 @@ async function resolveSteps(runner: Runner, ns: string, stepRelIds: readonly str
   for (const [order, relId] of stepRelIds.entries()) {
     const found = newest.get(relId);
     const rel = versions === null ? await newestRelation(runner, ns, relId) : found ? relationOf(found) : null;
-    if (rel === null) throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`);
+    if (rel === null)
+      throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`, {
+        code: "unknown_reference",
+      });
     steps.push({ order, relation_id: relId, from_entity: rel.from_entity, to_entity: rel.to_entity });
   }
   return steps;
@@ -4030,7 +4080,7 @@ export async function updateTrace(
   requireChanges({ ...fields, clear: cleared.size ? cleared : undefined });
   await runner.lockNode(ns, L_TRACE, tid);
   const existing = await getTrace(runner, ns, tid);
-  if (existing === null) throw new NotFoundError("DecisionTrace", tid);
+  if (existing === null) throw new NotFoundError("DecisionTrace", tid, undefined, { namespace: ns });
   const pick = <K extends keyof UpdateTraceFields>(key: K, fallback: Exclude<UpdateTraceFields[K], undefined>) =>
     cleared.has(key)
       ? ((LIST_FIELDS.includes(key) ? [] : null) as Exclude<UpdateTraceFields[K], undefined>)
@@ -4080,6 +4130,8 @@ export async function listTraces(
 
 export async function deleteTrace(runner: Runner, ns: string, tid: string): Promise<DeleteResult> {
   requireStr("decision id", tid);
-  if (!(await deleteTraceQuietly(runner, ns, tid))) throw new NotFoundError("DecisionTrace", tid);
+  if (!(await deleteTraceQuietly(runner, ns, tid))) {
+    throw new NotFoundError("DecisionTrace", tid, undefined, { namespace: ns });
+  }
   return { ...NO_DELETES, deleted_decisions: 1 };
 }

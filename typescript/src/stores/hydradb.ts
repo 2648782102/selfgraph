@@ -88,6 +88,7 @@ function guardSizes(row: Props): void {
   throw new StoreError(
     `HydraDB rejects this write at ${size} bytes; a node or edge row goes in one Bolt message, which HydraDB ` +
       `caps at ${MAX_MESSAGE_BYTES} bytes, so a row may take at most ${MAX_WRITE_BYTES}`,
+    { code: "write_too_large" },
   );
 }
 
@@ -579,13 +580,16 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   private error(exc: unknown): StoreError {
     const failure = boltFailure(exc);
     if (failure === "auth" && !this.hasAuth)
-      return new StoreError(`HydraDB needs a token: ${TOKEN_HINT}`, { cause: exc });
+      return new StoreError(`HydraDB needs a token: ${TOKEN_HINT}`, { cause: exc, code: "store_auth_failed" });
     const err = queryError(exc, this.uri, this.database, "HydraDB", (lowered) =>
       TRANSIENT_MARKERS.some((k) => lowered.includes(k)),
     );
     const lowered = `${errorCode(exc)} ${errorMessage(exc)}`.toLowerCase();
     if (OTHER_ENGINE_MARKERS.some((k) => lowered.includes(k))) {
-      return new StoreError(`${err.message}; if this is Neo4j or Memgraph, ${OTHER_ENGINE_HINT}`, { cause: exc });
+      return new StoreError(`${err.message}; if this is Neo4j or Memgraph, ${OTHER_ENGINE_HINT}`, {
+        cause: exc,
+        code: "wrong_engine",
+      });
     }
     return err;
   }

@@ -29,7 +29,7 @@ from ._serde import (
     now,
     to_iso,
 )
-from .errors import LLM_HINT, NotFoundError, ValidationError
+from .errors import NotFoundError, ValidationError, needs_llm
 from .extraction.extractor import _FALLBACK_TYPE
 from .llm.base import resolve_llm
 from .models import (
@@ -379,7 +379,7 @@ class LLMResolver:
         """
         client = resolve_llm(llm)
         if client is None:
-            raise ValidationError("LLMResolver needs an LLM; pass an LLMConfig or an LLMClient")
+            raise ValidationError("LLMResolver needs an LLM; pass an LLMConfig or an LLMClient", code="llm_required")
         if not isinstance(band, tuple | list) or len(band) != 2:
             raise ValidationError(f"band must be a (low, high) pair, got {band!r}")
         low, high = band
@@ -389,7 +389,7 @@ class LLMResolver:
             raise ValidationError(f"band low must be below band high, got {band!r}")
         _ops._require_int("max_questions", max_questions)
         if max_questions < 1:
-            raise ValidationError(f"max_questions must be >= 1, got {max_questions}")
+            raise ValidationError(f"max_questions must be >= 1, got {max_questions}", field="max_questions")
         self._llm = client
         self.band = (float(low), float(high))
         self.max_questions = max_questions
@@ -485,7 +485,7 @@ def as_resolver(value: Any, llm: LLMClient | None) -> EntityResolver | None:
         return DefaultResolver(fuzzy=True)
     if value == "llm":
         if llm is None:
-            raise ValidationError(f"resolver 'llm' needs an LLM: {LLM_HINT}")
+            raise needs_llm("resolver 'llm'")
         return LLMResolver(llm)
     return value
 
@@ -699,7 +699,10 @@ async def plan_resolution(
         ]
         decision = await resolver.resolve(ent, existing)
         if not isinstance(decision, ResolutionDecision):
-            raise ValidationError(f"a resolver must return a ResolutionDecision, got {_ids.type_name(decision)}")
+            raise ValidationError(
+                f"a resolver must return a ResolutionDecision, got {_ids.type_name(decision)}",
+                code="invalid_resolver_decision",
+            )
         if decision.target_id is None:
             batch[eid] = _view(ent, eid, etype, ename, created_at)
             continue
@@ -707,13 +710,15 @@ async def plan_resolution(
             if getattr(decision, name) is None:
                 raise ValidationError(
                     f"resolver decision merging {eid!r} into {decision.target_id!r} is missing {name}; "
-                    "a decision with a target_id needs confidence and reason"
+                    "a decision with a target_id needs confidence and reason",
+                    code="invalid_resolver_decision",
                 )
         target = next((e for e in existing if e.id == decision.target_id), None)
         if target is None:
             raise ValidationError(
                 f"resolver chose {decision.target_id!r} for {eid!r}, "
-                "which is not one of the compatible entities it was offered"
+                "which is not one of the compatible entities it was offered",
+                code="invalid_resolver_decision",
             )
         mapping[eid] = target.id
         merges[eid] = _Merge(eid, target.id, ent, decision)
@@ -1099,7 +1104,7 @@ async def list_merges(runner: Any, ns: str, entity_id: str, *, skip: int, limit:
         ns, L_MERGE, equals={"survivor_id": entity_id}, order_by="id", skip=skip, limit=limit
     )
     if not rows and skip == 0 and not await runner.node_exists(ns, L_ENTITY, entity_id):
-        raise NotFoundError("Entity", entity_id)
+        raise await _ops.missing_entity(runner, ns, entity_id)
     entries = await _load_entries(runner, ns, rows)
     return [_decode_merge(r, entries[r["id"]]) for r in rows]
 
@@ -1197,17 +1202,22 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     await runner.lock_node(ns, L_MERGE, merge_id)
     props = await runner.get_node(ns, L_MERGE, merge_id)
     if props is None:
-        raise NotFoundError("EntityMerge", merge_id)
+        raise NotFoundError("EntityMerge", merge_id, namespace=ns)
     entries = (await _load_entries(runner, ns, [props]))[merge_id]
     rec = _decode_merge(props, entries)
     if rec.reverted_at is not None:
-        raise ValidationError(f"merge {merge_id!r} was already reverted at {json_iso(rec.reverted_at)}")
+        raise ValidationError(
+            f"merge {merge_id!r} was already reverted at {json_iso(rec.reverted_at)}", code="merge_reverted"
+        )
     history: dict[str, list[Relation]] = {}
     for rw in rec.rewrites:
         if rw.kind == "relation" and not rw.existed and not rw.dropped:
             history[rw.id] = await _ops.list_relation_versions(runner, ns, rw.id, newest_first=True)
             if history[rw.id] and history[rw.id][0].is_current and history[rw.id][0].certified_at is not None:
-                raise ValidationError(f"relation {rw.id} is certified; uncertify it before unmerging {merge_id!r}")
+                raise ValidationError(
+                    f"relation {rw.id} is certified, and unmerging {merge_id!r} would change it",
+                    code="relation_certified",
+                )
     at = now()
     absorbed_id = rec.absorbed_id
     evidence = []

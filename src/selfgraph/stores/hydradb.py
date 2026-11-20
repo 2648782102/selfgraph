@@ -71,7 +71,8 @@ def _guard_sizes(row: Mapping[str, Any]) -> None:
     if size > _MAX_WRITE_BYTES:
         raise StoreError(
             f"HydraDB rejects this write at {size} bytes; a node or edge row goes in one Bolt message, which HydraDB "
-            f"caps at {_MAX_MESSAGE_BYTES} bytes, so a row may take at most {_MAX_WRITE_BYTES}"
+            f"caps at {_MAX_MESSAGE_BYTES} bytes, so a row may take at most {_MAX_WRITE_BYTES}",
+            code="write_too_large",
         )
 
 
@@ -352,11 +353,11 @@ class HydraDBStore(AutoCommitStore):
         """
         failure = bolt_failure(exc)
         if failure == "auth" and not self._has_auth:
-            return StoreError(_NO_TOKEN)
+            return StoreError(_NO_TOKEN, code="store_auth_failed")
         err = query_error(exc, self._uri, self._database, "HydraDB", _transient)
         lowered = f"{getattr(exc, 'code', '') or ''} {exc}".lower()
         if any(k in lowered for k in _OTHER_ENGINE_MARKERS):
-            return StoreError(f"{err}{_OTHER_ENGINE_HINT}")
+            return StoreError(f"{err}{_OTHER_ENGINE_HINT}", code="wrong_engine")
         return err
 
     async def _write(

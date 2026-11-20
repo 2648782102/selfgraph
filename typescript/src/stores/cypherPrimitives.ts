@@ -174,7 +174,7 @@ abstract class CypherRunner {
 
   /** Fail with a plain StoreError once the store is closed, instead of a driver error. */
   protected requireOpen(): void {
-    if (this.closed) throw new StoreError(STORE_CLOSED_MESSAGE);
+    if (this.closed) throw new StoreError(STORE_CLOSED_MESSAGE, { code: "store_closed" });
   }
 
   /**

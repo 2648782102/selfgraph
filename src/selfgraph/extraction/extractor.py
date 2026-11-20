@@ -182,11 +182,11 @@ def _checked_output(result: object, schema: type[BaseModel], kind: str) -> BaseM
     if (isinstance(result, Mapping) and kind not in result) or (
         hasattr(result, "__dict__") and not hasattr(result, kind)
     ):
-        raise ExtractionError(f"{head}: {kind}: field required")
+        raise ExtractionError(f"{head}: {kind}: field required", code="invalid_llm_output")
     try:
         return schema.model_validate(result, from_attributes=True)
     except PydanticValidationError as exc:
-        raise ExtractionError(f"{head}: {issue_line(exc.errors()[0])}") from exc
+        raise ExtractionError(f"{head}: {issue_line(exc.errors()[0])}", code="invalid_llm_output") from exc
 
 
 class _WarningSink:
