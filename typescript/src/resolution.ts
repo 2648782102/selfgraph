@@ -1487,7 +1487,10 @@ async function forwardSiblings(
  * comes back current, since the conflict came from the merged identity. Each evidence row records the merges whose
  * rewrite wrote it, so the restored relation takes exactly the rows this merge carried, and a survivor relation that a
  * direct statement or another live merge still backs stays, with its other evidence, its recounted source_count, and
- * its decision steps. A merge whose moved relation is certified is refused until it is uncertified, since the mark verified other endpoints.
+ * its decision steps. An object an earlier rewrite of this merge created is this merge's to undo even where a repeat
+ * of the merge recorded it as existing. A restored relation that keeps the explicit id of the redirected one takes all
+ * of its evidence, and the redirected edge is deleted before the id is written again. Each restored relation is
+ * returned once, as stored after the last write. A merge whose moved relation is certified is refused until it is uncertified, since the mark verified other endpoints.
  * An endpoint whose own merge is still live keeps pointing at that
  * merge's survivor, and that merge is updated to undo from the new location, so unmerging every merge of an
  * insert, in any order, restores the relations it would have written without them. Restored relations are
@@ -1511,7 +1514,6 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
       code: "merge_reverted",
     });
   }
-  // A repeat of this merge found what its earlier rewrite created, which is still this merge's to undo.
   const created = new Set(
     stored.rewrites.filter((rw) => !(rw.existed || rw.dropped)).map((rw) => JSON.stringify([rw.kind, rw.id])),
   );
@@ -1586,8 +1588,6 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     const keep = !reused && (rw.existed || split.sources.size > 0 || backedElsewhere(rw, rec, siblings));
     if (keep && !rw.existed) handed.add(JSON.stringify([rw.kind, rw.id]));
     if (reused) {
-      // An explicit relation id names one statement, so the redirected edge and all its evidence move to the
-      // restored endpoints, and the edge is deleted before its id is written again.
       const stripped = ops.viaOf(statement.split(" ").filter((m) => m !== rec.id));
       split.carried = rows.map((r) => [
         decodeEvidence(r),
@@ -1749,5 +1749,10 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     : null;
   const reverted: MergeRecord = { ...rec, reverted_at: at };
   await writeMerges(runner, ns, [reverted], new Map([[rec.id, entries]]));
-  return { merge: reverted, entity: entity!, survivor, relations, preferences, decisions };
+  const restoredRelations: Relation[] = [];
+  for (const rid of new Set(relations.map((rel) => rel.id))) {
+    const [latest] = await ops.listRelationVersions(runner, ns, rid, true);
+    if (latest !== undefined) restoredRelations.push(latest);
+  }
+  return { merge: reverted, entity: entity!, survivor, relations: restoredRelations, preferences, decisions };
 }

@@ -1345,7 +1345,10 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     retired comes back current, since the conflict came from the merged identity. Each evidence row records the
     merges whose rewrite wrote it, so the restored relation takes exactly the rows this merge carried, and a survivor
     relation that a direct statement or another live merge still backs stays, with its other evidence, its recounted
-    source_count, and its decision steps.
+    source_count, and its decision steps. An object an earlier rewrite of this merge created is this merge's to undo
+    even where a repeat of the merge recorded it as existing. A restored relation that keeps the explicit id of the
+    redirected one takes all of its evidence, and the redirected edge is deleted before the id is written again. Each
+    restored relation is returned once, as stored after the last write.
     A merge whose moved relation is certified is refused until it is uncertified, since the mark verified other
     endpoints. An endpoint whose own merge is still live keeps pointing at that
     merge's survivor, and that merge is updated to undo from the new location, so unmerging every merge of an
@@ -1369,7 +1372,6 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         raise ValidationError(
             f"merge {merge_id!r} was already reverted at {json_iso(rec.reverted_at)}", code="merge_reverted"
         )
-    # A repeat of this merge found what its earlier rewrite created, which is still this merge's to undo.
     created = {(rw.kind, rw.id) for rw in rec.rewrites if not (rw.existed or rw.dropped)}
     rewrites = [
         rw.model_copy(update={"existed": False}) if rw.existed and (rw.kind, rw.id) in created else rw
@@ -1448,8 +1450,6 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         if kept and not rw.existed:
             handed.add((rw.kind, rw.id))
         if reused:
-            # An explicit relation id names one statement, so the redirected edge and all its evidence move to the
-            # restored endpoints, and the edge is deleted before its id is written again.
             stripped = _ops.via_of(m for m in statement.split() if m != rec.id)
             split.carried = [
                 (
@@ -1614,6 +1614,10 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
 
     if moved:
         await _forward_siblings(runner, ns, rec.id, moved, deleted, handed, live=live_merges, entries=live_entries)
+    newest = [
+        await _ops.list_relation_versions(runner, ns, rid, newest_first=True) for rid in {r.id: 0 for r in relations}
+    ]
+    relations = [versions[0] for versions in newest if versions]
     survivor = None
     if await exists(rec.survivor_id):
         survivor = await _ops.update_entity(

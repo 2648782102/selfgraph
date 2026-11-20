@@ -1348,6 +1348,23 @@ def test_a_repeated_merge_keeps_each_original_it_redirected_onto_one_relation(or
     assert _stored(g, relation_id(BOB_ID, "KNOWS", robby)) == ([("s2", "Robby")], 1)
 
 
+def test_unmerge_returns_each_restored_relation_once_as_stored():
+    g = fresh_graph("res", resolver="default")
+    rhonda = entity_id("Person", "Rhonda")
+    _seed(g, ROBERT, {"type": "Person", "name": "Rhonda", "aliases": ["Rob", "Robby", "Robban"]})
+    bob_merge = None
+    for name, source in (("Rob", "s1"), ("Robby", "s2"), ("Robban", "s3")):
+        rel = {"from_entity": BOB_ID, "type": "KNOWS", "to_entity": entity_id("Person", name)}
+        facts = {"entities": [BOB, {"type": "Person", "name": name}], "relations": [rel]}
+        merges = run(g.insert.facts(facts, source_id=source)).merges
+        bob_merge = next(m for m in merges if m.absorbed_id == BOB_ID)
+
+    result = run(g.entities.unmerge(bob_merge.id))
+    back = relation_id(BOB_ID, "KNOWS", rhonda)
+    assert [(r.id, r.source_count) for r in result.relations] == [(back, 3)]
+    assert _stored(g, back) == ([("s1", None), ("s2", None), ("s3", None)], 3)
+
+
 class _FailOnce:
     """A transaction that raises from one write the first time it matches, and passes everything else through."""
 

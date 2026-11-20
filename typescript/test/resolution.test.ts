@@ -836,6 +836,45 @@ function suite(spec: StoreSpec) {
     },
   );
 
+  it("returns each restored relation once, as stored", async () => {
+    const g = open({ resolver: "default" });
+    const rhonda = entityId("Person", "Rhonda");
+    await seed(
+      g,
+      { type: "Person", name: "Robert", aliases: ["Bob"] },
+      { type: "Person", name: "Rhonda", aliases: ["Rob", "Robby", "Robban"] },
+    );
+    let bobMerge = "";
+    for (const [name, sourceId] of [
+      ["Rob", "s1"],
+      ["Robby", "s2"],
+      ["Robban", "s3"],
+    ] as const) {
+      const res = await g.insert.facts(
+        {
+          entities: [
+            { type: "Person", name: "Bob" },
+            { type: "Person", name },
+          ],
+          relations: [{ from_entity: BOB, type: "KNOWS", to_entity: entityId("Person", name) }],
+        },
+        { source_id: sourceId },
+      );
+      bobMerge = res.merges.find((m) => m.absorbed_id === BOB)!.id;
+    }
+    const result = await g.entities.unmerge(bobMerge);
+    const back = relationId(BOB, "KNOWS", rhonda);
+    expect(result.relations.map((r) => [r.id, r.source_count])).toEqual([[back, 3]]);
+    expect(await stored(g, back)).toEqual([
+      [
+        ["s1", null],
+        ["s2", null],
+        ["s3", null],
+      ],
+      3,
+    ]);
+  });
+
   it.each([
     ["updateCurrentEdge", (args: unknown[]) => "source_count" in (args[2] as object)],
     ["deleteNodes", (args: unknown[]) => args[1] === "Evidence"],
