@@ -1633,7 +1633,7 @@ export async function listRelationVersions(
  * @param ns (string): the namespace.
  * @param ends (RelationEnds): the endpoints and type.
  * @param props (Props): the encoded version.
- * @param retire (boolean): true when an existing current version must be flipped first.
+ * @param retire (Props | null): the changes that flip the existing current version first, or null when there is none.
  * @return (Relation): the written version.
  */
 async function writeRelationVersion(
@@ -1641,11 +1641,11 @@ async function writeRelationVersion(
   ns: string,
   ends: RelationEnds,
   props: Props,
-  retire: boolean,
+  retire: Props | null,
 ): Promise<Relation> {
-  if (retire) {
+  if (retire !== null) {
     precheckEdges(runner, ns, L_ENTITY, L_ENTITY, [[ends.type, ends.from_entity, ends.to_entity, props]]);
-    await runner.updateCurrentEdge(ns, idOf(props), { is_current: false });
+    await runner.updateCurrentEdge(ns, idOf(props), { ...retire, is_current: false });
   }
   rejectReservedRelType(ends.type, ends.type);
   if (!(await runner.createEdge(ns, ends.type, L_ENTITY, ends.from_entity, L_ENTITY, ends.to_entity, props))) {
@@ -2569,7 +2569,8 @@ export async function repointRetired(
  * endpoint the batch touches is settled once after the whole batch (see Contradictions.settle): an input older than
  * the relations it conflicts with is written already invalidated. New versions are written before any retirement,
  * so a failed write never leaves an endpoint without its current relation. A new revision of a certified relation is
- * not certified, and a certified_dropped warning says so.
+ * not certified, and a certified_dropped warning says so; the superseded version keeps the certification, ended at the
+ * write.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -2653,7 +2654,10 @@ export async function upsertRelations(
         props = { ...edge.props, source_count: sources };
       } else {
         if (prev.is_current) {
-          writes.set(JSON.stringify([rid, prev.revision]), [rid, { ...edge.props, is_current: false }]);
+          writes.set(JSON.stringify([rid, prev.revision]), [
+            rid,
+            { ...edge.props, ...certifications(prev, createdAt), is_current: false },
+          ]);
         }
         if (prev.is_current && prev.certified_at !== null) {
           const message = `relation ${rid} was certified, but this write changed it, so its new revision is not`;
@@ -2830,7 +2834,7 @@ export async function createRelation(
   }
   const retired: EdgeWrite[] = retires.map((e) => [e.type, e.from_id, e.to_id, e.props]);
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, [[ends.type, ends.from_entity, ends.to_entity, written], ...retired]);
-  const rel = await writeRelationVersion(runner, ns, ends, written, false);
+  const rel = await writeRelationVersion(runner, ns, ends, written, null);
   if (retired.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, retired);
   await writeEvidence(runner, ns, records, createdAt);
   if (prior !== null) {
@@ -2900,6 +2904,9 @@ async function lockCurrent<T>(
 /**
  * Create a new version of a relation, settling its max_count endpoints again under supersede.
  *
+ * The mark belongs to the version: a later revision starts uncertified, and the superseded version keeps its open
+ * certification, ended at the update in the same write that retires it.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
@@ -2965,7 +2972,7 @@ export async function updateRelation(
     is_current: true,
     source_count: sources,
   });
-  const rel = await writeRelationVersion(runner, ns, current, props, true);
+  const rel = await writeRelationVersion(runner, ns, current, props, certifications(current, createdAt));
   await writeEvidence(runner, ns, records, createdAt);
   const moved = toIso(newEventTime) !== toIso(current.event_time);
   if (options.contradiction === "supersede" && (moved || current.certified_at !== null)) {
@@ -3242,6 +3249,21 @@ export async function preferencesAsOf(runner: Runner, ns: string, asOf: AsOf): P
 }
 
 /**
+ * Encode a relation version's certifications with the open one ended at a time, and a new one from then by someone.
+ *
+ * @param rel (Relation): the stored version.
+ * @param at (Date): when the open certification ends, and the new one starts.
+ * @param by (string | null): who certifies the version from then on, or null to leave it uncertified.
+ * @return (Props): the version's certified_at, certified_by, and certifications_json, or none when no certification is open and none starts.
+ */
+function certifications(rel: Relation, at: Date, by: string | null = null): Props {
+  if (rel.certified_at === null && by === null) return {};
+  const history = rel.certifications.map((c) => ({ by: c.by, at: toIso(c.at), until: toIso(c.until ?? at) }));
+  if (by !== null) history.push({ by, at: toIso(at), until: null });
+  return { certified_at: by === null ? null : toIso(at), certified_by: by, certifications_json: dumps(history) };
+}
+
+/**
  * Mark the current version of a relation as verified by someone, in place, or clear the mark when by is null.
  *
  * A certified relation stays current when a supersede contradiction or a replaced source would retire it. The mark
@@ -3280,20 +3302,8 @@ export async function certifyRelation(
     });
   }
   const current = relationOf(edge);
-  const held = current.certifications.find((c) => c.until === null) ?? null;
-  if ((held?.by ?? null) === by) return current;
-  const history = current.certifications.map((c) => ({
-    by: c.by,
-    at: toIso(c.at),
-    until: toIso(c === held ? at : c.until),
-  }));
-  if (by !== null) history.push({ by, at: toIso(at), until: null });
-  const props = {
-    ...edge.props,
-    certified_at: by === null ? null : toIso(at),
-    certified_by: by,
-    certifications_json: dumps(history),
-  };
+  if (current.certified_by === by) return current;
+  const props = { ...edge.props, ...certifications(current, at, by) };
   const rows: EdgeWrite[] = [[edge.type, edge.from_id, edge.to_id, props]];
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
   await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);

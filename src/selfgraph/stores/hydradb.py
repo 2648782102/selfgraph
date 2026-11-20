@@ -714,11 +714,20 @@ class HydraDBStore(AutoCommitStore):
         self, ns: str, from_label: str, to_label: str, rows: list[tuple[str, str, str, dict]]
     ) -> None:
         out = []
+        cleared: dict[tuple[str, ...], list[dict]] = {}
         for type, from_id, to_id, props in rows:
             require_keys(props)
             row = _edge_write_row(ns, type, from_label, from_id, to_label, to_id, props)
             _guard_sizes(row)
             out.append(row)
+            if keys := _unset(props):
+                cleared.setdefault(keys, []).append({"f": row["f"], "t": row["t"], "id": row["id"]})
+        for keys, ends in cleared.items():
+            await self._run(
+                f"UNWIND $rows AS row MATCH (a:{from_label} {{id: row.f}})-[r:{_EDGE} {{id: row.id}}]->"
+                f"(b:{to_label} {{id: row.t}}) REMOVE {_removes('r', keys)}",
+                {"rows": ends},
+            )
         for batch in _by_columns(out):
             await self._write(
                 f"UNWIND $rows AS row MATCH (a:{from_label} {{id: row.f}}), (b:{to_label} {{id: row.t}}) "
@@ -782,12 +791,12 @@ class HydraDBStore(AutoCommitStore):
             sets.append(f"r.`{require_identifier(k)}` = $s_{k}")
             params[f"s_{k}"] = v
         _guard_sizes(params)
+        if keys := _unset(merged):
+            await self._run(f"{_BY_SID} AND r.is_current = true REMOVE {_removes('r', keys)}", {"ns": ns, "sid": id})
         await self._run(
             f"{_BY_SID} AND r.is_current = true SET {', '.join(sets)}",
             params,
         )
-        if keys := _unset(merged):
-            await self._run(f"{_BY_SID} AND r.is_current = true REMOVE {_removes('r', keys)}", {"ns": ns, "sid": id})
 
     async def count_edges(self, ns: str, id: str) -> int:
         res = await self._run(f"{_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})

@@ -1,12 +1,14 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import {
   ConflictError,
   type Extractor,
+  type GraphPrimitives,
   ids,
   type LLMClient,
   NotFoundError,
   SelfGraph,
+  StoreError,
   ValidationError,
 } from "../src/index.js";
 import { jsonIso } from "../src/internal/time.js";
@@ -623,6 +625,60 @@ function suite(spec: StoreSpec): void {
         ["bob", false],
       ],
     ]);
+  });
+
+  it("update ends the open certification with an end time", async () => {
+    const g = open();
+    await g.insert.facts({ entities: PEOPLE });
+    const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme");
+    await g.relations.certify(rel.id, { by: "alice" });
+    await g.relations.update(rel.id, { set_properties: { role: "senior" } });
+    await g.relations.uncertify(rel.id);
+    const [current, old] = await g.relations.versions(rel.id);
+    expect([current!.certified_by, current!.certifications]).toEqual([null, []]);
+    expect([old!.certified_at, old!.certified_by]).toEqual([null, null]);
+    expect(old!.certifications.map((c) => [c.by, c.until])).toEqual([["alice", current!.created_at]]);
+  });
+
+  it("an insert that changes a certified relation ends its certification", async () => {
+    const g = open();
+    await g.insert.facts({ entities: PEOPLE });
+    const [rel] = (await g.insert.facts({ relations: [annAt("acme")] })).relations;
+    await g.relations.certify(rel!.id, { by: "alice" });
+    await g.insert.facts({ relations: [annAt("acme", undefined, { role: "cto" })] });
+    const [current, old] = await g.relations.versions(rel!.id);
+    expect([current!.certified_by, current!.certifications]).toEqual([null, []]);
+    expect([old!.certified_at, old!.certified_by]).toEqual([null, null]);
+    expect(old!.certifications.map((c) => [c.by, c.until])).toEqual([["alice", current!.created_at]]);
+  });
+
+  it("a failed update keeps the certification until one succeeds", async () => {
+    const g = open();
+    await g.insert.facts({ entities: PEOPLE });
+    const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme");
+    const certified = await g.relations.certify(rel.id, { by: "alice" });
+    const real = g.store.transaction.bind(g.store);
+    const tooLarge = (tx: GraphPrimitives): GraphPrimitives =>
+      new Proxy(tx, {
+        get: (target, key) => {
+          if (key === "checkEdgeWrites") {
+            return () => {
+              throw new StoreError("value too large");
+            };
+          }
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const spy = vi
+      .spyOn(g.store, "transaction")
+      .mockImplementation(<T>(fn: (tx: GraphPrimitives) => Promise<T>) => real((tx) => fn(tooLarge(tx))));
+    await expect(g.relations.update(rel.id, { set_properties: { role: "senior" } })).rejects.toThrow("value too large");
+    spy.mockRestore();
+    expect(await g.relations.versions(rel.id)).toEqual([certified]);
+    await g.relations.update(rel.id, { set_properties: { role: "senior" } });
+    const [current, old] = await g.relations.versions(rel.id);
+    expect(old!.certifications.map((c) => [c.by, c.until])).toEqual([["alice", current!.created_at]]);
   });
 
   it("known_at counts only the sources recorded by then", async () => {

@@ -937,6 +937,22 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       guardSizes(row);
       return row;
     });
+    const cleared = new Map<string, Props[]>();
+    rows.forEach(([, , , props], i) => {
+      const keys = unset(props);
+      if (!keys.length) return;
+      const row = out[i]!;
+      const group = cleared.get(keys.join("\u0000")) ?? [];
+      group.push({ f: row.f, t: row.t, id: row.id });
+      cleared.set(keys.join("\u0000"), group);
+    });
+    for (const [joined, ends] of cleared) {
+      await this._run(
+        `UNWIND $rows AS row MATCH (a:${fromLabel} {id: row.f})-[r:${EDGE} {id: row.id}]->` +
+          `(b:${toLabel} {id: row.t}) REMOVE ${removes("r", joined.split("\u0000"))}`,
+        { rows: ends },
+      );
+    }
     for (const batch of byColumns(out)) {
       await this.write(
         `UNWIND $rows AS row MATCH (a:${fromLabel} {id: row.f}), (b:${toLabel} {id: row.t}) ` +
@@ -1016,9 +1032,9 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       params[`s_${k}`] = v;
     }
     guardSizes(params);
-    await this._run(`${BY_SID} AND r.is_current = true SET ${assignments.join(", ")}`, params);
     const keys = unset(merged);
     if (keys.length) await this._run(`${BY_SID} AND r.is_current = true REMOVE ${removes("r", keys)}`, { ns, sid: id });
+    await this._run(`${BY_SID} AND r.is_current = true SET ${assignments.join(", ")}`, params);
   }
 
   private async countEdges(ns: string, id: string): Promise<number> {

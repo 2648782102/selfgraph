@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from helpers import cli, create_entities, employment_graph, fresh_graph, instant, mcp_session, run, utc, works_at
 
-from selfgraph import EntityInput, Extraction, StoreError, ValidationError
+from selfgraph import EntityInput, Extraction, StoreError, ValidationError, _ops
 from selfgraph._ops import _retired
 from selfgraph._serde import from_iso
 from selfgraph.runtime import to_jsonable
@@ -332,6 +332,51 @@ def test_known_at_shows_the_certification_in_force_then():
     assert held(alice) == ("alice", [("alice", True)])
     assert held(bob) == ("bob", [("alice", False), ("bob", True)])
     assert held(instant()) == (None, [("alice", False), ("bob", False)])
+
+
+def test_update_ends_the_open_certification_with_an_end_time():
+    g = graph()
+    rel = run(g.relations.create("person:ann", "WORKS_AT", "company:acme"))
+    run(g.relations.certify(rel.id, by="alice"))
+    run(g.relations.update(rel.id, set_properties={"role": "senior"}))
+    run(g.relations.uncertify(rel.id))
+    [new, old] = run(g.relations.versions(rel.id))
+    assert (new.certified_by, new.certifications) == (None, [])
+    assert (old.certified_at, old.certified_by) == (None, None)
+    assert [(c.by, c.until) for c in old.certifications] == [("alice", new.created_at)]
+
+
+def test_an_insert_that_changes_a_certified_relation_ends_its_certification():
+    g = graph()
+    [rel] = run(g.insert.facts({"relations": [works_at("acme")]})).relations
+    run(g.relations.certify(rel.id, by="alice"))
+    run(g.insert.facts({"relations": [works_at("acme", properties={"role": "cto"})]}))
+    [new, old] = run(g.relations.versions(rel.id))
+    assert (new.certified_by, new.certifications) == (None, [])
+    assert (old.certified_at, old.certified_by) == (None, None)
+    assert [(c.by, c.until) for c in old.certifications] == [("alice", new.created_at)]
+
+
+def test_a_failed_update_keeps_the_certification_until_one_succeeds(monkeypatch):
+    g = graph()
+    rel = run(g.relations.create("person:ann", "WORKS_AT", "company:acme"))
+    certified = run(g.relations.certify(rel.id, by="alice"))
+
+    async def too_large(*_):
+        """Reject every edge write, as a store does for a value over its size limit.
+
+        @return (None): nothing; raises StoreError.
+        """
+        raise StoreError("value too large")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_ops, "_precheck_edges", too_large)
+        with pytest.raises(StoreError, match="value too large"):
+            run(g.relations.update(rel.id, set_properties={"role": "senior"}))
+    assert run(g.relations.versions(rel.id)) == [certified]
+    run(g.relations.update(rel.id, set_properties={"role": "senior"}))
+    [new, old] = run(g.relations.versions(rel.id))
+    assert [(c.by, c.until) for c in old.certifications] == [("alice", new.created_at)]
 
 
 def test_known_at_counts_only_the_sources_recorded_by_then():

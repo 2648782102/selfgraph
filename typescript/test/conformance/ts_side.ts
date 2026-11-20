@@ -2121,6 +2121,28 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
   );
   const held = await graph.retrieve("Kim", { as_of: new Date(Date.UTC(2023, 0, 1)) });
   const moved_later_valid = held.subgraph.relations.map((r) => r.id).sort();
+  await graph.insert.facts({
+    entities: [
+      { type: "Person", name: "Lee" },
+      { type: "Company", name: "Umbrella" },
+    ],
+    relations: [link("lee", "umbrella", 2020)],
+  });
+  const umbrella = ids.relationId("person:lee", "WORKS_AT", "company:umbrella");
+  await graph.relations.certify(umbrella, { by: "hr" });
+  await graph.relations.update(umbrella, { set_properties: { role: "cto" } });
+  await graph.relations.uncertify(umbrella);
+  await graph.relations.certify(umbrella, { by: "ops" });
+  await graph.insert.facts({ relations: [{ ...link("lee", "umbrella", 2020), properties: { role: "cfo" } }] });
+  await graph.relations.uncertify(umbrella);
+  const history = await graph.relations.versions(umbrella);
+  const written = new Map(history.map((v) => [v.revision, v.created_at.getTime()]));
+  const certified_history = history.map((v) => [
+    v.revision,
+    v.is_current,
+    v.certified_by,
+    v.certifications.map((c) => [c.by, c.until !== null && c.until.getTime() === written.get(v.revision + 1)]),
+  ]);
   return {
     warnings,
     versions,
@@ -2133,5 +2155,6 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     certified_update,
     moved_later,
     moved_later_valid,
+    certified_history,
   };
 }
