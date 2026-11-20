@@ -441,8 +441,7 @@ def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
     assert main(["--schema", str(bad), "entity", "list"]) == 2
     err = capsys.readouterr().err
     assert (
-        f"error[invalid_argument]: cannot read {str(bad)!r}: not valid UTF-8; "
-        "save the file as UTF-8 and try again"
+        f"error[invalid_argument]: cannot read {str(bad)!r}: not valid UTF-8; save the file as UTF-8 and try again"
     ) in err
     assert "field: path" in err
     assert "Traceback" not in err
