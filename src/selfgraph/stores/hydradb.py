@@ -134,6 +134,8 @@ def _same(alias: str, key: str, param: str) -> str:
 
 
 _BY_SID = f"MATCH ()-[r:{_EDGE} {{sid: $sid}}]->() WHERE {_same('r', 'ns', 'ns')}"
+_READ_EDGES = f"MATCH (a {{ns: $ns}})-[r:{_EDGE}]->() WHERE {_same('r', 'ns', 'ns')}"
+_READ_BY_SID = f"{_READ_EDGES} AND {_same('r', 'sid', 'sid')}"
 
 
 def _keyed(alias: str, label: str, equals: dict | None, params: dict) -> str:
@@ -740,7 +742,7 @@ class HydraDBStore(AutoCommitStore):
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
-            f"{_BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
+            f"{_READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
             reads=[_sid_key(ns, id)],
         )
@@ -748,7 +750,8 @@ class HydraDBStore(AutoCommitStore):
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
-            f"{_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
+            f"{_READ_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, "
+            "r.revision AS rev ORDER BY rev",
             {"ns": ns, "sid": id},
             reads=[_sid_key(ns, id)],
         )
@@ -757,9 +760,7 @@ class HydraDBStore(AutoCommitStore):
     async def edge_versions(
         self, ns: str, from_label: str | None, to_label: str | None, ids: list[str]
     ) -> list[dict] | None:
-        """Read every version of some edges by edge id, a point seek per id, run concurrently, when there are few.
-
-        More than _SEEK_BATCH ids cost more seeks than reading them by endpoint, so the caller reads them that way.
+        """Read every version of a bounded set of edge ids in one namespace scan.
 
         @param ns (str): namespace.
         @param from_label (str | None): the source node label the edges must have, or None for any.
@@ -769,16 +770,20 @@ class HydraDBStore(AutoCommitStore):
         """
         if len(ids) > _SEEK_BATCH:
             return None
+        if not ids:
+            return []
         labels = {k: v for k, v in (("fl", from_label), ("tl", to_label)) if v is not None}
         where = "".join(f" AND {_same('r', k, k)}" for k in labels)
-        query = f"{_BY_SID}{where} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et"
-        out: list[dict] = []
-        for batch in _batches(ids, _PARALLEL):
-            params = [{"ns": ns, "sid": i, **labels} for i in batch]
-            reads = (self._run(query, p, reads=[_sid_key(ns, p["sid"])]) for p in params)
-            for res in await asyncio.gather(*reads):
-                out += [edge_row(r) for r in res.rows]
-        return out
+        res = await self._run(
+            f"{_READ_EDGES} AND NOT (NOT r.sid IN $sids){where} "
+            "RETURN r.sid AS sid, r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
+            {"ns": ns, "sids": ids, **labels},
+            reads=(_sid_key(ns, sid) for sid in ids),
+        )
+        by_id: dict[str, list[dict]] = {}
+        for row in res.rows:
+            by_id.setdefault(row["sid"], []).append(edge_row(row))
+        return [edge for sid in ids for edge in by_id.get(sid, ())]
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
         require_keys(props)
@@ -799,7 +804,7 @@ class HydraDBStore(AutoCommitStore):
         )
 
     async def count_edges(self, ns: str, id: str) -> int:
-        res = await self._run(f"{_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})
+        res = await self._run(f"{_READ_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})
         return count_of(res.rows)
 
     async def delete_edges(self, ns: str, id: str) -> int:
@@ -844,7 +849,6 @@ class HydraDBStore(AutoCommitStore):
             params["tiids_in"] = [_sk(ns, i) for i in to_in]
         from_anchored = from_id is not None or from_in is not None
         to_anchored = to_id is not None or to_in is not None
-        anchored = from_anchored or to_anchored
         filters = {"ns": ns, **({"etype": type} if type is not None else {}), **dict(sorted((equals or {}).items()))}
         if from_anchored and not to_anchored:
             bpat = ""
@@ -853,11 +857,13 @@ class HydraDBStore(AutoCommitStore):
         elif to_anchored and not from_anchored:
             apat = ""
             filters["fl"] = from_label
+        elif not from_anchored and not to_anchored:
+            apat += " {ns: $ns}"
         for i, (key, value) in enumerate(filters.items()):
-            where.append(_same("r", key, f"eq{i}") if anchored else f"r.`{require_identifier(key)}` = $eq{i}")
+            where.append(_same("r", key, f"eq{i}"))
             params[f"eq{i}"] = value
         if current_only:
-            where.append("NOT r.is_current <> true" if anchored else "r.is_current = true")
+            where.append("NOT r.is_current <> true")
         where_after("r.sid", id_gt, where, params)
         ob = "sid" if order_by == "id" else require_identifier(order_by, "order_by")
         tie_break, order = (", r.revision AS __rev", "__ob, __rev") if order_by == "id" else ("", "__ob")
