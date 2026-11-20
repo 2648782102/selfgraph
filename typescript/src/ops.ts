@@ -550,16 +550,45 @@ export function nodeListing(
   return (skip, limit) => runner.matchNodes(ns, label, { ...filters, skip, limit });
 }
 
+/** The statement of an evidence row no merge rewrote (see evidenceVia). */
+export const DIRECT = "";
+
+/**
+ * The statements that wrote one stored evidence row, as recorded in its via property.
+ *
+ * Each entry is DIRECT for a statement no merge rewrote, or the space-separated, sorted ids of the merges whose rewrite carried the statement onto the row's target. A row written before via was recorded counts as direct.
+ *
+ * @param props (Props): the stored evidence row.
+ * @return (string[]): the row's statements.
+ */
+export function evidenceVia(props: Props): string[] {
+  const via = props.via as string[] | null | undefined;
+  return via?.length ? [...via] : [DIRECT];
+}
+
+/**
+ * The via entry of a statement that the given merges rewrote, or DIRECT for none.
+ *
+ * @param mergeIds (Iterable<string>): the merge ids.
+ * @return (string): the entry.
+ */
+export function viaOf(mergeIds: Iterable<string>): string {
+  return [...new Set(mergeIds)].sort(comparePy).join(" ");
+}
+
 /**
  * Find which evidence records are not stored yet and how many distinct sources each target gains.
  *
  * Records are looked up by id first; only a target missing a record is then checked for any record from that
  * source. A target with no stored version has no stored evidence, so targets in newTargets skip both lookups.
+ * Each record also lists the statements that wrote it (see evidenceVia), so an unmerge moves exactly the rows a
+ * merge carried; a stored record that gains a statement is rewritten with its original created_at.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param items (ReadonlyArray<readonly [string, Evidence]>): (target id, evidence) pairs to record.
  * @param newTargets (ReadonlySet<string>): targets known to have no stored evidence.
+ * @param via (ReadonlyArray<readonly string[]> | null): each item's statements, as viaOf gives them; null for all direct.
  * @return ([NodeRow[], Map<string, number>]): the records to write, and the sources gained per target.
  */
 async function planEvidence(
@@ -567,14 +596,17 @@ async function planEvidence(
   ns: string,
   items: ReadonlyArray<readonly [string, Evidence]>,
   newTargets: ReadonlySet<string>,
+  via: ReadonlyArray<readonly string[]> | null = null,
 ): Promise<[NodeRow[], Map<string, number>]> {
-  const pending = new Map<string, readonly [string, Evidence]>();
-  for (const [target, ev] of items) {
+  const pending = new Map<string, readonly [string, Evidence, Set<string>]>();
+  items.forEach(([target, ev], i) => {
     const evid = ids.evidenceId(target, ev);
-    if (!pending.has(evid)) pending.set(evid, [target, ev]);
-  }
+    const entry = pending.get(evid) ?? ([target, ev, new Set<string>()] as const);
+    for (const statement of via === null ? [DIRECT] : via[i]!) entry[2].add(statement);
+    pending.set(evid, entry);
+  });
   const known = [...pending].filter(([, [target]]) => !newTargets.has(target)).map(([evid]) => evid);
-  const stored = new Set((await nodesById(runner, ns, L_EVIDENCE, known)).keys());
+  const stored = await nodesById(runner, ns, L_EVIDENCE, known);
   const bySource = new Map<string, Set<string>>();
   for (const evid of known) {
     if (stored.has(evid)) continue;
@@ -590,9 +622,17 @@ async function planEvidence(
   }
   const records: NodeRow[] = [];
   const gained = new Map<string, number>();
-  for (const [evid, [target, ev]] of pending) {
-    if (stored.has(evid)) continue;
-    records.push([evid, encodeEvidenceProps({ ns, id: evid, target_id: target, evidence: ev })]);
+  for (const [evid, [target, ev, statements]] of pending) {
+    const prior = stored.get(evid);
+    if (prior !== undefined) {
+      const held = evidenceVia(prior);
+      const added = [...statements].filter((s) => !held.includes(s));
+      if (added.length) records.push([evid, { ...prior, via: [...held, ...added] }]);
+      continue;
+    }
+    const props = encodeEvidenceProps({ ns, id: evid, target_id: target, evidence: ev });
+    if (statements.size !== 1 || !statements.has(DIRECT)) props.via = [...statements];
+    records.push([evid, props]);
     if (!seen.has(pair(target, ev.source_id))) {
       seen.add(pair(target, ev.source_id));
       gained.set(target, (gained.get(target) ?? 0) + 1);
@@ -602,7 +642,9 @@ async function planEvidence(
 }
 
 /**
- * Write new evidence records, each stamped with the write that recorded it, for known_at reads.
+ * Write evidence records, each new one stamped with the write that recorded it, for known_at reads.
+ *
+ * A stored record rewritten with more statements keeps the created_at it already has.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -616,7 +658,7 @@ async function writeEvidence(runner: Runner, ns: string, records: readonly NodeR
   await runner.upsertNodes(
     ns,
     L_EVIDENCE,
-    records.map(([evid, props]) => [evid, { ...props, created_at: stamp }]),
+    records.map(([evid, props]) => [evid, { created_at: stamp, ...props }]),
   );
 }
 
@@ -2291,6 +2333,8 @@ export interface ContradictionOptions {
   contradiction?: string;
   caps?: ReadonlyMap<string, RelationCap> | null;
   warnings?: InsertWarning[];
+  /** For each relation input, each evidence record's statements (see planEvidence); omitted for all direct. */
+  via?: ReadonlyArray<ReadonlyArray<readonly string[]>>;
 }
 
 /**
@@ -2561,6 +2605,7 @@ export async function upsertRelations(
     ns,
     keyed.flatMap((k) => k.evidence.map((ev) => [k.rid, ev] as const)),
     new Set(rids.filter((rid) => !stored.has(rid))),
+    options.via === undefined ? null : options.via.flat(),
   );
   const [tracker, existing] = await contradictionCheck(
     runner,

@@ -627,9 +627,7 @@ class SelfGraph:
             canonical = await _ops.validate_facts(tx, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
             resolution = None
             if active_resolver is not None:
-                resolution = await plan_resolution(
-                    tx, ns, canonical, active_resolver, active_schema, created_at, source_id=source_id
-                )
+                resolution = await plan_resolution(tx, ns, canonical, active_resolver, active_schema, created_at)
             resolved = resolution.facts if resolution is not None else canonical
             dropped: list[InsertWarning] = []
             if extracted and mode == "strict":
@@ -667,23 +665,25 @@ class SelfGraph:
                 created_at=created_at,
                 schema_types=frozenset(t.name for t in active_schema.entities) if active_schema is not None else (),
             )
+            items = [
+                (
+                    rel,
+                    _ops.relation_evidence(
+                        rel.evidence, base_evidence, source_id=source_id, source_version=source_version
+                    ),
+                )
+                for rel in resolved.relations
+            ]
             relations = await _ops.upsert_relations(
                 tx,
                 ns,
-                [
-                    (
-                        rel,
-                        _ops.relation_evidence(
-                            rel.evidence, base_evidence, source_id=source_id, source_version=source_version
-                        ),
-                    )
-                    for rel in resolved.relations
-                ],
+                items,
                 default_event_time=default_event_time,
                 created_at=created_at,
                 contradiction=conflicts,
                 caps=caps,
                 warnings=found,
+                via=None if resolution is None else [[resolution.statements(rel)] * len(ev) for rel, ev in items],
             )
             if judged and self._llm is not None:
                 found.extend(await judge_contradictions(tx, ns, self._llm, relations, caps, created_at))

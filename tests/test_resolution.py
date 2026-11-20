@@ -1201,23 +1201,163 @@ def test_unmerge_keeps_a_relation_stated_directly_after_the_merge(case, survivor
         assert [s.relation_id for s in run(g.decisions.get(later.decisions[0].id)).steps] == [rid]
 
 
-def test_unmerge_moves_a_relation_its_merge_source_restated_unchanged():
+XENA = {"type": "Person", "name": "Xena"}
+XENA_ID = entity_id("Person", "Xena")
+ROBERT_XENA = relation_id(ROBERT_ID, "KNOWS", XENA_ID)
+BOB_XENA = relation_id(BOB_ID, "KNOWS", XENA_ID)
+
+
+def _knows(source, *, quote=None):
+    rel = {"type": "KNOWS", "from_entity": source, "to_entity": XENA_ID}
+    if quote is not None:
+        rel["evidence"] = [{"source_id": quote[0], "quote": quote[1]}]
+    return rel
+
+
+def _stored(g, rid):
+    """A relation's stored evidence as (source, quote) pairs and its source count, or None once it is gone."""
+    rel = run(g.relations.get(rid))
+    if rel is None:
+        return None
+    return sorted((e.source_id, e.quote) for e in run(g.relations.evidence(rid)).items), rel.source_count
+
+
+@pytest.mark.parametrize("decision", [False, True])
+def test_unmerge_keeps_a_relation_its_merge_source_restated_unchanged(decision):
     g = fresh_graph("res", resolver="default")
-    xena = entity_id("Person", "Xena")
-    _seed(g, ROBERT, {"type": "Person", "name": "Xena"})
-    [merge] = run(
-        g.insert.facts(
-            {"entities": [BOB], "relations": [{"type": "KNOWS", "from_entity": BOB_ID, "to_entity": xena}]},
-            source_id="s1",
-        )
-    ).merges
-    direct = {"type": "KNOWS", "from_entity": ROBERT_ID, "to_entity": xena}
-    run(g.insert.facts({"relations": [direct]}, source_id="s1"))
+    _seed(g, ROBERT, XENA)
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": [_knows(BOB_ID)]}, source_id="s1")).merges
+    facts = {"relations": [_knows(ROBERT_ID)]}
+    if decision:
+        facts["decisions"] = [{"title": "later", "steps": [ROBERT_XENA]}]
+    later = run(g.insert.facts(facts, source_id="s1"))
 
     run(g.entities.unmerge(merge.id))
-    assert run(g.relations.get(relation_id(ROBERT_ID, "KNOWS", xena))) is None
-    back = relation_id(BOB_ID, "KNOWS", xena)
-    assert [e.source_id for e in run(g.relations.evidence(back)).items] == ["s1"]
+    assert _stored(g, ROBERT_XENA) == ([("s1", None)], 1)
+    assert _stored(g, BOB_XENA) == ([("s1", None)], 1)
+    if decision:
+        assert [s.relation_id for s in run(g.decisions.get(later.decisions[0].id)).steps] == [ROBERT_XENA]
+
+
+@pytest.mark.parametrize("when", ["before", "same insert"])
+def test_unmerge_leaves_the_survivors_quote_and_moves_only_the_merges_own_row(when):
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, XENA)
+    quoted = _knows(ROBERT_ID, quote=("s1", "prior"))
+    relations = [_knows(BOB_ID)]
+    if when == "before":
+        run(g.insert.facts({"relations": [quoted]}, source_id="s1"))
+    else:
+        relations.append(quoted)
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": relations}, source_id="s1")).merges
+
+    run(g.entities.unmerge(merge.id))
+    assert _stored(g, ROBERT_XENA) == ([("s1", "prior")], 1)
+    assert _stored(g, BOB_XENA) == ([("s1", None)], 1)
+
+
+def test_unmerge_carries_the_merges_own_explicit_evidence():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, XENA)
+    merged = _knows(BOB_ID, quote=("s1", "Bob knows Xena"))
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": [merged]}, source_id="s1")).merges
+
+    run(g.entities.unmerge(merge.id))
+    assert _stored(g, ROBERT_XENA) is None
+    assert _stored(g, BOB_XENA) == ([("s1", "Bob knows Xena")], 1)
+
+
+def test_unmerge_keeps_what_a_repeated_merges_source_stated_directly():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, XENA)
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": [_knows(BOB_ID)]}, source_id="s1")).merges
+    again = run(g.insert.facts({"entities": [BOB], "relations": [_knows(ROBERT_ID)]}, source_id="s2"))
+    assert [m.id for m in again.merges] == [merge.id]
+
+    run(g.entities.unmerge(merge.id))
+    assert _stored(g, ROBERT_XENA) == ([("s2", None)], 1)
+    assert _stored(g, BOB_XENA) == ([("s1", None)], 1)
+
+
+def test_unmerge_of_a_repeated_merge_moves_its_row_and_leaves_the_quote():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, XENA)
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": [_knows(BOB_ID)]}, source_id="s1")).merges
+    run(g.insert.facts({"relations": [_knows(ROBERT_ID, quote=("s2", "quoted"))]}, source_id="s2"))
+    run(g.insert.facts({"entities": [BOB], "relations": [_knows(BOB_ID)]}, source_id="s2"))
+
+    run(g.entities.unmerge(merge.id))
+    assert _stored(g, ROBERT_XENA) == ([("s2", "quoted")], 1)
+    assert _stored(g, BOB_XENA) == ([("s1", None), ("s2", None)], 2)
+
+
+@pytest.mark.parametrize("order", [("bob", "rob"), ("rob", "bob")])
+def test_unmerging_both_endpoints_of_one_relation_removes_the_survivors_relation(order):
+    g = fresh_graph("res", resolver="default")
+    rhonda, rob = entity_id("Person", "Rhonda"), entity_id("Person", "Rob")
+    _seed(g, ROBERT, {"type": "Person", "name": "Rhonda", "aliases": ["Rob"]})
+    facts = {
+        "entities": [BOB, {"type": "Person", "name": "Rob"}],
+        "relations": [{"type": "KNOWS", "from_entity": BOB_ID, "to_entity": rob}],
+    }
+    merges = {m.absorbed_id: m for m in run(g.insert.facts(facts, source_id="s1")).merges}
+    assert _stored(g, relation_id(ROBERT_ID, "KNOWS", rhonda)) == ([("s1", None)], 1)
+
+    for name in order:
+        run(g.entities.unmerge(merges[BOB_ID if name == "bob" else rob].id))
+    left = sorted((r.from_entity, r.to_entity) for r in run(g.relations.list()).items)
+    assert left == [(BOB_ID, rob)]
+    assert _stored(g, relation_id(BOB_ID, "KNOWS", rob)) == ([("s1", None)], 1)
+
+
+class _FailOnce:
+    """A transaction that raises from one write the first time it matches, and passes everything else through."""
+
+    def __init__(self, tx, method, matches, state):
+        self._tx, self._method, self._matches, self._state = tx, method, matches, state
+
+    def __getattr__(self, name):
+        real = getattr(self._tx, name)
+        if name != self._method:
+            return real
+
+        async def call(*args, **kwargs):
+            if not self._state["failed"] and self._matches(*args):
+                self._state["failed"] = True
+                raise RuntimeError(f"injected {name} failure")
+            return await real(*args, **kwargs)
+
+        return call
+
+
+@pytest.mark.parametrize(
+    ("method", "matches"),
+    [
+        ("update_current_edge", lambda ns, rid, props: "source_count" in props),
+        ("delete_nodes", lambda ns, label, ids: label == "Evidence"),
+    ],
+)
+def test_a_retried_unmerge_after_a_failed_evidence_write_ends_as_a_clean_one(monkeypatch, method, matches):
+    from contextlib import asynccontextmanager
+
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, XENA)
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": [_knows(BOB_ID)]}, source_id="s1")).merges
+    run(g.insert.facts({"relations": [_knows(ROBERT_ID)]}, source_id="s2"))
+    real, state = g.store.transaction, {"failed": False}
+
+    @asynccontextmanager
+    async def transaction():
+        async with real() as tx:
+            yield _FailOnce(tx, method, matches, state)
+
+    monkeypatch.setattr(g.store, "transaction", transaction)
+    with pytest.raises(RuntimeError, match="injected"):
+        run(g.entities.unmerge(merge.id))
+    assert state["failed"]
+    run(g.entities.unmerge(merge.id))
+    assert _stored(g, ROBERT_XENA) == ([("s2", None)], 1)
+    assert _stored(g, BOB_XENA) == ([("s1", None)], 1)
 
 
 def test_unmerging_one_merge_keeps_the_relation_another_live_merge_rewrote_onto():

@@ -37,6 +37,7 @@ import {
   type ResolverMode,
   resolverFor,
   saveMerges,
+  statementsOf,
   trimResolution,
 } from "./resolution.js";
 import {
@@ -233,7 +234,7 @@ export class Insert {
       let resolution =
         activeResolver === null
           ? null
-          : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt, source.source_id);
+          : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt);
       let resolved = resolution?.facts ?? canonical;
       let dropped: InsertWarning[] = [];
       if (extracted && mode === "strict") {
@@ -271,16 +272,16 @@ export class Insert {
         createdAt,
         new Set(activeSchema?.entities.map((t) => t.name) ?? []),
       );
-      const relations = await ops.upsertRelations(
-        tx,
-        ns,
-        resolved.relations.map(
-          (rel) => [rel, ops.relationEvidence(rel.evidence, baseEvidence, source.source_id, sourceVersion)] as const,
-        ),
-        source.default_event_time,
-        createdAt,
-        { contradiction: conflicts, caps, warnings: found },
+      const items = resolved.relations.map(
+        (rel) => [rel, ops.relationEvidence(rel.evidence, baseEvidence, source.source_id, sourceVersion)] as const,
       );
+      const via = resolution && items.map(([rel, ev]) => ev.map(() => statementsOf(resolution, rel)));
+      const relations = await ops.upsertRelations(tx, ns, items, source.default_event_time, createdAt, {
+        contradiction: conflicts,
+        caps,
+        warnings: found,
+        ...(via ? { via } : {}),
+      });
       if (judged && llm !== null) {
         found.push(...(await judgeContradictions(tx, ns, llm, relations, caps, createdAt)));
       }

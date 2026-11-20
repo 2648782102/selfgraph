@@ -22,7 +22,6 @@ from ._serde import (
     L_TRACE,
     _dumps,
     _loads,
-    aware,
     decode_entity,
     decode_evidence,
     from_iso,
@@ -543,6 +542,23 @@ class Resolution:
     facts: Extraction
     merges: list[_Merge] = field(default_factory=list)
     warnings: list[InsertWarning] = field(default_factory=list)
+    via: dict[str, dict[str, None]] = field(default_factory=dict)
+
+    def statements(self, rel: RelationInput) -> list[str]:
+        """The statements behind one resolved relation, for the evidence it records (see _ops.evidence_via).
+
+        A relation the merges rewrote is recorded under the ids of those merges, so an unmerge moves exactly that
+        evidence; one stated directly is recorded as direct. Inputs that resolve to the same relation with the same
+        evidence write the same records, so each record lists all of their statements.
+
+        @param rel (RelationInput): a relation of facts.
+        @return (list[str]): the statements.
+        """
+        return list(self.via.get(_statement_key(rel), {_ops.DIRECT: None}))
+
+
+def _statement_key(rel: RelationInput) -> str:
+    return _dumps([_rid_of(rel), _dump(rel)])
 
 
 def _view(ent: EntityInput, eid: str, etype: str, ename: str, at: datetime) -> Entity:
@@ -614,14 +630,7 @@ def _fold_absorbed(base: EntityInput, ent: EntityInput) -> EntityInput:
 
 
 async def plan_resolution(
-    runner: Any,
-    ns: str,
-    facts: Extraction,
-    resolver: EntityResolver,
-    schema: Schema | None,
-    created_at: datetime,
-    *,
-    source_id: str | None = None,
+    runner: Any, ns: str, facts: Extraction, resolver: EntityResolver, schema: Schema | None, created_at: datetime
 ) -> Resolution:
     """Resolve each new entity without an explicit id against compatible stored and batch entities, and rewrite refs.
 
@@ -736,8 +745,9 @@ async def plan_resolution(
     if not mapping:
         return Resolution(facts)
     warnings: list[InsertWarning] = []
-    rewritten = await _rewrite_refs(runner, ns, facts, mapping, merges, warnings, source_id)
-    return Resolution(rewritten.model_copy(update={"entities": entities}), list(merges.values()), warnings)
+    via: dict[str, dict[str, None]] = {}
+    rewritten = await _rewrite_refs(runner, ns, facts, mapping, merges, warnings, via)
+    return Resolution(rewritten.model_copy(update={"entities": entities}), list(merges.values()), warnings, via)
 
 
 def trim_resolution(resolution: Resolution, kept: Extraction) -> Resolution:
@@ -762,7 +772,7 @@ def trim_resolution(resolution: Resolution, kept: Extraction) -> Resolution:
         merge.rewrites = [r for r in merge.rewrites if r.dropped or r.id in kept_by_kind[r.kind]]
         merges.append(merge)
     warnings = [w for w in resolution.warnings if any(f"join {eid} to itself" in w.message for eid in entities)]
-    return Resolution(kept, merges, warnings)
+    return Resolution(kept, merges, warnings, resolution.via)
 
 
 def _rid_of(rel: RelationInput) -> str:
@@ -792,58 +802,6 @@ def _redirect(ent: EntityInput, target: Entity) -> EntityInput:
     )
 
 
-async def _evidence_of(runner: Any, ns: str, relation_id: str) -> list[Evidence]:
-    return await _ops._paged(partial(_ops.list_evidence, runner, ns, relation_id, kind="relation"))
-
-
-async def _evidence_rows(runner: Any, ns: str, relation_id: str) -> list[dict[str, Any]]:
-    return await _ops._nodes_where(runner, ns, L_EVIDENCE, "target_id", [relation_id])
-
-
-def _merge_rows(rows: list[dict[str, Any]], own: list[str]) -> list[dict[str, Any]]:
-    """Pick the evidence rows a merge wrote: for each of its sources, that source's earliest rows on the relation.
-
-    A merge record keeps no time per source, and a repeated merge adds its source later, so the rows each source wrote
-    first are the ones the merge carried in. A later row from the same source, or any row from another source, is a
-    direct statement made since.
-
-    @param rows (list[dict[str, Any]]): the relation's evidence rows.
-    @param own (list[str]): the sources the merge was seen in.
-    @return (list[dict[str, Any]]): the merge's own rows.
-    """
-    first: dict[str, datetime] = {}
-    for row in rows:
-        if row["source_id"] in own:
-            at = aware(from_iso(row["created_at"]))
-            first[row["source_id"]] = min(first.get(row["source_id"], at), at)
-    return [r for r in rows if r["source_id"] in first and aware(from_iso(r["created_at"])) == first[r["source_id"]]]
-
-
-async def _strip_merge_evidence(
-    runner: Any, ns: str, relation_id: str, own: list[str], keep: set[str]
-) -> list[Evidence]:
-    """Take a merge's own evidence off a relation that stays on the survivor, and recount the distinct sources left.
-
-    The merge's own evidence is what _merge_rows picks. Rows stated directly since stay, whatever their source.
-
-    @param runner (Any): graph runner.
-    @param ns (str): namespace.
-    @param relation_id (str): the relation the merge rewrote onto.
-    @param own (list[str]): the sources the merge was seen in.
-    @param keep (set[str]): sources whose rows stay because another live merge or a prior statement still backs them.
-    @return (list[Evidence]): the merge's own evidence, to carry onto the restored relation.
-    """
-    rows = await _evidence_rows(runner, ns, relation_id)
-    mine = _merge_rows(rows, own)
-    strip = [r for r in mine if r["source_id"] not in keep]
-    if strip:
-        await runner.delete_nodes(ns, L_EVIDENCE, [r["id"] for r in strip])
-    gone = {r["id"] for r in strip}
-    left = {r["source_id"] for r in rows if r["id"] not in gone}
-    await runner.update_current_edge(ns, relation_id, {"source_count": len(left)})
-    return [decode_evidence(r) for r in mine]
-
-
 async def _rewrite_refs(
     runner: Any,
     ns: str,
@@ -851,7 +809,7 @@ async def _rewrite_refs(
     mapping: dict[str, str],
     merges: dict[str, _Merge],
     warnings: list[InsertWarning],
-    source_id: str | None,
+    via: dict[str, dict[str, None]],
 ) -> Extraction:
     """Point every reference to a merged candidate at its target and record each rewrite on the merges it involves.
 
@@ -864,7 +822,7 @@ async def _rewrite_refs(
     @param mapping (dict[str, str]): candidate id to target id.
     @param merges (dict[str, _Merge]): the merges by candidate id.
     @param warnings (list[InsertWarning]): receives one merge_self_loop warning per dropped relation.
-    @param source_id (str | None): the inserted source, which backs a relation this insert also states directly.
+    @param via (dict[str, dict[str, None]]): receives each written relation's statements (see Resolution.statements).
     @return (Extraction): the facts with rewritten relations, preferences, and decisions.
     """
 
@@ -883,27 +841,18 @@ async def _rewrite_refs(
     relations = []
     for rel, hit in zip(facts.relations, touched, strict=True):
         if not hit:
+            via.setdefault(_statement_key(rel), {})[_ops.DIRECT] = None
             relations.append(rel)
             continue
         new = rel.model_copy(update={"from_entity": m(rel.from_entity), "to_entity": m(rel.to_entity)})
         old_id, new_id = _rid_of(rel), _rid_of(new)
         refs = {rel.from_entity, rel.to_entity}
         rel_refs[old_id] = refs
-        stored = await _ops.relation_exists(runner, ns, new_id)
-        existed = new_id in kept_rids or stored
-        backing = {e.source_id for e in await _evidence_of(runner, ns, new_id)} if stored else set()
-        if new_id in kept_rids and source_id is not None:
-            backing.add(source_id)
+        existed = new_id in kept_rids or await _ops.relation_exists(runner, ns, new_id)
         original, rewritten = _dump(rel, exclude={"evidence"}), _dump(new, exclude={"evidence"})
         loop = new.from_entity == new.to_entity and rel.from_entity != rel.to_entity
         rewrite = MergeRewrite(
-            kind="relation",
-            id=new_id,
-            original=original,
-            rewritten=rewritten,
-            existed=existed,
-            dropped=loop,
-            prior_sources=sorted(backing),
+            kind="relation", id=new_id, original=original, rewritten=rewritten, existed=existed, dropped=loop
         )
         note(rewrite, refs)
         if loop:
@@ -917,6 +866,8 @@ async def _rewrite_refs(
             )
             continue
         rel_map[old_id] = new_id
+        merge_ids = (_ids.entity_merge_id(mapping[eid], eid) for eid in refs & mapping.keys())
+        via.setdefault(_statement_key(new), {})[_ops.via_of(merge_ids)] = None
         relations.append(new)
 
     preferences = []
@@ -1182,6 +1133,107 @@ async def list_merges(runner: Any, ns: str, entity_id: str, *, skip: int, limit:
     return [_decode_merge(r, entries[r["id"]]) for r in rows]
 
 
+async def _evidence_rows(runner: Any, ns: str, relation_id: str) -> list[dict[str, Any]]:
+    return await _ops._nodes_where(runner, ns, L_EVIDENCE, "target_id", [relation_id])
+
+
+@dataclass
+class _Split:
+    carried: list[tuple[Evidence, list[str]]] = field(default_factory=list)
+    changed: list[tuple[dict[str, Any], list[str]]] = field(default_factory=list)
+    emptied: list[str] = field(default_factory=list)
+    sources: set[str] = field(default_factory=set)
+
+
+def _split_evidence(rows: list[dict[str, Any]], merge_id: str) -> _Split:
+    """Split a relation's evidence between the statements one merge carried onto it and the ones that stay.
+
+    Each row lists the statements that wrote it (see _ops.evidence_via). A statement the merge rewrote moves with the
+    merge, minus that merge's id, so a row another merge also carried keeps that merge on its new relation. Every
+    other statement, stated directly or by another merge alone, stays, so a row both kinds wrote is on both relations.
+
+    @param rows (list[dict[str, Any]]): the relation's stored evidence rows.
+    @param merge_id (str): the merge being reverted.
+    @return (_Split): the evidence to carry, each with its statements there; each row that stays with fewer
+        statements; the rows no statement backs any more; and the distinct sources of the rows that stay.
+    """
+    out = _Split()
+    for row in rows:
+        statements = _ops.evidence_via(row)
+        mine = [s for s in statements if merge_id in s.split()]
+        rest = [s for s in statements if s not in mine]
+        if mine:
+            moved = [_ops.via_of(m for m in s.split() if m != merge_id) for s in mine]
+            out.carried.append((decode_evidence(row), list(dict.fromkeys(moved))))
+            if rest:
+                out.changed.append((row, rest))
+            else:
+                out.emptied.append(row["id"])
+        if rest:
+            out.sources.add(row["source_id"])
+    return out
+
+
+async def _leave_evidence(runner: Any, ns: str, relation_id: str, split: _Split) -> None:
+    """Take a merge's statements off a relation that stays, and recount the distinct sources its evidence keeps.
+
+    The count is written before any row is changed or deleted, so a write that fails partway leaves the merge's
+    rows in place and a retried unmerge finds them again; the evidence was already carried to the restored relation.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param relation_id (str): the relation the merge rewrote onto.
+    @param split (_Split): what _split_evidence found on it.
+    @return (None): nothing.
+    """
+    edge = await runner.get_current_edge(ns, relation_id)
+    if edge is not None and edge["props"].get("source_count") != len(split.sources):
+        await runner.update_current_edge(ns, relation_id, {"source_count": len(split.sources)})
+    if split.changed:
+        rows = [(row["id"], {**row, "via": None if rest == [_ops.DIRECT] else rest}) for row, rest in split.changed]
+        await runner.upsert_nodes(ns, L_EVIDENCE, rows)
+    if split.emptied:
+        await runner.delete_nodes(ns, L_EVIDENCE, split.emptied)
+
+
+async def _sibling_rewrites(
+    runner: Any, ns: str, merge_id: str
+) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """List what the other live merges rewrote onto each object, so an unmerge keeps one another merge still backs.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param merge_id (str): the merge being reverted.
+    @return (tuple[...]): the originals each object's live sibling rewrites came from, by (kind, id); and the live
+        sibling merges with their entries, for _forward_siblings.
+    """
+    live = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
+    entries = await _load_entries(runner, ns, live)
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for props in live:
+        for rw in _decode_merge(props, entries[props["id"]]).rewrites:
+            if not rw.dropped:
+                out.setdefault((rw.kind, rw.id), []).append(rw.original)
+    return out, live, entries
+
+
+def _backed_elsewhere(
+    rw: MergeRewrite, rec: MergeRecord, siblings: dict[tuple[str, str], list[dict[str, Any]]]
+) -> bool:
+    """Whether another live merge rewrote a statement this merge did not onto the object this rewrite points at.
+
+    A sibling with the same original as one of this merge's rewrites onto the object is the same statement seen
+    through its other merged endpoint, which moves with this unmerge, so it does not keep the object.
+
+    @param rw (MergeRewrite): a rewrite of the merge being reverted.
+    @param rec (MergeRecord): the merge being reverted.
+    @param siblings (dict[tuple[str, str], list[dict[str, Any]]]): what _sibling_rewrites found.
+    @return (bool): whether the object stays for that merge.
+    """
+    own = [r.original for r in rec.rewrites if (r.kind, r.id) == (rw.kind, rw.id) and not r.dropped]
+    return any(original not in own for original in siblings.get((rw.kind, rw.id), ()))
+
+
 def _moved_to(rw: MergeRewrite, new_id: str, rewritten: dict[str, Any], existed: bool) -> MergeRewrite:
     """The rewrite that records where an unmerge put the object a merge rewrite moved.
 
@@ -1199,25 +1251,21 @@ def _forward(
     moved: list[tuple[MergeRewrite, MergeRewrite]],
     restored: dict[str, str],
     handed: set[tuple[str, str]],
-    added: dict[tuple[str, str], set[str]],
 ) -> MergeRewrite:
     """Point one rewrite of another merge at where an unmerge put the object it shares with that merge.
 
     @param rw (MergeRewrite): a rewrite of a still-live merge.
     @param moved (list[tuple[MergeRewrite, MergeRewrite]]): each rewrite the unmerge replayed, with its new location.
-    @param restored (dict[str, str]): the relation ids the unmerge moved, old to new.
-    @param handed (set[tuple[str, str]]): (kind, id) of each object the unmerged merge created and left to the others.
-    @param added (dict[tuple[str, str], set[str]]): the sources the unmerged merge added to each shared relation.
+    @param restored (dict[str, str]): the relation ids the unmerge deleted, each to the relation it moved them to.
+    @param handed (set[tuple[str, str]]): (kind, id) of each object the unmerged merge created and left in place
+        because another merge or a direct statement still backs it.
     @return (MergeRewrite): the rewrite to keep on that merge.
     """
     for old, new in moved:
         if (rw.kind, rw.id, rw.original) == (old.kind, old.id, old.original):
             return new
     if rw.existed and (rw.kind, rw.id) in handed:
-        return rw.model_copy(update={"existed": False, "prior_sources": []})
-    gone = added.get((rw.kind, rw.id), set())
-    if gone.intersection(rw.prior_sources):
-        return rw.model_copy(update={"prior_sources": [s for s in rw.prior_sources if s not in gone]})
+        return rw.model_copy(update={"existed": False})
     steps = rw.rewritten.get("steps")
     if rw.kind == "decision" and isinstance(steps, list) and any(s in restored for s in steps):
         return rw.model_copy(update={"rewritten": {**rw.rewritten, "steps": [restored.get(s, s) for s in steps]}})
@@ -1231,7 +1279,6 @@ async def _forward_siblings(
     moved: list[tuple[MergeRewrite, MergeRewrite]],
     restored: dict[str, str],
     handed: set[tuple[str, str]],
-    added: dict[tuple[str, str], set[str]],
     live: list[dict[str, Any]] | None = None,
     entries: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
@@ -1239,16 +1286,15 @@ async def _forward_siblings(
 
     Merges from one insert can rewrite the same relation, preference, or decision (both endpoints merged, say).
     Once one is unmerged that object lives somewhere new, so the other merges record that location, whether it
-    existed before, and the restored entity id, and undo from there. An object the unmerged merge created and a
-    later merge only found there is now the later merge's to undo, so its rewrite stops saying it already existed.
+    existed before, and the restored entity id, and undo from there. An object the unmerged merge created and left
+    in place for another merge is that merge's to undo now, so its rewrite stops saying the object already existed.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param merge_id (str): the merge being reverted.
     @param moved (list[tuple[MergeRewrite, MergeRewrite]]): each rewrite the unmerge replayed, with its new location.
-    @param restored (dict[str, str]): the relation ids the unmerge moved, old to new.
-    @param handed (set[tuple[str, str]]): (kind, id) of each object the unmerged merge created and left to the others.
-    @param added (dict[tuple[str, str], set[str]]): the sources the unmerged merge added to each shared relation.
+    @param restored (dict[str, str]): the relation ids the unmerge deleted, each to the relation it moved them to.
+    @param handed (set[tuple[str, str]]): (kind, id) of each object the unmerged merge created and left in place.
     @param live (list[dict[str, Any]] | None): optional cached live merges.
     @param entries (dict[str, list[dict[str, Any]]] | None): optional cached entries.
     @return (None): nothing.
@@ -1259,31 +1305,11 @@ async def _forward_siblings(
         entries = await _load_entries(runner, ns, live)
     for props in live:
         sib = _decode_merge(props, entries[props["id"]])
-        rewrites = [_forward(rw, moved, restored, handed, added) for rw in sib.rewrites]
+        rewrites = [_forward(rw, moved, restored, handed) for rw in sib.rewrites]
         if rewrites != sib.rewrites:
             await runner.lock_node(ns, L_MERGE, sib.id)
             updated = sib.model_copy(update={"rewrites": rewrites})
             await _write_merges(runner, ns, [updated], entries)
-
-
-async def _shared_rewrites(runner: Any, ns: str, merge_id: str) -> dict[tuple[str, str], set[str]]:
-    """List the objects that a live merge other than this one also rewrote onto, with the sources those merges hold.
-
-    @param runner (Any): graph runner.
-    @param ns (str): namespace.
-    @param merge_id (str): the merge being reverted.
-    @return (dict[tuple[str, str], set[str]]): (kind, id) of each relation, preference, or decision a sibling still
-        points at, mapped to the source ids of the siblings that point at it.
-    """
-    live = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
-    entries = await _load_entries(runner, ns, live)
-    out: dict[tuple[str, str], set[str]] = {}
-    for props in live:
-        rec = _decode_merge(props, entries[props["id"]])
-        for rw in rec.rewrites:
-            if not rw.dropped:
-                out.setdefault((rw.kind, rw.id), set()).update(rec.source_ids)
-    return out
 
 
 async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
@@ -1294,7 +1320,10 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     dropped as a self-loop is restored, and a relation the merge created on the survivor is removed with all its
     versions, and its original is written back as the current relation of the absorbed entity, or retired again when
     a replaced source retired its last version, so an unmerge never reasserts a withdrawn fact; one a contradiction
-    retired comes back current, since the conflict came from the merged identity.
+    retired comes back current, since the conflict came from the merged identity. Each evidence row records the
+    merges whose rewrite wrote it, so the restored relation takes exactly the rows this merge carried, and a survivor
+    relation that a direct statement or another live merge still backs stays, with its other evidence, its recounted
+    source_count, and its decision steps.
     A merge whose moved relation is certified is refused until it is uncertified, since the mark verified other
     endpoints. An endpoint whose own merge is still live keeps pointing at that
     merge's survivor, and that merge is updated to undo from the new location, so unmerging every merge of an
@@ -1355,10 +1384,12 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             return original
         return original if await exists(original) else rewritten
 
-    shared = await _shared_rewrites(runner, ns, rec.id)
     restored: dict[str, str] = {}
+    deleted: dict[str, str] = {}
     orig_restored: dict[str, str] = {}
     moved: list[tuple[MergeRewrite, MergeRewrite]] = []
+    handed: set[tuple[str, str]] = set()
+    siblings, live_merges, live_entries = await _sibling_rewrites(runner, ns, rec.id)
     relations = []
     for rw in (r for r in rec.rewrites if r.kind == "relation"):
         original, rewritten = RelationInput.model_validate(rw.original), RelationInput.model_validate(rw.rewritten)
@@ -1367,22 +1398,13 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         versions = history.pop(rw.id, [])
         if not (await exists(source) and await exists(target)):
             continue
-        properties, event_time, carried, touching = dict(original.properties), original.event_time, [], set()
+        properties, event_time = dict(original.properties), original.event_time
         if versions:
             properties, event_time = versions[0].properties, versions[0].event_time
-            on = await _evidence_of(runner, ns, rw.id)
-            held = shared.get(("relation", rw.id))
-            rows = await _evidence_rows(runner, ns, rw.id)
-            if held is not None or len(_merge_rows(rows, rec.source_ids)) < len(rows):
-                carried = await _strip_merge_evidence(runner, ns, rw.id, rec.source_ids, held or set())
-            else:
-                carried = on
-                touching = await _ops._traces_touching_relations(runner, ns, [rw.id])
-                await runner.delete_edges(ns, rw.id)
-                await _ops._delete_evidence(runner, ns, rw.id)
-        elif rw.existed and not rw.dropped and await _ops.relation_exists(runner, ns, rw.id):
-            keep = {*shared.get(("relation", rw.id), ()), *rw.prior_sources}
-            carried = await _strip_merge_evidence(runner, ns, rw.id, rec.source_ids, keep)
+        split = _split_evidence(await _evidence_rows(runner, ns, rw.id), rec.id)
+        kept = rw.existed or bool(split.sources) or _backed_elsewhere(rw, rec, siblings)
+        if kept and not rw.existed:
+            handed.add((rw.kind, rw.id))
         back = RelationInput(
             id=original.id,
             from_entity=source,
@@ -1395,8 +1417,22 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             runner, ns, back.id or _ids.relation_id(back.from_entity, back.type, back.to_entity)
         )
         [rel] = await _ops.upsert_relations(
-            runner, ns, [(back, carried)], default_event_time=None, created_at=at, contradiction="off"
+            runner,
+            ns,
+            [(back, [ev for ev, _ in split.carried])],
+            default_event_time=None,
+            created_at=at,
+            contradiction="off",
+            via=[[statements for _, statements in split.carried]],
         )
+        touching: set[str] = set()
+        if kept:
+            await _leave_evidence(runner, ns, rw.id, split)
+        elif versions:
+            touching = await _ops._traces_touching_relations(runner, ns, [rw.id])
+            await runner.delete_edges(ns, rw.id)
+            await _ops._delete_evidence(runner, ns, rw.id)
+            deleted[rw.id] = rel.id
         withdrawn = versions and not versions[0].is_current and not existed
         if withdrawn and await runner.node_exists(ns, L_SOURCE_VERSION, versions[0].invalidated_by):
             edge = await runner.get_current_edge(ns, rel.id)
@@ -1407,7 +1443,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         orig_restored[_rid_of(original)] = rel.id
         relations.append(rel)
         moved.append((rw, _moved_to(rw, rel.id, _dump(back, exclude={"evidence"}), existed)))
-        await _ops._repoint_steps(runner, ns, touching, restored)
+        await _ops._repoint_steps(runner, ns, touching, deleted)
 
     preferences = []
     for rw in (r for r in rec.rewrites if r.kind == "preference"):
@@ -1421,7 +1457,9 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         values = {"strength": original.strength, "properties": original.properties, "event_time": original.event_time}
         if current is not None and not rw.existed:
             values = {"strength": current.strength, "properties": current.properties, "event_time": current.event_time}
-            if ("preference", rw.id) not in shared:
+            if _backed_elsewhere(rw, rec, siblings):
+                handed.add((rw.kind, rw.id))
+            else:
                 await runner.delete_edges(ns, rw.id)
         back = PreferenceInput(
             id=original.id,
@@ -1442,11 +1480,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     decision_rws = [r for r in rec.rewrites if r.kind == "decision"]
     dropped_sibling_ids: set[str] = set()
     sibling_step_map: dict[str, str] = {}
-    live_merges: list[dict[str, Any]] | None = None
-    live_entries: dict[str, list[dict[str, Any]]] | None = None
     if decision_rws:
-        live_merges = [props for props in await scan_live_merges(runner, ns) if props["id"] != merge_id]
-        live_entries = await _load_entries(runner, ns, live_merges)
         for props in live_merges:
             sib = _decode_merge(props, live_entries[props["id"]])
             for srw in sib.rewrites:
@@ -1485,7 +1519,9 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
                     "event_time": current.event_time,
                 }
             )
-            if ("decision", rw.id) not in shared:
+            if _backed_elsewhere(rw, rec, siblings):
+                handed.add((rw.kind, rw.id))
+            else:
                 await _ops._delete_trace_quietly(runner, ns, rw.id)
         alternatives = [
             await end(o, r) for o, r in zip(original.alternative_entities, rewritten.alternative_entities, strict=True)
@@ -1530,17 +1566,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         moved.append((rw, _moved_to(rw, trace.id, _dump(back), existed)))
 
     if moved:
-        handed = {
-            (rw.kind, rw.id) for rw in rec.rewrites if not (rw.existed or rw.dropped) and (rw.kind, rw.id) in shared
-        }
-        added = {
-            (rw.kind, rw.id): set(rec.source_ids) - set(rw.prior_sources)
-            for rw in rec.rewrites
-            if rw.kind == "relation" and not rw.dropped and (rw.kind, rw.id) in shared
-        }
-        await _forward_siblings(
-            runner, ns, rec.id, moved, restored, handed, added, live=live_merges, entries=live_entries
-        )
+        await _forward_siblings(runner, ns, rec.id, moved, deleted, handed, live=live_merges, entries=live_entries)
     survivor = None
     if await exists(rec.survivor_id):
         survivor = await _ops.update_entity(

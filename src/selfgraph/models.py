@@ -491,7 +491,6 @@ class MergeRewrite(BaseModel):
     rewritten: dict[str, JsonValue] = Field(default_factory=dict)
     existed: bool = False
     dropped: bool = False
-    prior_sources: list[str] = Field(default_factory=list)
 
 
 class MergeRecord(BaseModel):
