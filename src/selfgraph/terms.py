@@ -144,16 +144,16 @@ def grounded_terms(
     """List the terms the stored graph holds instances of, by kind, so a schema term alone never grounds a question.
 
     A type is held when an entity of it or of a subtype is stored, and a relation type when a relation of it is
-    stored. The stored types themselves are held too. Definition grounding is resolved from the held entity types
-    and the schema's definitions, keyed by entity and name.
+    stored. The stored types themselves are held too. A definition is held through its declaring entity types, which
+    the caller checks against the held types.
 
     @param schema (Schema | None): the schema, or None for the stored types only.
     @param entity_types (Iterable[str]): the stored entities' types.
     @param relation_types (Iterable[str]): the stored relations' types.
-    @return (dict[str, set[str]]): for "type", "definition", and "relation", the held term names.
+    @return (dict[str, set[str]]): for "type" and "relation", the held term names.
     """
     types, rels = set(entity_types), set(relation_types)
-    held: dict[str, set[str]] = {"type": set(types), "definition": set(), "relation": set(rels)}
+    held: dict[str, set[str]] = {"type": set(types), "relation": set(rels)}
     if schema is None:
         return held
     index = _entity_index(schema)

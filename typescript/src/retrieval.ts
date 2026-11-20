@@ -1304,7 +1304,7 @@ export function answerability(
   const definitionEntries = new Map<string, Array<readonly [string, string]>>();
   const definitionCertified = new Map<string, boolean>();
   for (const [owner, name, defForms, certified] of definitionForms(schema).values()) {
-    definitionCertified.set(`${owner}\u0000${name}`, certified);
+    definitionCertified.set(JSON.stringify([owner, name]), certified);
     for (const form of defForms) {
       const entries = definitionEntries.get(form) ?? [];
       entries.push([owner, name]);
@@ -1365,10 +1365,8 @@ export function answerability(
         if (kind === "definition") {
           for (const [form] of named) {
             if (!words.length || !covers(words, form)) continue;
-            const entries = definitionEntries.get(form) ?? [];
-            if (!entries.some(([owner]) => held.type.has(owner))) continue;
-            for (const [owner, name] of entries) {
-              if (held.type.has(owner)) live.push([name, definitionCertified.get(`${owner}\u0000${name}`) ?? false]);
+            for (const [owner, name] of definitionEntries.get(form) ?? []) {
+              if (held.type.has(owner)) live.push([name, definitionCertified.get(JSON.stringify([owner, name]))!]);
             }
           }
         } else {

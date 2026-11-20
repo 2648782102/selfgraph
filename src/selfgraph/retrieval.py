@@ -1252,8 +1252,6 @@ def answerability(
                         if not (words and _covers(words, form)):
                             continue
                         entries = definition_entries.get(form, ())
-                        if not any(owner in held["type"] for owner, _ in entries):
-                            continue
                         live.extend(
                             (name, definition_certified[(owner, name)])
                             for owner, name in entries

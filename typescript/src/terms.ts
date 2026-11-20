@@ -93,7 +93,7 @@ export function definitionForms(schema: ParsedSchema | null): Map<string, Defini
   if (schema === null) return found;
   for (const entity of schema.entities) {
     for (const definition of entity.definitions) {
-      found.set(`${entity.name}\u0000${definition.name}`, [
+      found.set(JSON.stringify([entity.name, definition.name]), [
         entity.name,
         definition.name,
         forms([definition.name, ...definition.synonyms]),
@@ -107,25 +107,21 @@ export function definitionForms(schema: ParsedSchema | null): Map<string, Defini
 /**
  * List the terms the stored graph holds instances of, by kind, so a schema term alone never grounds a question.
  *
- * A type is held when an entity of it or of a subtype is stored, and a relation type when a relation of it is stored. The stored types themselves are held too. Definition grounding is resolved from the held entity types and the schema's definitions, keyed by entity and name.
+ * A type is held when an entity of it or of a subtype is stored, and a relation type when a relation of it is stored. The stored types themselves are held too. A definition is held through its declaring entity types, which the caller checks against the held types.
  *
  * @param schema (ParsedSchema | null): the schema, or null for the stored types only.
  * @param entityTypes (Iterable<string>): the stored entities' types.
  * @param relationTypes (Iterable<string>): the stored relations' types.
- * @return (Record<SchemaTermKind, Set<string>>): for "type", "definition", and "relation", the held term names.
+ * @return (Record<"type" | "relation", Set<string>>): for "type" and "relation", the held term names.
  */
 export function groundedTerms(
   schema: ParsedSchema | null,
   entityTypes: Iterable<string>,
   relationTypes: Iterable<string>,
-): Record<SchemaTermKind, Set<string>> {
+): Record<"type" | "relation", Set<string>> {
   const types = new Set(entityTypes);
   const rels = new Set(relationTypes);
-  const held: Record<SchemaTermKind, Set<string>> = {
-    type: new Set(types),
-    definition: new Set(),
-    relation: new Set(rels),
-  };
+  const held: Record<"type" | "relation", Set<string>> = { type: new Set(types), relation: new Set(rels) };
   if (schema === null) return held;
   const index = entityIndex(schema);
   for (const etype of types) {

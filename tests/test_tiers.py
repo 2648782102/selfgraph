@@ -3,7 +3,7 @@ from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_s
 
 from selfgraph import Schema, ValidationError, ids
 from selfgraph.runtime import build_graph
-from selfgraph.terms import schema_forms, stem
+from selfgraph.terms import _definition_forms, schema_forms, stem
 
 ACME = ids.relation_id("person:ann", "WORKS_AT", "company:acme")
 GLOBEX = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
@@ -208,6 +208,18 @@ def test_check_answerable_grounds_schema_synonyms_definitions_and_plurals():
     ]
     assert report.verdict == "answerable"
     assert run(fresh_graph("tier").check_answerable("anything")).verdict == "not_answerable"
+
+
+def test_definitions_are_keyed_by_owner_and_name_without_joining_them():
+    schema = Schema.model_validate(
+        {
+            "entities": [
+                {"name": "A\x00B", "definitions": [{"name": "C", "expression": "x"}]},
+                {"name": "A", "definitions": [{"name": "B\x00C", "expression": "y"}]},
+            ]
+        }
+    )
+    assert list(_definition_forms(schema)) == [("A\x00B", "C"), ("A", "B\x00C")]
 
 
 def test_definition_terms_keep_their_entity_owners():

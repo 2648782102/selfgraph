@@ -20,7 +20,7 @@ import { callTool, close, configure } from "../src/mcp.js";
 import { answerability, HUB_DEGREE, pprRank } from "../src/retrieval.js";
 import { checkedCypher, DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema } from "../src/schema.js";
-import { expandTokens, schemaForms } from "../src/terms.js";
+import { definitionForms, expandTokens, schemaForms } from "../src/terms.js";
 import {
   ANN_AT_ACME,
   buildCli,
@@ -141,6 +141,19 @@ function suite(spec: StoreSpec): void {
     expect([report.verdict, report.terms.map((term) => [term.status, term.matches])]).toEqual([
       "not_answerable",
       [["schema_only", ["status"]]],
+    ]);
+  });
+
+  it("keys definitions by owner and name without joining them into one string", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "A\u0000B", definitions: [{ name: "C", expression: "x" }] },
+        { name: "A", definitions: [{ name: "B\u0000C", expression: "y" }] },
+      ],
+    });
+    expect([...definitionForms(schema).values()].map(([owner, name]) => [owner, name])).toEqual([
+      ["A\u0000B", "C"],
+      ["A", "B\u0000C"],
     ]);
   });
 
