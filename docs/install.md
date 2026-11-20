@@ -19,7 +19,7 @@ pipx install "selfgraph[llm,mcp,kuzu]"
 
 | Extra | Adds | Needed for |
 |-------|------|------------|
-| `llm` | Text extraction through any litellm provider. | `insert text` with `--llm-*`, `--resolver llm`. |
+| `llm` | Text extraction through any litellm provider. Includes `mcp`, which litellm imports on every completion. | `insert text` with `--llm-*`, `--resolver llm`. |
 | `ner` | LLM-free extraction with spaCy. | spaCy entity types without an LLM. |
 | `tokenizer` | Token-aware chunking and budgets through tiktoken. | Exact token counts. Without it, counts are estimated. |
 | `falkordb` | The FalkorDB backend. | `--store falkordb`. |
