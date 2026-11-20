@@ -162,7 +162,11 @@ function pattern(raw: unknown, where: string): [string, string, string] {
 function applyConstraint(types: Map<string, TypeBody>, constraint: Obj, where: string, dropped: string[]): void {
   const kind = constraint.type;
   const label = constraint.node_type || constraint.relationship_type;
-  let names = [...((constraint.property_names as unknown[] | undefined) ?? [])];
+  const rawNames = constraint.property_names;
+  if (rawNames != null && !Array.isArray(rawNames)) {
+    throw new ValidationError(`${where}.property_names must be a list, got ${typeName(rawNames)}`);
+  }
+  let names = [...((rawNames as unknown[] | undefined) ?? [])];
   if (!names.length && constraint.property_name) names = [constraint.property_name];
   const scope = `${String(label)}(${names.map(String).join(", ")})`;
   if (!REQUIRED_KINDS.includes(kind as string)) {

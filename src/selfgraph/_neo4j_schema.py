@@ -163,7 +163,10 @@ def _require(types: dict[str, dict[str, Any]], constraint: Mapping[str, Any], wh
     """
     kind = constraint.get("type")
     label = constraint.get("node_type") or constraint.get("relationship_type")
-    names = list(constraint.get("property_names") or [])
+    raw_names = constraint.get("property_names")
+    if raw_names is not None and (isinstance(raw_names, str) or not isinstance(raw_names, list | tuple)):
+        raise ValidationError(f"{where}.property_names must be a list, got {type_name(raw_names)}")
+    names = list(raw_names or [])
     if not names and constraint.get("property_name"):
         names = [constraint["property_name"]]
     scope = f"{label}({', '.join(map(str, names))})"

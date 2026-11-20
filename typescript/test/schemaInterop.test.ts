@@ -201,6 +201,22 @@ describe("Neo4j graph schema interop", () => {
     }
   });
 
+  it("rejects non-list constraint property_names", () => {
+    for (const [bad, name] of [
+      [1, "number"],
+      [true, "boolean"],
+      [1.5, "number"],
+      ["age", "string"],
+    ] as const) {
+      expect(() =>
+        fromNeo4jOntology({
+          node_types: ["Person"],
+          constraints: [{ type: "EXISTENCE", node_type: "Person", property_names: bad }],
+        }),
+      ).toThrow(`constraints[0].property_names must be a list, got ${name}`);
+    }
+  });
+
   it("reads camelCase keys and exports a raw schema object", () => {
     const schema = fromNeo4jOntology({
       nodeTypes: [{ label: "Person", properties: [{ name: "age", type: "INTEGER" }] }],
