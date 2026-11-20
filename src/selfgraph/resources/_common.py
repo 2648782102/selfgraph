@@ -59,9 +59,9 @@ def _cursor_text(cursor: str | None, valid: Callable[[str], bool]) -> str | None
     try:
         text = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
     except (ValueError, binascii.Error):
-        raise ValidationError(f"invalid cursor {cursor!r}", code="invalid_cursor") from None
+        raise ValidationError(f"invalid cursor {cursor!r}", code="invalid_cursor", field="cursor") from None
     if not text or encode_cursor(text) != cursor or not valid(text):
-        raise ValidationError(f"invalid cursor {cursor!r}", code="invalid_cursor")
+        raise ValidationError(f"invalid cursor {cursor!r}", code="invalid_cursor", field="cursor")
     return text
 
 
