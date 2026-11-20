@@ -422,6 +422,43 @@ describe("LLM extraction through the AI SDK", () => {
     ]);
   });
 
+  it("keeps relation properties returned by the LLM", async () => {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const shape = (output as unknown as z.ZodObject<z.ZodRawShape>).shape;
+        if ("entities" in shape) {
+          return output.parse({
+            entities: [
+              { type: "Person", name: "Jane", aliases: null },
+              { type: "Company", name: "Acme", aliases: null },
+            ],
+          });
+        }
+        if ("relations" in shape) {
+          return output.parse({
+            relations: [
+              {
+                from_name: "Jane",
+                type: "WORKS_AT",
+                to_name: "Acme",
+                properties: { role: "cto" },
+                event_time: null,
+              },
+            ],
+          });
+        }
+        return output.parse({ preferences: [], decisions: [] });
+      },
+    };
+    const facts = await new LLMExtractor(llm).extract({
+      text: "Jane works at Acme as cto.",
+      media_type: "text/plain",
+      metadata: {},
+    });
+    expect(facts.relations).toHaveLength(1);
+    expect(facts.relations[0]!.properties).toEqual({ role: "cto" });
+  });
+
   it("uses chat completions for the openai provider with a base_url and reports a refused connection as its root cause", async () => {
     const paths: string[] = [];
     const server = createServer((req, res) => {
