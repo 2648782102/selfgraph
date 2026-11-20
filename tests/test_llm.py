@@ -187,6 +187,14 @@ def test_chunk_text_validates_sizes_defaults_the_overlap_and_splits_on_word_boun
         assert len(chunk.text) <= 40
 
 
+def test_character_chunks_keep_a_word_that_fits_after_leading_whitespace():
+    assert [c.text for c in _chunk_by_chars("\nSupercalifragilistic rest", size=20, overlap=0)] == [
+        "\nSupercalifragilistic",
+        "rest",
+    ]
+    assert [c.text for c in _chunk_by_chars(" aaaaaaaa ", size=9, overlap=0)] == [" aaaaaaaa"]
+
+
 def test_a_tiktoken_that_cannot_load_its_encoding_warns_once_and_falls_back(monkeypatch, caplog):
     tiktoken = pytest.importorskip("tiktoken")
 
