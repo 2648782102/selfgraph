@@ -473,6 +473,92 @@ function suite(spec: StoreSpec): void {
     expect([every.certified, every.merge_ids]).toEqual([[], [res.merges[0]!.id]]);
   });
 
+  const afterScan = (g: SelfGraph, write: () => Promise<unknown>) => {
+    const access = (g.maintenance as unknown as { graph: { read: <T>(op: unknown) => Promise<T> } }).graph;
+    const read = access.read;
+    access.read = async <T>(op: unknown): Promise<T> => {
+      const out = await read.call(access, op);
+      access.read = read;
+      await write();
+      return out as T;
+    };
+  };
+
+  it("keeps a fact certified after the prune scan", async () => {
+    const g = open();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    const rid = (await g.relations.create("person:ann", "WORKS_AT", "company:acme")).id;
+    afterScan(g, () => g.relations.certify(rid, { by: "hr" }));
+    const done = await g.maintenance.prune({ older_than: new Date(Date.now() + 30_000), dry_run: false });
+    expect([done.entity_ids, done.relation_ids, done.certified]).toEqual([["company:globex"], [], [rid]]);
+    expect((await g.relations.get(rid))!.certified_by).toBe("hr");
+  });
+
+  it("lists a relation created after the prune scan", async () => {
+    const g = open();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    const late: string[] = [];
+    afterScan(g, async () => late.push((await g.relations.create("person:ann", "KNOWS", "company:globex")).id));
+    const done = await g.maintenance.prune({ older_than: new Date(Date.now() + 30_000), dry_run: false });
+    expect([done.entity_ids, done.relation_ids]).toEqual([["company:acme", "company:globex", "person:ann"], late]);
+    expect(done.deleted!.deleted_relation_versions).toBe(1);
+    expect((await g.relations.list()).items).toEqual([]);
+  });
+
+  it("leaves a dedupe group certified after the scan alone", async () => {
+    const g = open();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    for (const id of ["relation:a", "relation:b"])
+      await g.relations.create("person:ann", "WORKS_AT", "company:acme", { id });
+    afterScan(g, () => g.relations.certify("relation:b", { by: "hr" }));
+    const done = await g.maintenance.dedupeRelations({ dry_run: false });
+    expect(done.groups).toEqual([]);
+    expect(done.certified.map((c) => [c.survivor, c.duplicates])).toEqual([["relation:a", ["relation:b"]]]);
+    expect([done.note, done.deleted!.deleted_relation_versions]).toEqual([null, 0]);
+    expect((await g.relations.list()).items.map((r) => r.id).sort()).toEqual(["relation:a", "relation:b"]);
+  });
+
+  it.each(["relation:a", "relation:b"])(
+    "skips a dedupe relation recreated between other entities after the scan (%s)",
+    async (moved) => {
+      const g = open();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      for (const id of ["relation:a", "relation:b"])
+        await g.relations.create("person:ann", "WORKS_AT", "company:acme", { id });
+      afterScan(g, async () => {
+        await g.relations.delete(moved);
+        await g.relations.create("person:ann", "WORKS_AT", "company:globex", {
+          id: moved,
+          properties: { role: "cfo" },
+        });
+      });
+      const done = await g.maintenance.dedupeRelations({ dry_run: false });
+      expect([done.groups, done.certified, done.deleted!.deleted_relation_versions]).toEqual([[], [], 0]);
+      const stored = Object.fromEntries(
+        (await g.relations.list()).items.map((r) => [r.id, [r.to_entity, r.properties]]),
+      );
+      const at = (id: string) => (id === moved ? ["company:globex", { role: "cfo" }] : ["company:acme", {}]);
+      expect(stored).toEqual({ "relation:a": at("relation:a"), "relation:b": at("relation:b") });
+    },
+  );
+
+  it("reports only the dedupe duplicates it folded", async () => {
+    const g = open();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    for (const id of ["relation:a", "relation:b", "relation:c"])
+      await g.relations.create("person:ann", "WORKS_AT", "company:acme", { id });
+    afterScan(g, async () => {
+      await g.relations.delete("relation:c");
+      await g.relations.create("person:ann", "WORKS_AT", "company:globex", { id: "relation:c" });
+    });
+    const done = await g.maintenance.dedupeRelations({ dry_run: false });
+    expect(done.groups.map((grp) => [grp.survivor, grp.duplicates, Object.keys(grp.versions_lost)])).toEqual([
+      ["relation:a", ["relation:b"], ["relation:b"]],
+    ]);
+    const stored = Object.fromEntries((await g.relations.list()).items.map((r) => [r.id, r.to_entity]));
+    expect(stored).toEqual({ "relation:a": "company:acme", "relation:c": "company:globex" });
+  });
+
   it("keeps a merge survivor off the orphan list", async () => {
     const g = open();
     await g.insert.facts({ entities: [{ type: "Thing", name: "acme", aliases: ["acmecorp"] }] });
