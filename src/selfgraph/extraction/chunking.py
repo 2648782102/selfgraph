@@ -154,7 +154,9 @@ def _chunk_by_chars(text: str, *, size: int, overlap: int) -> list[Chunk]:
     size = max(1, size)
     overlap = max(0, min(overlap, size - 1))
     chunks: list[Chunk] = []
-    start = 0
+    # Leading whitespace is not part of the first word: start at the first
+    # non-space, so the word gets the whole window and no chunk exceeds size.
+    start = len(text) - len(text.lstrip())
     n = len(text)
     index = 0
     while start < n:
@@ -165,12 +167,6 @@ def _chunk_by_chars(text: str, *, size: int, overlap: int) -> list[Chunk]:
                 cut -= 1
             if cut > start:
                 end = cut
-        # When the chunk starts on whitespace, the character that fills its
-        # window is still inside the first word. Let that word finish, up to
-        # the next whitespace, before looking for a boundary.
-        if end < n and text[start].isspace() and not text[end].isspace():
-            while end < n and not text[end].isspace():
-                end += 1
         piece = text[start:end]
         if piece.strip():
             chunks.append(Chunk(index=index, text=piece, start_offset=start, end_offset=end))
