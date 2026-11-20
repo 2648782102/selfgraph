@@ -238,12 +238,12 @@ def test_every_input_code_exits_two_whatever_class_raised_it(capsys, monkeypatch
     assert "field: uri" in err
 
 
-def test_setting_and_runtime_codes_take_their_own_exit_codes(capsys):
+def test_setting_and_runtime_codes_take_their_own_exit_codes(capsys, tmp_path):
     from selfgraph import NotFoundError
 
     assert main(["--store", "hydradb", "--uri", "http://127.0.0.1:1", "entity", "list"]) == 2
     assert capsys.readouterr().err.startswith("error[invalid_setting]: ")
-    assert main(["--store", "kuzu", "--uri", "missing.kuzu", "entity", "get", "person:none"]) == 1
+    assert kuzu_main(tmp_path, "entity", "get", "person:none") == 1
     assert capsys.readouterr().err.startswith("error[not_found]: ")
     assert NotFoundError("Entity", "person:none").code not in _USAGE_CODES
 

@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 
 import { exitCodeFor, kv } from "../../src/cli.js";
-import { internalError, maskUri, redactUri, redactUris } from "../../src/errors.js";
+import { HINTS, internalError, maskUri, redactUri, redactUris } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
@@ -17,7 +17,6 @@ import {
   toOssie,
   ValidationError,
 } from "../../src/index.js";
-import { HINTS } from "../../src/errors.js";
 import { setLogger } from "../../src/internal/log.js";
 import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
