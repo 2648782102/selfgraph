@@ -1,11 +1,30 @@
-import pytest
-from helpers import HYDRADB, create_entities, fresh_graph, new_graph, run, utc
+import asyncio
 
-from selfgraph import ConflictError, NotFoundError, StoreError
+import pytest
+from helpers import HYDRADB, KUZU, create_entities, fresh_graph, new_graph, run, utc
+
+from selfgraph import ConflictError, KuzuStore, NotFoundError, SelfGraph, StoreError
 
 
 def seed(g):
     create_entities(g, "Person:Soham", "Company:HydraDB")
+
+
+@pytest.mark.skipif(not KUZU, reason="fixed-size embedded buffer pool")
+def test_relation_updates_fit_in_the_kuzu_buffer_pool(tmp_path):
+    async def check():
+        async with SelfGraph(KuzuStore(str(tmp_path / "graph.kuzu"), buffer_pool_size=64 * 1024**2)) as graph:
+            await graph.insert.facts(
+                {"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}
+            )
+            relation = await graph.relations.create("person:ann", "WORKS_AT", "company:acme")
+            for step in range(1, 513):
+                await graph.relations.update(relation.id, set_properties={"step": step})
+            history = await graph.relations.versions(relation.id, newest_first=False)
+            assert [version.properties.get("step", 0) for version in history] == list(range(513))
+            assert [version.revision for version in history if version.is_current] == [513]
+
+    asyncio.run(check())
 
 
 def test_create_and_versions():

@@ -84,6 +84,8 @@ interface KuzuModule {
     enableCompression?: boolean,
     readOnly?: boolean,
     maxDBSize?: number,
+    autoCheckpoint?: boolean,
+    checkpointThreshold?: number,
   ) => KuzuDatabase;
   Connection: new (db: KuzuDatabase) => KuzuConnection;
 }
@@ -102,6 +104,8 @@ const WRITE_QUEUES = new Map<string | symbol, object>();
 const PATH_QUEUES = new Map<string | symbol, Promise<unknown>>();
 const MAX_SKIP = 10_000_000;
 const RECONNECT_EVERY = 500;
+const DEFAULT_CHECKPOINT_THRESHOLD = 16 * 1024 ** 2;
+const CHECKPOINT_POOL_DIVISOR = 1024;
 const MAX_DB_SIZE_DEFAULT = 8_796_093_022_208;
 const NOW = "RETURN current_timestamp() AS now";
 const CLOCK_TICK_MS = 20;
@@ -247,6 +251,13 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     let db = DATABASES.get(this.cacheKey);
     if (db === undefined) {
       mkdirSync(dirname(this.path), { recursive: true });
+      const checkpointThreshold =
+        typeof this.cacheKey === "string" && options.buffer_pool_size > 0
+          ? Math.min(
+              DEFAULT_CHECKPOINT_THRESHOLD,
+              Math.max(1, Math.floor(options.buffer_pool_size / CHECKPOINT_POOL_DIVISOR)),
+            )
+          : -1;
       try {
         db = new kuzu.Database(
           this.path,
@@ -254,6 +265,8 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
           options.compression,
           options.read_only,
           options.max_db_size,
+          true,
+          checkpointThreshold,
         );
       } catch (exc) {
         throw kuzuError(exc, `could not open Kuzu database ${pyRepr(this.path)}`);
@@ -666,13 +679,15 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     requireKeys(props);
     const merged = await mergedCurrentEdge(this, ns, id, props);
     if (merged === null) return;
-    await this._run(`${BY_SID} AND r.is_current = true SET r.doc = $doc, r.is_current = $isc, r.revision = $rev`, {
-      ns,
-      sid: id,
-      doc: jv(merged),
-      isc: merged.is_current ?? null,
-      rev: merged.revision ?? null,
-    });
+    const assignments = ["r.doc = $doc"];
+    const params: Props = { ns, sid: id, doc: jv(merged) };
+    for (const field of ["is_current", "revision"]) {
+      if (Object.hasOwn(props, field)) {
+        assignments.push(`r.${field} = $${field}`);
+        params[field] = merged[field] ?? null;
+      }
+    }
+    await this._run(`${BY_SID} AND r.is_current = true SET ${assignments.join(", ")}`, params);
   }
 
   private async countEdges(ns: string, id: string): Promise<number> {
