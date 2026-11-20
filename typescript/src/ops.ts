@@ -496,7 +496,7 @@ export async function nodesById(
  * @param equals (Props | null): exact property matches every node must also have.
  * @return (Props[]): the node property maps.
  */
-async function nodesWhere(
+export async function nodesWhere(
   runner: Runner,
   ns: string,
   label: string,
