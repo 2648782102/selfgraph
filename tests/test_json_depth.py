@@ -7,6 +7,7 @@ from selfgraph.errors import ValidationError
 from selfgraph.runtime import parse_json, read_json
 
 DEEP = "[" * 100000 + "]" * 100000
+ARGV_DEEP = "[" * 200 + "]" * 200
 MESSAGE = "invalid JSON in --prop: too deeply nested; keep it under 64 levels"
 FLAG_MESSAGE = "invalid JSON: too deeply nested; keep it under 64 levels"
 
@@ -36,7 +37,7 @@ def test_read_json_names_the_path_for_a_deep_file(tmp_path):
 
 
 def test_a_deep_prop_flag_exits_2_without_falling_back_to_text(capsys, tmp_path):
-    assert kuzu_main(tmp_path, "entity", "create", "--name", "A", "--type", "T", "--prop", f"k={DEEP}") == 2
+    assert kuzu_main(tmp_path, "entity", "create", "--name", "A", "--type", "T", "--prop", f"k={ARGV_DEEP}") == 2
     assert capsys.readouterr().err == cli_error("invalid_argument", FLAG_MESSAGE, "selfgraph entity create", "k")
 
 
