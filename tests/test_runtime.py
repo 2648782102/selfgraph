@@ -264,6 +264,14 @@ def test_store_errors_hide_uri_credentials():
     assert mask_uri("u:pw@host:1") == "***@host:1"
     assert mask_uri("bolt://host:7687") == "bolt://host:7687"
     assert mask_uri("/tmp/graph.kuzu") == "/tmp/graph.kuzu"
+    assert mask_uri("bolt://u:pw@127.0.0.1:7687?a=b@c") == "bolt://***@127.0.0.1:7687?a=b@c"
+    assert mask_uri("bolt://h:1/db@x") == "bolt://h:1/db@x"
+    assert mask_uri("bolt://h:1#a@b") == "bolt://h:1#a@b"
+    assert redact_uri("no @ here: bolt://h:1/db@x", "bolt://h:1/db@x") == "no @ here: bolt://h:1/db@x"
+    quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x"
+    for shown in (repr(quoted), json.dumps(quoted), quoted):
+        assert "ss3cr3t" not in redact_uri(f"Given URI: {shown}", quoted), shown
+    assert redact_uri(f"Given URI: {quoted!r}", quoted) == "Given URI: 'bolt://***@127.0.0.1:7687/db\"x'"
     assert redact_uri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1") == "Given URI: 'bolt://***@h:1'"
     leaks = ("hun", "ter2")
     for store, uri in (
@@ -276,7 +284,12 @@ def test_store_errors_hide_uri_credentials():
         with pytest.raises(ValidationError) as caught:
             build_graph(GraphSettings(store=store, uri=uri))
         assert "***@host" in str(caught.value) and not any(x in str(caught.value) for x in leaks), uri
-    for uri in ("bolt://u:hunter2@host:7687", "bolt://u:hun\nter2@host:7687", "bolt://u:it's\"2@host:7687"):
+    for uri in (
+        "bolt://u:hunter2@host:7687",
+        "bolt://u:hun\nter2@host:7687",
+        "bolt://u:it's\"2@host:7687",
+        "bolt://u:it'shunter2@host:7687/db\"x",
+    ):
         with pytest.raises(StoreError) as caught:
             bolt_driver(uri, None)
         assert "bolt://***@host:7687" in str(caught.value) and not any(

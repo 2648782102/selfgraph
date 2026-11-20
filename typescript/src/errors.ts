@@ -91,21 +91,16 @@ export function surfaceHint(message: string): string {
 }
 
 /**
- * Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+ * Locate the user and password of a URI inside its authority.
  *
- * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
- * @param uri (string | null | undefined): the configured URI; its userinfo runs from after any scheme to the last @.
- * @return (string): the message with each raw, repr, or JSON rendering of the userinfo replaced by ***.
+ * @param uri (string): the URI, with or without a scheme.
+ * @return ([number, string]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
+ *   the first /, ? or # after any scheme; the userinfo is empty when the authority has no @.
  */
-export function redactUri(text: string, uri: string | null | undefined): string {
-  if (!uri) return text;
-  const rest = uri.includes("://") ? uri.slice(uri.indexOf("://") + 3) : uri;
-  const userinfo = rest.slice(0, Math.max(rest.lastIndexOf("@"), 0));
-  if (!userinfo) return text;
-  return [userinfo, pyRepr(userinfo).slice(1, -1), JSON.stringify(userinfo).slice(1, -1)].reduce(
-    (out, form) => out.replaceAll(`${form}@`, "***@"),
-    text,
-  );
+function uriUserinfo(uri: string): [number, string] {
+  const start = uri.includes("://") ? uri.indexOf("://") + 3 : 0;
+  const authority = uri.slice(start).split(/[/?#]/, 1)[0] ?? "";
+  return [start, authority.slice(0, Math.max(authority.lastIndexOf("@"), 0))];
 }
 
 /**
@@ -115,7 +110,29 @@ export function redactUri(text: string, uri: string | null | undefined): string 
  * @return (string): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
  */
 export function maskUri(uri: string): string {
-  return redactUri(uri, uri);
+  const [start, userinfo] = uriUserinfo(uri);
+  return userinfo ? `${uri.slice(0, start)}***${uri.slice(start + userinfo.length)}` : uri;
+}
+
+/**
+ * Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+ *
+ * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
+ * @param uri (string | null | undefined): the configured URI.
+ * @return (string): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same
+ *   rendering of the masked URI, then each such rendering of the userinfo alone replaced by ***.
+ */
+export function redactUri(text: string, uri: string | null | undefined): string {
+  if (!uri) return text;
+  const userinfo = uriUserinfo(uri)[1];
+  if (!userinfo) return text;
+  const masked = maskUri(uri);
+  const renders = [pyRepr, JSON.stringify, String] as ((value: string) => string)[];
+  const whole = renders.reduce((out, render) => out.replaceAll(render(uri), render(masked)), text);
+  return [userinfo, pyRepr(userinfo).slice(1, -1), JSON.stringify(userinfo).slice(1, -1)].reduce(
+    (out, form) => out.replaceAll(`${form}@`, "***@"),
+    whole,
+  );
 }
 
 /**

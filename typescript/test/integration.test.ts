@@ -19,6 +19,7 @@ import {
   TransientError,
   ValidationError,
 } from "../src/index.js";
+import { pyRepr } from "../src/internal/py.js";
 import { childEdgeId, LABELS } from "../src/labels.js";
 import { Extraction, parseOrThrow } from "../src/models.js";
 import { HUB_DEGREE } from "../src/retrieval.js";
@@ -1415,6 +1416,15 @@ describe("store setup errors", () => {
     expect(maskUri("u:pw@host:1")).toBe("***@host:1");
     expect(maskUri("bolt://host:7687")).toBe("bolt://host:7687");
     expect(maskUri("/tmp/graph.kuzu")).toBe("/tmp/graph.kuzu");
+    expect(maskUri("bolt://u:pw@127.0.0.1:7687?a=b@c")).toBe("bolt://***@127.0.0.1:7687?a=b@c");
+    expect(maskUri("bolt://h:1/db@x")).toBe("bolt://h:1/db@x");
+    expect(maskUri("bolt://h:1#a@b")).toBe("bolt://h:1#a@b");
+    expect(redactUri("no @ here: bolt://h:1/db@x", "bolt://h:1/db@x")).toBe("no @ here: bolt://h:1/db@x");
+    const quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x";
+    for (const shown of [pyRepr(quoted), JSON.stringify(quoted), quoted]) {
+      expect(redactUri(`Given URI: ${shown}`, quoted)).not.toContain("ss3cr3t");
+    }
+    expect(redactUri(`Given URI: ${pyRepr(quoted)}`, quoted)).toBe("Given URI: 'bolt://***@127.0.0.1:7687/db\"x'");
     expect(redactUri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1")).toBe(
       "Given URI: 'bolt://***@h:1'",
     );

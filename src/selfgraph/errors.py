@@ -111,21 +111,16 @@ def surface_hint(message: str) -> str:
     return message
 
 
-def redact_uri(text: str, uri: str | None) -> str:
-    """Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+def _uri_userinfo(uri: str) -> tuple[int, str]:
+    """Locate the user and password of a URI inside its authority.
 
-    @param text (str): the message, which may quote the URI or repeat a driver's text about it.
-    @param uri (str | None): the configured URI; its userinfo runs from after any scheme to the last @.
-    @return (str): the message with each raw, repr, or JSON rendering of the userinfo replaced by ***.
+    @param uri (str): the URI, with or without a scheme.
+    @return (tuple[int, str]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
+        the first /, ? or # after any scheme; the userinfo is empty when the authority has no @.
     """
-    if not uri:
-        return text
-    userinfo, at, _ = uri.partition("://")[2].rpartition("@") if "://" in uri else uri.rpartition("@")
-    if not at or not userinfo:
-        return text
-    for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
-        text = text.replace(f"{form}@", "***@")
-    return text
+    start = uri.index("://") + 3 if "://" in uri else 0
+    authority = re.split(r"[/?#]", uri[start:], maxsplit=1)[0]
+    return start, authority.rpartition("@")[0]
 
 
 def mask_uri(uri: str) -> str:
@@ -134,7 +129,29 @@ def mask_uri(uri: str) -> str:
     @param uri (str): the URI, such as redis://user:pass@host:6379.
     @return (str): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
     """
-    return redact_uri(uri, uri)
+    start, userinfo = _uri_userinfo(uri)
+    return f"{uri[:start]}***{uri[start + len(userinfo) :]}" if userinfo else uri
+
+
+def redact_uri(text: str, uri: str | None) -> str:
+    """Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+
+    @param text (str): the message, which may quote the URI or repeat a driver's text about it.
+    @param uri (str | None): the configured URI.
+    @return (str): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same rendering
+        of the masked URI, then each such rendering of the userinfo alone replaced by ***.
+    """
+    if not uri:
+        return text
+    userinfo = _uri_userinfo(uri)[1]
+    if not userinfo:
+        return text
+    masked = mask_uri(uri)
+    for render in (repr, lambda s: json.dumps(s, ensure_ascii=False), str):
+        text = text.replace(render(uri), render(masked))
+    for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
+        text = text.replace(f"{form}@", "***@")
+    return text
 
 
 def _connect_failure(exc: BaseException | None, seen: set[int]) -> str:
