@@ -111,6 +111,20 @@ def surface_hint(message: str) -> str:
     return message
 
 
+_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+_AT_SIGNS = ("@", "\uff20", "\ufe6b")
+
+
+def split_scheme(uri: str) -> tuple[str, str]:
+    """Split a URI into its scheme and the rest, taking a scheme only when the URI starts with one followed by ://.
+
+    @param uri (str): the URI, such as bolt://host:7687 or host:7687.
+    @return (tuple[str, str]): the scheme, empty when there is none, and the text after its ://, or the whole URI.
+    """
+    match = _SCHEME.match(uri)
+    return (uri[: match.end() - 3], uri[match.end() :]) if match else ("", uri)
+
+
 UNENCODED_USERINFO = (
     "the store URI has an unencoded character in its user or password; "
     "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)"
@@ -127,7 +141,7 @@ def require_encoded_userinfo(uri: str) -> None:
     @return (None): nothing; raises ValidationError when the text between the scheme and the last @ holds a /, ? or
         #, or the authority holds more than one @.
     """
-    rest = uri[uri.index("://") + 3 :] if "://" in uri else uri
+    rest = split_scheme(uri)[1]
     if re.search(r"[/?#]", rest.rpartition("@")[0]) or re.split(r"[/?#]", rest, maxsplit=1)[0].count("@") > 1:
         raise ValidationError(UNENCODED_USERINFO)
 
@@ -137,11 +151,13 @@ def _uri_userinfo(uri: str) -> tuple[int, str]:
 
     @param uri (str): the URI, with or without a scheme.
     @return (tuple[int, str]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
-        the first /, ? or # after any scheme; the userinfo is empty when the authority has no @.
+        the first /, ? or # after any scheme, counting the fullwidth ＠ and small ﹫ that NFKC turns into @ (parsers
+        that normalize read them as the separator); the userinfo is empty when the authority has none.
     """
-    start = uri.index("://") + 3 if "://" in uri else 0
-    authority = re.split(r"[/?#]", uri[start:], maxsplit=1)[0]
-    return start, authority.rpartition("@")[0]
+    rest = split_scheme(uri)[1]
+    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    end = max(authority.rfind(at) for at in _AT_SIGNS)
+    return len(uri) - len(rest), authority[: max(end, 0)]
 
 
 def mask_uri(uri: str) -> str:
@@ -160,18 +176,19 @@ def redact_uri(text: str, uri: str | None) -> str:
     @param text (str): the message, which may quote the URI or repeat a driver's text about it.
     @param uri (str | None): the configured URI.
     @return (str): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same rendering
-        of the masked URI, then each such rendering of the userinfo alone replaced by ***.
+        of the masked URI, then each such rendering of the userinfo before its separator replaced by ***.
     """
     if not uri:
         return text
-    userinfo = _uri_userinfo(uri)[1]
+    start, userinfo = _uri_userinfo(uri)
     if not userinfo:
         return text
     masked = mask_uri(uri)
     for render in (repr, lambda s: json.dumps(s, ensure_ascii=False), str):
         text = text.replace(render(uri), render(masked))
+    at = uri[start + len(userinfo)]
     for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
-        text = text.replace(f"{form}@", "***@")
+        text = text.replace(f"{form}{at}", f"***{at}")
     return text
 
 

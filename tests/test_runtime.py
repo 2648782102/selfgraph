@@ -18,6 +18,7 @@ from selfgraph.errors import (
     mask_uri,
     redact_uri,
     require_encoded_userinfo,
+    split_scheme,
     surface_hint,
 )
 from selfgraph.models import CypherResult
@@ -281,6 +282,21 @@ def test_store_errors_hide_uri_credentials():
     assert redact_uri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1") == "Given URI: 'bolt://***@h:1'"
     dollar = "bolt://u:pw@h:1/d$&b"
     assert redact_uri(f"x {dollar} y", dollar) == "x bolt://***@h:1/d$&b y"
+    assert mask_uri("u:p\uff20ss@h:1") == "***@h:1"
+    for at in ("\uff20", "\ufe6b"):
+        assert mask_uri(f"admin:s3cr3tPW{at}127.0.0.1:6379") == f"***{at}127.0.0.1:6379"
+        assert mask_uri(f"redis://admin:s3cr3tPW{at}127.0.0.1:6379") == f"redis://***{at}127.0.0.1:6379"
+        netloc = f"admin:s3cr3tPW{at}127.0.0.1:7687"
+        assert (
+            redact_uri(f"netloc {netloc!r} is invalid", f"bolt://{netloc}")
+            == f"netloc '***{at}127.0.0.1:7687' is invalid"
+        )
+        with pytest.raises(StoreError) as caught:
+            bolt_driver(f"bolt://{netloc}", None)
+        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), at
+        with pytest.raises(StoreError) as caught:
+            bolt_driver(f"redis://admin:s3cr3tPW{at}127.0.0.1:6379", None)
+        assert str(caught.value) == f"'redis://***{at}127.0.0.1:6379' is not a Bolt URI; use bolt://host:port", at
     assert redact_uri("x u:pw$'@h y", "bolt://u:pw$'@h") == "x ***@h y"
     leaks = ("hun", "ter2")
     for store, uri in (
@@ -304,7 +320,7 @@ def test_store_errors_hide_uri_credentials():
         assert "bolt://***@host:7687" in str(caught.value) and not any(
             x in str(caught.value) for x in (*leaks, "it")
         ), uri
-        assert caught.value.__cause__ is None and caught.value.__suppress_context__, uri
+        assert caught.value.__cause__ is None and caught.value.__context__ is None, uri
         shown = "".join(traceback.format_exception(caught.value))
         assert not any(x in shown for x in (*leaks, "it's", "it\\'s")), uri
     with pytest.raises(StoreError, match=r"^'http://\*\*\*@h:1' is not a Bolt URI"):
@@ -342,9 +358,19 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
                 bolt_driver(uri, None)
             assert str(caught.value) == unencoded, uri
             assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
-    for uri in ("bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1"):
+    in_password = "admin:s3cr3tPW://x@127.0.0.1:6379"
+    for store in ("falkordb", "neo4j", "hydradb", "memgraph", "cypher"):
+        with pytest.raises(ValidationError) as caught:
+            build_graph(GraphSettings(store=store, uri=in_password))
+        assert str(caught.value) == unencoded, store
+        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), store
+    for uri in ("bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1", in_password):
         with pytest.raises(ValidationError, match=r"^the store URI has an unencoded character"):
             bolt_driver(uri, None)
+    assert split_scheme("bolt://h:1") == ("bolt", "h:1")
+    assert split_scheme("a+b.c-d://h") == ("a+b.c-d", "h")
+    for uri in (in_password, "h:6379", "1x://h", "://h", "/tmp/a://b"):
+        assert split_scheme(uri) == ("", uri), uri
     for uri in (
         "bolt://u:p%2Fa%3Fb%23c%40d@127.0.0.1:7687",
         "neo4j://127.0.0.1:7687/db?x=y#z",
@@ -353,6 +379,25 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
         "/tmp/graph.kuzu",
     ):
         require_encoded_userinfo(uri)
+
+
+def test_falkordb_addresses_urlparse_refuses_are_masked():
+    for uri, masked in (
+        ("redis://u:pa\uff03s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
+        ("redis://u:pa\uff0fs3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
+        ("redis://u:pa\uff20s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
+        ("u:pa\uff03s3cr3tPW@127.0.0.1:6379", "***@127.0.0.1:6379"),
+        ("redis://u:pa[s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
+        ("admin:s3cr3tPW\uff20127.0.0.1:6379", "***\uff20127.0.0.1:6379"),
+        ("redis://admin:s3cr3tPW\ufe6b127.0.0.1:6379", "redis://***\ufe6b127.0.0.1:6379"),
+    ):
+        with pytest.raises(ValidationError) as caught:
+            build_graph(GraphSettings(store="falkordb", uri=uri))
+        assert str(caught.value) == (
+            f"invalid FalkorDB address {masked!r}: expected host:port with a port from 1 to 65535"
+        ), uri
+        assert caught.value.__cause__ is None and caught.value.__context__ is None, uri
+        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
 
 
 def test_bolt_initialize_skips_existing_constraints():

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as chunking from "../src/chunking.js";
-import { maskUri, redactUri, requireEncodedUserinfo, surfaceHint } from "../src/errors.js";
+import { maskUri, redactUri, requireEncodedUserinfo, splitScheme, surfaceHint } from "../src/errors.js";
 import type { Extractor, GraphPrimitives, GraphStore, JsonObject, Strategy } from "../src/index.js";
 import {
   ConflictError,
@@ -1427,6 +1427,18 @@ describe("store setup errors", () => {
     );
     const dollar = "bolt://u:pw@h:1/d$&b";
     expect(redactUri(`x ${dollar} y`, dollar)).toBe("x bolt://***@h:1/d$&b y");
+    expect(maskUri("u:p\uff20ss@h:1")).toBe("***@h:1");
+    for (const at of ["\uff20", "\ufe6b"]) {
+      expect(maskUri(`admin:s3cr3tPW${at}127.0.0.1:6379`)).toBe(`***${at}127.0.0.1:6379`);
+      expect(maskUri(`redis://admin:s3cr3tPW${at}127.0.0.1:6379`)).toBe(`redis://***${at}127.0.0.1:6379`);
+      const netloc = `admin:s3cr3tPW${at}127.0.0.1:7687`;
+      expect(redactUri(`netloc ${pyRepr(netloc)} is invalid`, `bolt://${netloc}`)).toBe(
+        `netloc '***${at}127.0.0.1:7687' is invalid`,
+      );
+      expect(() => openDriver(`redis://admin:s3cr3tPW${at}127.0.0.1:6379`, null, {})).toThrow(
+        new StoreError(`'redis://***${at}127.0.0.1:6379' is not a Bolt URI; use bolt://host:port`),
+      );
+    }
     expect(redactUri("x u:pw$'@h y", "bolt://u:pw$'@h")).toBe("x ***@h y");
     const leaks = ["hun", "ter2"];
     for (const [store, uri] of [
@@ -1503,8 +1515,20 @@ describe("store setup errors", () => {
         expect(exc.stack ?? "").not.toContain("cr3t");
       }
     }
-    for (const uri of ["bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1"]) {
+    const inPassword = "admin:s3cr3tPW://x@127.0.0.1:6379";
+    for (const store of ["falkordb", "neo4j", "hydradb", "memgraph", "cypher"] as const) {
+      const exc = rejection(() => SelfGraph.connect({ store, uri: inPassword }));
+      expect(exc).toBeInstanceOf(ValidationError);
+      expect(exc.message).toBe(unencoded);
+      expect(exc.stack ?? "").not.toContain("cr3t");
+    }
+    for (const uri of ["bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1", inPassword]) {
       expect(() => openDriver(uri, null, {})).toThrow(new ValidationError(unencoded));
+    }
+    expect(splitScheme("bolt://h:1")).toEqual(["bolt", "h:1"]);
+    expect(splitScheme("a+b.c-d://h")).toEqual(["a+b.c-d", "h"]);
+    for (const uri of [inPassword, "h:6379", "1x://h", "://h", "/tmp/a://b"]) {
+      expect(splitScheme(uri)).toEqual(["", uri]);
     }
     for (const uri of [
       "bolt://u:p%2Fa%3Fb%23c%40d@127.0.0.1:7687",
@@ -1514,6 +1538,29 @@ describe("store setup errors", () => {
       "/tmp/graph.kuzu",
     ]) {
       expect(() => requireEncodedUserinfo(uri)).not.toThrow();
+    }
+  });
+
+  it("masks FalkorDB addresses whose netloc Python's urlsplit refuses, as Python does", () => {
+    for (const [uri, masked] of [
+      ["redis://u:pa\uff03s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
+      ["redis://u:pa\uff0fs3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
+      ["redis://u:pa\uff20s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
+      ["u:pa\uff03s3cr3tPW@127.0.0.1:6379", "***@127.0.0.1:6379"],
+      ["redis://u:pa[s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
+      ["admin:s3cr3tPW\uff20127.0.0.1:6379", "***\uff20127.0.0.1:6379"],
+      ["redis://admin:s3cr3tPW\ufe6b127.0.0.1:6379", "redis://***\ufe6b127.0.0.1:6379"],
+    ] as const) {
+      let exc: Error | undefined;
+      try {
+        SelfGraph.connect({ store: "falkordb", uri });
+      } catch (caught) {
+        exc = caught as Error;
+      }
+      expect(exc).toBeInstanceOf(ValidationError);
+      expect(exc?.message).toBe(`invalid FalkorDB address '${masked}': expected host:port with a port from 1 to 65535`);
+      expect(exc?.cause).toBeUndefined();
+      expect(exc?.stack ?? "").not.toContain("cr3t");
     }
   });
 

@@ -17,6 +17,7 @@ from ..errors import (
     mask_uri,
     redact_uri,
     require_encoded_userinfo,
+    split_scheme,
 )
 from ..ids import quote_label, quote_reltype, require_identifier
 from ..models import CypherResult, JsonValue
@@ -75,7 +76,8 @@ def bolt_auth(auth: Any) -> Any:
 def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
     """Open an async Bolt driver with bounded connect timeouts.
 
-    Raises ValidationError on an unencoded user or password and StoreError on a bad URI or driver config.
+    Raises ValidationError on an unencoded user or password and StoreError on a bad URI or driver config. The driver's
+    own error quotes the raw URI, so the StoreError is raised after its except block, leaving it out of the traceback.
 
     @param uri (str): the Bolt URI.
     @param auth (Any): the auth, as bolt_auth takes it.
@@ -88,15 +90,16 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
     except ImportError as exc:  # pragma: no cover
         raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j") from exc
     require_encoded_userinfo(uri)
-    scheme, sep, _ = uri.partition("://")
-    if sep and scheme.lower() not in _BOLT_SCHEMES:
+    scheme = split_scheme(uri)[0]
+    if scheme and scheme.lower() not in _BOLT_SCHEMES:
         raise StoreError(f"{mask_uri(uri)!r} is not a Bolt URI; use bolt://host:port")
     kwargs.setdefault("connection_timeout", BOLT_CONNECT_TIMEOUT)
     kwargs.setdefault("connection_acquisition_timeout", BOLT_CONNECT_TIMEOUT)
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
-        raise StoreError(f"cannot open a Bolt driver for {mask_uri(uri)!r}: {redact_uri(str(exc), uri)}") from None
+        reason = redact_uri(str(exc), uri)
+    raise StoreError(f"cannot open a Bolt driver for {mask_uri(uri)!r}: {reason}")
 
 
 def bolt_failure(exc: BaseException) -> str | None:

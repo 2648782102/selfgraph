@@ -24,6 +24,7 @@ import {
   redactUri,
   requireEncodedUserinfo,
   StoreError,
+  splitScheme,
   TransientError,
   ValidationError,
 } from "../errors.js";
@@ -182,8 +183,8 @@ export function parseAuth(auth: unknown, defaultUser = "neo4j"): [string, string
  */
 export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver {
   requireEncodedUserinfo(uri);
-  const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : null;
-  if (scheme !== null && !BOLT_SCHEMES.includes(scheme)) {
+  const scheme = splitScheme(uri)[0].toLowerCase();
+  if (scheme && !BOLT_SCHEMES.includes(scheme)) {
     throw new StoreError(`${pyRepr(maskUri(uri))} is not a Bolt URI; use bolt://host:port`);
   }
   const pair = isPlainObject(auth) && typeof auth.scheme === "string" ? null : parseAuth(auth);

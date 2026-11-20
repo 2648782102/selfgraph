@@ -11,6 +11,7 @@ import {
   STORE_KUZU_HINT,
   StoreError,
   settingHint,
+  splitScheme,
   surfaceHint,
   ValidationError,
 } from "./errors.js";
@@ -424,7 +425,8 @@ const boltOptions = (settings: GraphSettings) => ({ auth: settings.auth, databas
  * @return ({ url: URL; tls: boolean }): the parsed URL and whether it asks for TLS (rediss:// or falkors://).
  */
 function falkorAddress(uri: string): { url: URL; tls: boolean } {
-  const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : "";
+  const [rawScheme, rest] = splitScheme(uri);
+  const scheme = rawScheme.toLowerCase();
   if (scheme && !FALKOR_SCHEMES.includes(scheme)) {
     throw new ValidationError(
       `invalid FalkorDB address ${pyRepr(maskUri(uri))}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
@@ -432,7 +434,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   }
   let url: URL | null;
   try {
-    url = new URL(scheme ? `redis${uri.slice(scheme.length)}` : `redis://${uri}`);
+    url = pyRefusesNetloc(rest) ? null : new URL(scheme ? `redis${uri.slice(scheme.length)}` : `redis://${uri}`);
   } catch {
     url = null;
   }
@@ -498,6 +500,22 @@ export function ignoredSettings(settings: GraphSettings): Array<"auth" | "databa
 }
 
 /**
+ * Whether Python's urlsplit refuses a URI's netloc, so both SDKs reject the same FalkorDB addresses: an unbalanced
+ * [ or ], or non-ASCII text that NFKC turns into a /, ?, #, @ or :.
+ *
+ * @param rest (string): the URI after its scheme and ://, or the whole URI when it has no scheme.
+ * @return (boolean): true when urlsplit would raise ValueError for it.
+ */
+function pyRefusesNetloc(rest: string): boolean {
+  const netloc = rest.replace(/[\t\r\n]/g, "").split(/[/?#]/, 1)[0] ?? "";
+  if (netloc.includes("[") !== netloc.includes("]")) return true;
+  if (Array.from(netloc).every((char) => char.charCodeAt(0) < 0x80)) return false;
+  const stripped = netloc.replace(/[@:#?]/g, "");
+  const normalized = stripped.normalize("NFKC");
+  return normalized !== stripped && /[/?#@:]/.test(normalized);
+}
+
+/**
  * Require a server store's address: present, with its user and password encoded, not a Kuzu path, and for FalkorDB a
  * host:port or redis:// style URL.
  *
@@ -511,7 +529,7 @@ function requireStoreUri(kind: string, uri: string | null): void {
     );
   }
   requireEncodedUserinfo(uri);
-  if (!uri.includes("://") && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
+  if (!splitScheme(uri)[0] && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
     throw new ValidationError(
       `${pyRepr(maskUri(uri))} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
     );
