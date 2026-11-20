@@ -119,16 +119,18 @@ export function normalizeText(value: string): string {
 /**
  * Lowercase text and turn runs of whitespace into single hyphens.
  *
+ * The result is NFC-normalized after lowercasing, which can leave combining marks out of canonical order ("İ" lowercases to "i" plus a combining dot above), so a slug of a slug is unchanged.
+ *
  * @param text (string): the text to slugify.
  * @return (string): the slugified text.
  */
 export function slug(text: string): string {
-  return pyCollapseWs(pyStrip(text).toLowerCase(), "-");
+  return normalizeText(pyCollapseWs(pyStrip(text).toLowerCase(), "-"));
 }
 
 function canonicalName(type: string, rawName: string): string {
   const name = normalizeText(rawName);
-  let words = pySplit(pyStrip(name).toLowerCase().replace(PUNCT, " "));
+  let words = pySplit(normalizeText(pyStrip(name).toLowerCase()).replace(PUNCT, " "));
   if (ORG_TYPES.has(slug(type))) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);

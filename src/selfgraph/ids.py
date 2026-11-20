@@ -303,10 +303,13 @@ def normalize_text(value: str) -> str:
 def slug(text: str) -> str:
     """Lowercase ``text`` and turn runs of whitespace into single hyphens.
 
+    The result is NFC-normalized after lowercasing, which can leave combining marks out of canonical order ("İ"
+    lowercases to "i" plus a combining dot above), so a slug of a slug is unchanged.
+
     @param text (str): the text to slugify.
     @return (str): the slugified text.
     """
-    return _WS.sub("-", text.strip().lower())
+    return normalize_text(_WS.sub("-", text.strip().lower()))
 
 
 def _canonical_name(type: str, name: str) -> str:
@@ -317,7 +320,7 @@ def _canonical_name(type: str, name: str) -> str:
     @return (str): the canonical hyphenated form.
     """
     name = normalize_text(name)
-    words = _PUNCT.sub(" ", name.strip().lower()).split()
+    words = _PUNCT.sub(" ", normalize_text(name.strip().lower())).split()
     if slug(type) in _ORG_TYPES:
         if words and words[0] == "the":
             words = words[1:]
