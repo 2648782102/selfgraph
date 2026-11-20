@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, maskUri, SelfGraphError, StoreError, ValidationError } from "../errors.js";
+import { errorMessage, maskUri, SelfGraphError, StoreError, splitScheme, ValidationError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
@@ -139,18 +139,15 @@ function databasePath(path: string): string {
   );
 }
 
-const SERVER_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
-
-/**
- * Whether a Kuzu path is actually a server URI, which Kuzu would turn into a
- * directory named after the URI.
- *
- * @param path (string): the value given to KuzuStore.
- * @return (boolean): true for bolt://, redis://, https:// and similar schemes.
- */
-function serverUri(path: string): boolean {
-  return SERVER_SCHEME.test(path);
-}
+const SCHEME_STORES: Record<string, string> = {
+  bolt: "Neo4jStore",
+  neo4j: "Neo4jStore",
+  memgraph: "Neo4jStore",
+  redis: "FalkorDBStore",
+  falkor: "FalkorDBStore",
+  falkors: "FalkorDBStore",
+  hydradb: "HydraDBStore",
+};
 
 /**
  * Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
@@ -343,10 +340,12 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     if (size !== undefined && (typeof size !== "number" || !Number.isSafeInteger(size) || size < 1)) {
       throw new ValidationError(`max_db_size must be a positive integer of bytes, got ${pyRepr(size)}`);
     }
-    if (serverUri(path)) {
+    const [scheme] = splitScheme(path);
+    if (scheme) {
+      const store = SCHEME_STORES[scheme.toLowerCase()] ?? "a server store";
       throw new StoreError(
-        `KuzuStore takes a local path, not the server URI ${pyRepr(maskUri(path))}; ` +
-          "use Neo4jStore or HydraDBStore for a server, or pass a file path for Kuzu",
+        `KuzuStore takes a local path, not the server URI ${pyRepr(maskUri(path))}; use ${store} for that scheme, ` +
+          "or pass a file path for Kuzu",
         { code: "invalid_setting", field: "uri" },
       );
     }

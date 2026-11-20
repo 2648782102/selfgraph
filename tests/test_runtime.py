@@ -480,11 +480,20 @@ def test_kuzu_paths_settings_and_errors(caplog, monkeypatch, tmp_path):
 def test_kuzu_store_refuses_a_server_uri_without_creating_a_directory(tmp_path, monkeypatch):
     pytest.importorskip("kuzu")
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(SelfGraphError) as raised:
-        KuzuStore("bolt://u:hunter2@h:1")
-    assert (raised.value.code, raised.value.field) == ("invalid_setting", "uri")
-    assert "hunter2" not in str(raised.value)
-    assert not (tmp_path / "bolt:").exists()
+    cases = {
+        "bolt://u:hunter2@h:1": "Neo4jStore",
+        "redis://u:hunter2@h:1": "FalkorDBStore",
+        "falkors://u:hunter2@h:1": "FalkorDBStore",
+        "hydradb://u:hunter2@h:1": "HydraDBStore",
+        "https://u:hunter2@h:1": "a server store",
+    }
+    for uri, store in cases.items():
+        with pytest.raises(SelfGraphError) as raised:
+            KuzuStore(uri)
+        assert (raised.value.code, raised.value.field) == ("invalid_setting", "uri")
+        assert "hunter2" not in str(raised.value)
+        assert store in str(raised.value)
+        assert not (tmp_path / "bolt:").exists()
 
 
 def test_kuzu_relative_path_uses_each_stores_working_directory(tmp_path, monkeypatch):
