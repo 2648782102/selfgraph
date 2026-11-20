@@ -210,8 +210,13 @@ class Schema(TopInputModel):
         """
         names: set[str] = set()
         for i, entity in enumerate(self.entities):
+            if not entity.name.strip():
+                raise ValueError(f"entities[{i}].name: must be a non-empty string")
             if entity.name.casefold() in names:
                 raise ValueError(f"entities[{i}].name: duplicate entity type {entity.name!r}")
+            for j, prop in enumerate(entity.properties):
+                if not prop.name.strip():
+                    raise ValueError(f"entities[{i}].properties[{j}].name: must be a non-empty string")
             names.add(entity.name.casefold())
         owners = {entity.name.casefold(): i for i, entity in enumerate(self.entities)}
         for i, entity in enumerate(self.entities):
@@ -246,6 +251,11 @@ class Schema(TopInputModel):
                 current = index.get(current.parent) if current.parent is not None else None
         types: dict[str, int] = {}
         for i, relation in enumerate(self.relations):
+            if not relation.type.strip():
+                raise ValueError(f"relations[{i}].type: must be a non-empty string")
+            for j, prop in enumerate(relation.properties):
+                if not prop.name.strip():
+                    raise ValueError(f"relations[{i}].properties[{j}].name: must be a non-empty string")
             try:
                 rtype = normalize_rel_type(relation.type)
             except ValidationError:

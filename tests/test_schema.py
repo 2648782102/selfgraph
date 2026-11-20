@@ -221,6 +221,16 @@ def test_invalid_schema_and_mode_raise_validation_error():
 @pytest.mark.parametrize(
     ("spec", "message"),
     [
+        ({"entities": [{"name": "  "}]}, "entities[0].name: must be a non-empty string"),
+        (
+            {"entities": [{"name": "Person", "properties": [{"name": " "}]}]},
+            "entities[0].properties[0].name: must be a non-empty string",
+        ),
+        ({"relations": [{"type": ""}]}, "relations[0].type: must be a non-empty string"),
+        (
+            {"relations": [{"type": "KNOWS", "properties": [{"name": "\t"}]}]},
+            "relations[0].properties[0].name: must be a non-empty string",
+        ),
         ({"entities": [{"name": "Person"}, {"name": "person"}]}, "entities[1].name: duplicate entity type 'person'"),
         (
             {"entities": [{"name": "Person"}, {"name": "Company", "aliases": ["Person"]}]},

@@ -226,8 +226,12 @@ export function entityIndex(schema: ParsedSchema): Map<string, ParsedEntityType>
 function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | number>, string] | null {
   const names = new Set<string>();
   for (const [i, entity] of schema.entities.entries()) {
+    if (entity.name.trim() === "") return [["entities", i, "name"], "must be a non-empty string"];
     if (names.has(casefold(entity.name))) {
       return [["entities", i, "name"], `duplicate entity type ${pyRepr(entity.name)}`];
+    }
+    for (const [j, property] of entity.properties.entries()) {
+      if (property.name.trim() === "") return [["entities", i, "properties", j, "name"], "must be a non-empty string"];
     }
     names.add(casefold(entity.name));
   }
@@ -271,6 +275,10 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
   }
   const types = new Map<string, number>();
   for (const [i, relation] of schema.relations.entries()) {
+    if (relation.type.trim() === "") return [["relations", i, "type"], "must be a non-empty string"];
+    for (const [j, property] of relation.properties.entries()) {
+      if (property.name.trim() === "") return [["relations", i, "properties", j, "name"], "must be a non-empty string"];
+    }
     let rtype: string | null = null;
     try {
       rtype = normalizeRelType(relation.type);
