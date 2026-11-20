@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
+from typing import NamedTuple
 
 from .ids import normalize_rel_type
 from .schema import Schema, _entity_index, _lineage, canonical_entity_type, canonical_relation_type
 
-__all__ = ["expand_tokens", "grounded_terms", "schema_forms", "stem"]
+__all__ = ["DefinitionIndex", "definition_index", "expand_tokens", "grounded_terms", "schema_forms", "stem"]
 
 Tokenize = Callable[[str], set[str]]
 
@@ -82,36 +83,45 @@ def _forms(names: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(form for name in names for form in (name, _spaced(name))))
 
 
-def _definition_forms(schema: Schema | None) -> dict[tuple[str, str], tuple[list[str], bool]]:
-    """Map each definition, keyed by entity and name, to its surface forms and certified flag.
+class DefinitionIndex(NamedTuple):
+    """Each definition form's names and declaring types, and each name's certified flag across every declaration."""
 
-    Keying by entity and name keeps definitions with a shared name or synonym distinct, so callers can tell which
-    declaring entity a form belongs to.
+    owners: dict[str, dict[str, list[str]]]
+    certified: dict[str, bool]
+
+
+def definition_index(schema: Schema | None) -> DefinitionIndex:
+    """Index the schema's definitions by surface form, keeping every declaring entity type and every declaration.
+
+    A name declared twice by one type, or by several types, keeps the synonyms of every declaration.
 
     @param schema (Schema | None): the schema, or None for no definitions.
-    @return (dict[tuple[str, str], tuple[list[str], bool]]): each definition's forms and certified flag.
+    @return (DefinitionIndex): each form's definitions and declaring types, and each name's certified flag.
     """
-    found: dict[tuple[str, str], tuple[list[str], bool]] = {}
-    if schema is None:
-        return found
-    for entity in schema.entities:
+    owners: dict[str, dict[str, dict[str, None]]] = {}
+    certified: dict[str, bool] = {}
+    for entity in schema.entities if schema is not None else ():
         for definition in entity.definitions:
-            found[(entity.name, definition.name)] = (
-                _forms([definition.name, *definition.synonyms]),
-                definition.certified,
-            )
-    return found
+            certified[definition.name] = certified.get(definition.name, True) and definition.certified
+            for form in _forms([definition.name, *definition.synonyms]):
+                owners.setdefault(form, {}).setdefault(definition.name, {})[entity.name] = None
+    return DefinitionIndex(
+        {form: {name: list(types) for name, types in names.items()} for form, names in owners.items()}, certified
+    )
 
 
-def schema_forms(schema: Schema | None) -> dict[str, dict[str, list[tuple[str, bool]]]]:
+def schema_forms(
+    schema: Schema | None, definitions: DefinitionIndex | None = None
+) -> dict[str, dict[str, list[tuple[str, bool]]]]:
     """Map every surface form of the schema's terms, by kind, to the terms it names and whether each is certified.
 
     Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each
     form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the
     first term that declares it. A definition form names every definition that declares it, and a name declared by
-    several entity types is certified only when all of them are.
+    several entity types, or twice by one, is certified only when every declaration is.
 
     @param schema (Schema | None): the schema, or None for no terms.
+    @param definitions (DefinitionIndex | None): the schema's definition index when the caller already built it.
     @return (dict[str, dict[str, list[tuple[str, bool]]]]): for "type", "definition", and "relation", each form's
         terms and their certified flags.
     """
@@ -125,14 +135,9 @@ def schema_forms(schema: Schema | None) -> dict[str, dict[str, list[tuple[str, b
 
     for entity in schema.entities:
         note("type", entity.name, [entity.name, *entity.aliases, *entity.synonyms], entity.certified)
-    for (_, name), (forms, certified) in _definition_forms(schema).items():
-        for form in forms:
-            named = found["definition"].setdefault(form, [])
-            at = next((i for i, (n, _) in enumerate(named) if n == name), None)
-            if at is None:
-                named.append((name, certified))
-            else:
-                named[at] = (name, named[at][1] and certified)
+    definitions = definition_index(schema) if definitions is None else definitions
+    for form, names in definitions.owners.items():
+        found["definition"][form] = [(name, definitions.certified[name]) for name in names]
     for relation in schema.relations:
         note("relation", relation.type, [relation.type, *relation.aliases, *relation.synonyms], relation.certified)
     return found
@@ -184,9 +189,8 @@ def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -
     named: dict[str, set[str]] = {}
     for form, terms in schema_forms(schema)["type"].items():
         named.setdefault(form, set()).update(term for term, _ in terms)
-    for (owner, _), (forms, _) in _definition_forms(schema).items():
-        for form in forms:
-            named.setdefault(form, set()).add(owner)
+    for form, names in definition_index(schema).owners.items():
+        named.setdefault(form, set()).update(owner for owners in names.values() for owner in owners)
     for form, types in named.items():
         words = {stem(t) for t in tokenize(form)}
         if words and words <= stems:

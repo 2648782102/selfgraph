@@ -39,7 +39,7 @@ from .models import (
     Subgraph,
     TermCoverage,
 )
-from .terms import _definition_forms, expand_tokens, grounded_terms, schema_forms, stem
+from .terms import definition_index, expand_tokens, grounded_terms, schema_forms, stem
 
 _log = logging.getLogger("selfgraph")
 
@@ -1208,13 +1208,8 @@ def answerability(
     @param depth (int): the most hops between matched entities.
     @return (AnswerabilityReport): the coverage of each term, the connectivity, and the verdict.
     """
-    forms = schema_forms(schema)
-    definition_entries: dict[str, list[tuple[str, str]]] = {}
-    name_certified: dict[str, bool] = {}
-    for (owner, name), (forms_for_def, certified) in _definition_forms(schema).items():
-        name_certified[name] = name_certified.get(name, True) and certified
-        for form in forms_for_def:
-            definition_entries.setdefault(form, []).append((owner, name))
+    definitions = definition_index(schema)
+    forms = schema_forms(schema, definitions)
     explicit = terms is not None
     if terms is None:
         names = [n for e in entities for n in (e.name, *e.aliases)]
@@ -1245,14 +1240,15 @@ def answerability(
         else:
             status, declared = "missing", []
             for kind, named in kinds:
-                hits = [hit for form in named if words and _covers(words, form) for hit in named[form]]
+                covered = [form for form in named if words and _covers(words, form)]
+                hits = [hit for form in covered for hit in named[form]]
                 if kind == "definition":
-                    live = []
-                    for form in named:
-                        if not (words and _covers(words, form)):
-                            continue
-                        entries = definition_entries.get(form, ())
-                        live.extend((name, name_certified[name]) for owner, name in entries if owner in held["type"])
+                    live = [
+                        (name, definitions.certified[name])
+                        for form in covered
+                        for name, owners in definitions.owners[form].items()
+                        if any(owner in held["type"] for owner in owners)
+                    ]
                 else:
                     live = [(t, c) for t, c in hits if kind not in held or t in held[kind]]
                 if live:

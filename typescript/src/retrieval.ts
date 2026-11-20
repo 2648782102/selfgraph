@@ -32,7 +32,7 @@ import * as ops from "./ops.js";
 import type { GraphPrimitives, Props } from "./protocols.js";
 import type { ParsedSchema } from "./schema.js";
 import { decodeEntity } from "./serde.js";
-import { definitionForms, expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
+import { definitionIndex, expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
 import type { SeedTier } from "./tiers.js";
 import { checkOptions, keysOf, requireBool, requireInt, typeName } from "./validate.js";
 
@@ -1300,17 +1300,8 @@ export function answerability(
   schema: ParsedSchema | null,
   depth: number,
 ): AnswerabilityReport {
-  const found = schemaForms(schema);
-  const definitionEntries = new Map<string, Array<readonly [string, string]>>();
-  const nameCertified = new Map<string, boolean>();
-  for (const [owner, name, defForms, certified] of definitionForms(schema).values()) {
-    nameCertified.set(name, (nameCertified.get(name) ?? true) && certified);
-    for (const form of defForms) {
-      const entries = definitionEntries.get(form) ?? [];
-      entries.push([owner, name]);
-      definitionEntries.set(form, entries);
-    }
-  }
+  const definitions = definitionIndex(schema);
+  const found = schemaForms(schema, definitions);
   const explicit = terms !== null;
   const asked =
     terms ??
@@ -1360,13 +1351,13 @@ export function answerability(
       status = "missing";
       let declared: Array<readonly [string, boolean]> = [];
       for (const [kind, named] of kinds) {
-        const hits = words.length ? [...named].filter(([form]) => covers(words, form)).flatMap(([, hit]) => hit) : [];
+        const covered = words.length ? [...named.keys()].filter((form) => covers(words, form)) : [];
+        const hits = covered.flatMap((form) => named.get(form)!);
         let live: Array<readonly [string, boolean]> = [];
         if (kind === "definition") {
-          for (const [form] of named) {
-            if (!words.length || !covers(words, form)) continue;
-            for (const [owner, name] of definitionEntries.get(form) ?? []) {
-              if (held.type.has(owner)) live.push([name, nameCertified.get(name)!]);
+          for (const form of covered) {
+            for (const [name, owners] of definitions.owners.get(form)!) {
+              if (owners.some((owner) => held.type.has(owner))) live.push([name, definitions.certified.get(name)!]);
             }
           }
         } else {

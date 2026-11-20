@@ -5,7 +5,6 @@ import { canonicalEntityType, canonicalRelationType, entityIndex, lineage, type 
 export type Tokenize = (text: string) => Set<string>;
 
 export type SchemaTermKind = "type" | "definition" | "relation";
-export type DefinitionInfo = readonly [string, string, string[], boolean];
 
 const SINGULARS = new Map([
   ["calories", "calorie"],
@@ -79,29 +78,39 @@ function forms(names: readonly string[]): string[] {
   return [...new Set(names.flatMap((name) => [name, spaced(name)]))];
 }
 
+/** Each definition form's names and declaring types, and each name's certified flag across every declaration. */
+export interface DefinitionIndex {
+  owners: Map<string, Map<string, string[]>>;
+  certified: Map<string, boolean>;
+}
+
 /**
- * Map each definition, keyed by entity and name, to its declaring entity, name, surface forms, and certified flag.
+ * Index the schema's definitions by surface form, keeping every declaring entity type and every declaration.
  *
- * Keying by entity and name keeps definitions with a shared name or synonym distinct, so callers can tell which
- * declaring entity a form belongs to.
+ * A name declared twice by one type, or by several types, keeps the synonyms of every declaration.
  *
  * @param schema (ParsedSchema | null): the schema, or null for no definitions.
- * @return (Map<string, DefinitionInfo>): each definition's owner, name, forms, and certified flag.
+ * @return (DefinitionIndex): each form's definitions and declaring types, and each name's certified flag.
  */
-export function definitionForms(schema: ParsedSchema | null): Map<string, DefinitionInfo> {
-  const found = new Map<string, DefinitionInfo>();
-  if (schema === null) return found;
-  for (const entity of schema.entities) {
+export function definitionIndex(schema: ParsedSchema | null): DefinitionIndex {
+  const owners = new Map<string, Map<string, Set<string>>>();
+  const certified = new Map<string, boolean>();
+  for (const entity of schema?.entities ?? []) {
     for (const definition of entity.definitions) {
-      found.set(JSON.stringify([entity.name, definition.name]), [
-        entity.name,
-        definition.name,
-        forms([definition.name, ...definition.synonyms]),
-        definition.certified,
-      ]);
+      certified.set(definition.name, (certified.get(definition.name) ?? true) && definition.certified);
+      for (const form of forms([definition.name, ...definition.synonyms])) {
+        const names = owners.get(form) ?? new Map<string, Set<string>>();
+        names.set(definition.name, (names.get(definition.name) ?? new Set<string>()).add(entity.name));
+        owners.set(form, names);
+      }
     }
   }
-  return found;
+  return {
+    owners: new Map(
+      [...owners].map(([form, names]) => [form, new Map([...names].map(([name, types]) => [name, [...types]]))]),
+    ),
+    certified,
+  };
 }
 
 /**
@@ -136,13 +145,15 @@ export function groundedTerms(
 /**
  * Map every surface form of the schema's terms, by kind, to the terms it names and whether each is certified.
  *
- * Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the first term that declares it. A definition form names every definition that declares it, and a name declared by several entity types is certified only when all of them are.
+ * Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the first term that declares it. A definition form names every definition that declares it, and a name declared by several entity types, or twice by one, is certified only when every declaration is.
  *
  * @param schema (ParsedSchema | null): the schema, or null for no terms.
+ * @param definitions (DefinitionIndex): the schema's definition index when the caller already built it.
  * @return (Record<SchemaTermKind, Map<string, Array<readonly [string, boolean]>>>): for "type", "definition", and "relation", each form's terms and their certified flags.
  */
 export function schemaForms(
   schema: ParsedSchema | null,
+  definitions: DefinitionIndex = definitionIndex(schema),
 ): Record<SchemaTermKind, Map<string, Array<readonly [string, boolean]>>> {
   const found: Record<SchemaTermKind, Map<string, Array<readonly [string, boolean]>>> = {
     type: new Map(),
@@ -156,15 +167,11 @@ export function schemaForms(
   for (const entity of schema.entities) {
     note("type", entity.name, [entity.name, ...entity.aliases, ...entity.synonyms], entity.certified);
   }
-  for (const [, name, defForms, certified] of definitionForms(schema).values()) {
-    for (const form of defForms) {
-      const named = found.definition.get(form) ?? [];
-      const at = named.findIndex(([n]) => n === name);
-      const prior = named[at];
-      if (prior === undefined) named.push([name, certified]);
-      else named[at] = [name, prior[1] && certified];
-      found.definition.set(form, named);
-    }
+  for (const [form, names] of definitions.owners) {
+    found.definition.set(
+      form,
+      [...names.keys()].map((name) => [name, definitions.certified.get(name)!] as const),
+    );
   }
   for (const relation of schema.relations) {
     note("relation", relation.type, [relation.type, ...relation.aliases, ...relation.synonyms], relation.certified);
@@ -194,7 +201,9 @@ export function expandTokens(
   const named = new Map<string, Set<string>>();
   const add = (form: string, type: string) => named.set(form, (named.get(form) ?? new Set<string>()).add(type));
   for (const [form, terms] of schemaForms(schema).type) for (const [term] of terms) add(form, term);
-  for (const [owner, , defForms] of definitionForms(schema).values()) for (const form of defForms) add(form, owner);
+  for (const [form, names] of definitionIndex(schema).owners) {
+    for (const types of names.values()) for (const owner of types) add(form, owner);
+  }
   for (const [form, types] of named) {
     const words = [...tokenize(form)].map(stem);
     if (!words.length || !words.every((w) => stems.has(w))) continue;

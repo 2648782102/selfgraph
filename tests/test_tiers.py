@@ -3,7 +3,7 @@ from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_s
 
 from selfgraph import Schema, ValidationError, ids
 from selfgraph.runtime import build_graph
-from selfgraph.terms import _definition_forms, schema_forms, stem
+from selfgraph.terms import schema_forms, stem
 
 ACME = ids.relation_id("person:ann", "WORKS_AT", "company:acme")
 GLOBEX = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
@@ -210,18 +210,6 @@ def test_check_answerable_grounds_schema_synonyms_definitions_and_plurals():
     assert run(fresh_graph("tier").check_answerable("anything")).verdict == "not_answerable"
 
 
-def test_definitions_are_keyed_by_owner_and_name_without_joining_them():
-    schema = Schema.model_validate(
-        {
-            "entities": [
-                {"name": "A\x00B", "definitions": [{"name": "C", "expression": "x"}]},
-                {"name": "A", "definitions": [{"name": "B\x00C", "expression": "y"}]},
-            ]
-        }
-    )
-    assert list(_definition_forms(schema)) == [("A\x00B", "C"), ("A", "B\x00C")]
-
-
 def test_definition_terms_keep_their_entity_owners():
     schema = {
         "entities": [
@@ -283,53 +271,48 @@ def test_a_schema_only_shared_synonym_lists_every_definition_it_names():
     assert [(t.status, t.matches, t.certified) for t in report.terms] == [("schema_only", ["phase", "status"], True)]
 
 
-@pytest.mark.parametrize("beta_certified", [False, True])
-def test_a_shared_definition_name_is_certified_only_when_every_declaring_type_certifies_it(beta_certified):
+@pytest.mark.parametrize(("stored", "status"), [("Employee", "definition"), ("Person", "schema_only")])
+def test_a_shared_definition_name_is_certified_only_when_every_declaring_type_certifies_it(stored, status):
     schema = {
         "entities": [
             {
-                "name": "Alpha",
-                "definitions": [{"name": "phase", "expression": "a", "synonyms": ["grade"], "certified": True}],
+                "name": "Employee",
+                "definitions": [{"name": "status", "expression": "a", "synonyms": ["standing"], "certified": True}],
             },
-            {
-                "name": "Beta",
-                "definitions": [
-                    {"name": "phase", "expression": "b", "synonyms": ["grade"], "certified": beta_certified}
-                ],
-            },
+            {"name": "Project", "definitions": [{"name": "status", "expression": "b", "synonyms": ["phase"]}]},
+            {"name": "Invoice", "certified": True},
+            {"name": "InvoiceLine"},
+            {"name": "Person"},
         ]
     }
     g = fresh_graph("tier", schema=schema)
-    run(g.insert.facts({"entities": [{"type": "Alpha", "name": "Alice"}]}))
-    report = run(g.check_answerable("grade"))
-    assert [(t.status, t.matches, t.certified) for t in report.terms] == [("definition", ["phase"], beta_certified)]
+    entities = [{"type": t, "name": n} for t, n in ((stored, "Alice"), ("Invoice", "I1"), ("InvoiceLine", "L1"))]
+    run(g.insert.facts({"entities": entities}))
+    report = run(g.check_answerable("standing invoice", terms=["standing", "invoice"]))
+    assert [(t.term, t.status, t.matches, t.certified) for t in report.terms] == [
+        ("standing", status, ["status"], False),
+        ("invoice", "type", ["Invoice", "InvoiceLine"], True),
+    ]
 
 
-def test_distinct_matches_of_any_kind_are_certified_when_any_one_is():
+def test_a_definition_declared_twice_by_one_type_keeps_both_declarations():
     schema = {
         "entities": [
-            {"name": "Invoice", "certified": True},
-            {"name": "InvoiceLine"},
             {
-                "name": "Account",
+                "name": "Employee",
                 "definitions": [
-                    {"name": "status", "expression": "a", "certified": True},
-                    {"name": "statusCode", "expression": "b"},
+                    {"name": "status", "expression": "a", "synonyms": ["payroll marker"]},
+                    {"name": "status", "expression": "b"},
                 ],
             },
-        ],
-        "relations": [{"type": "PAID", "certified": True}, {"type": "PAID_BY"}],
+            {"name": "Person"},
+        ]
     }
     g = fresh_graph("tier", schema=schema)
-    entities = [{"type": t, "name": n} for t, n in (("Invoice", "I1"), ("InvoiceLine", "L1"), ("Account", "A1"))]
-    relations = [{"from_entity": "account:a1", "type": t, "to_entity": "invoice:i1"} for t in ("PAID", "PAID_BY")]
-    run(g.insert.facts({"entities": entities, "relations": relations}))
-    report = run(g.check_answerable("invoice paid status", terms=["invoice", "paid", "status"]))
-    assert [(t.term, t.status, t.certified) for t in report.terms] == [
-        ("invoice", "type", True),
-        ("paid", "relation", True),
-        ("status", "definition", True),
-    ]
+    run(g.insert.facts({"entities": [{"type": "Employee", "name": "Alice"}, {"type": "Person", "name": "Bob"}]}))
+    report = run(g.check_answerable("payroll marker", terms=["payroll marker"]))
+    assert [(t.status, t.matches) for t in report.terms] == [("definition", ["status"])]
+    assert [seed.id for seed in run(g.retrieve("payroll marker", depth=0)).seeds] == ["employee:alice"]
 
 
 def test_check_answerable_ignores_possessive_and_contraction_endings():
