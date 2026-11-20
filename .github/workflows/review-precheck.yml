@@ -26,7 +26,9 @@ jobs:
       - run: git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
         env:
           BASE: ${{ github.event.pull_request.base.ref }}
-      - run: python scripts/precheck.py --base "origin/${BASE}"
+      - run: |
+          git show "origin/${BASE}:scripts/precheck.py" > "$RUNNER_TEMP/precheck.py"
+          PRECHECK_REPO="$PWD" python "$RUNNER_TEMP/precheck.py" --base "origin/${BASE}"
         env:
           BASE: ${{ github.event.pull_request.base.ref }}
           SELFGRAPH_TEST_STORE: kuzu

@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from io import BytesIO
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.environ.get("PRECHECK_REPO") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PY_TEST_GLOB = "tests/"
 TS_TEST_SUFFIX = ".test.ts"
