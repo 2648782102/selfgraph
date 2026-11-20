@@ -721,7 +721,7 @@ def _not_guarding(path, name):
 
 
 def check_tests_on_main(files, base_commit, merge_base, python):
-    """Run changed tests against the base source and flag those that pass.
+    """Run changed tests against the base source and flag those that pass, unless the PR has the tests-ok label.
 
     @param files (list[tuple[str, str]]): changed files.
     @param base_commit (str): the base commit.
@@ -752,7 +752,8 @@ def check_tests_on_main(files, base_commit, merge_base, python):
     finally:
         shutil.rmtree(base_tree, ignore_errors=True)
     if messages:
-        return "fail", messages + notes
+        allowed = "tests-ok" in os.environ.get("PR_LABELS", "").split(",")
+        return ("warn", ["allowed for this PR (tests-ok)"] + messages + notes) if allowed else ("fail", messages + notes)
     tested = [fn for _, _, fn in nodes] + [t for ts in ts_tests.values() for t in ts]
     return "pass", [f"all {len(tested)} changed tests fail or error on main, so they guard the fix"] + notes
 
