@@ -26,7 +26,7 @@ from helpers import (
 import selfgraph
 from selfgraph._serde import from_iso
 from selfgraph.cli import _metadata, build_parser, main
-from selfgraph.errors import WARNING_HINTS, ValidationError
+from selfgraph.errors import WARNING_HINTS, SelfGraphError, ValidationError
 from selfgraph.runtime import parse_time, read_json
 
 
@@ -386,6 +386,21 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("SELFGRAPH_AUTH", "u:p")
     assert kuzu_main(tmp_path, "init") == 0
     assert "ignored" not in capsys.readouterr().err
+
+
+def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):
+    g = fresh_graph("export-error")
+    run(g.entities.create("Ada", "Person"))
+    parent = tmp_path / "notes"
+    parent.write_text("not a directory")
+    target = parent / "nested"
+    capsys.readouterr()
+
+    with pytest.raises(SelfGraphError) as raised:
+        cli(g, ["export", "obsidian", str(target)], capsys)
+    assert raised.value.code == "invalid_argument"
+    assert raised.value.field == "directory"
+    assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
 
 
 def test_version_and_help_text(capsys):
