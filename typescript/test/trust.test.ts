@@ -484,6 +484,16 @@ function suite(spec: StoreSpec): void {
     };
   };
 
+  const beforeApply = (g: SelfGraph, change: () => Promise<unknown>) => {
+    const access = (g.maintenance as unknown as { graph: { write: <T>(op: unknown) => Promise<T> } }).graph;
+    const write = access.write;
+    access.write = async <T>(op: unknown): Promise<T> => {
+      access.write = write;
+      await change();
+      return write.call(access, op) as Promise<T>;
+    };
+  };
+
   it("keeps a fact certified after the prune scan", async () => {
     const g = open();
     await g.insert.facts({ entities: ANN_AT_ACME.entities });
@@ -539,6 +549,29 @@ function suite(spec: StoreSpec): void {
       );
       const at = (id: string) => (id === moved ? ["company:globex", { role: "cfo" }] : ["company:acme", {}]);
       expect(stored).toEqual({ "relation:a": at("relation:a"), "relation:b": at("relation:b") });
+    },
+  );
+
+  it.each(["revision", "conflict"])(
+    "reports what dedupe merged after a duplicate changes since the plan (%s)",
+    async (change) => {
+      const g = open();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      await g.relations.create("person:ann", "WORKS_AT", "company:acme", {
+        id: "relation:a",
+        properties: { role: "cto" },
+      });
+      await g.relations.create("person:ann", "WORKS_AT", "company:acme", { id: "relation:b" });
+      const props: Record<string, number | string> = change === "revision" ? { since: 2020 } : { role: "cfo" };
+      beforeApply(g, () => g.relations.update("relation:b", { set_properties: props }));
+      const done = await g.maintenance.dedupeRelations({ dry_run: false });
+      expect(done.groups).toHaveLength(1);
+      const [group] = done.groups;
+      expect([group!.versions_lost, done.deleted!.deleted_relation_versions]).toEqual([{ "relation:b": 2 }, 2]);
+      expect(group!.conflicts).toEqual(change === "revision" ? {} : { "relation:b": ["role"] });
+      expect((await g.relations.get("relation:a"))!.properties).toEqual(
+        change === "revision" ? { role: "cto", since: 2020 } : { role: "cto" },
+      );
     },
   );
 

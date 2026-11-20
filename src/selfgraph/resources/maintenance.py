@@ -280,8 +280,8 @@ class Maintenance(Resource):
             _m.add_counts(counts, done)
             if now_certified:
                 held.append(group)
-            elif folded:
-                merged.append(_m.narrow_group(group, folded))
+            elif folded is not None:
+                merged.append(folded)
         result.groups = merged
         result.certified = sorted(held, key=lambda g: (g.from_entity, g.type, g.to_entity))
         result.note = _SURVIVOR_RULE if merged else None

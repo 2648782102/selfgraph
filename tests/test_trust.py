@@ -674,6 +674,42 @@ def test_dedupe_skips_a_relation_recreated_between_other_entities_after_its_scan
     }
 
 
+def _before_apply(monkeypatch, g, write):
+    """Run a write after a maintenance plan is made, right before its first apply transaction.
+
+    @param monkeypatch (pytest.MonkeyPatch): the fixture that swaps the graph's write.
+    @param g (SelfGraph): the graph.
+    @param write (Callable[[], Awaitable[Any]]): the write to run between plan and apply.
+    @return (None): nothing.
+    """
+    apply = g._write
+
+    async def wrapped(*args, **kwargs):
+        monkeypatch.setattr(g, "_write", apply)
+        await write()
+        return await apply(*args, **kwargs)
+
+    monkeypatch.setattr(g, "_write", wrapped)
+
+
+@pytest.mark.parametrize("change", ["revision", "conflict"])
+def test_dedupe_reports_what_it_merged_after_a_duplicate_changes_since_its_plan(monkeypatch, change):
+    g = fresh_graph("dedupe-race-applied")
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
+    run(g.relations.create("person:ann", "WORKS_AT", "company:acme", id="relation:a", properties={"role": "cto"}))
+    run(g.relations.create("person:ann", "WORKS_AT", "company:acme", id="relation:b"))
+    props = {"since": 2020} if change == "revision" else {"role": "cfo"}
+    _before_apply(monkeypatch, g, lambda: g.relations.update("relation:b", set_properties=props))
+    done = run(g.maintenance.dedupe_relations(dry_run=False))
+    [group] = done.groups
+    assert group.versions_lost == {"relation:b": 2} and done.deleted.deleted_relation_versions == 2
+    assert group.conflicts == ({} if change == "revision" else {"relation:b": ["role"]})
+    assert run(g.relations.get("relation:a")).properties == {
+        "role": "cto",
+        **({"since": 2020} if change == "revision" else {}),
+    }
+
+
 def test_dedupe_reports_only_the_duplicates_it_folded(monkeypatch):
     g = fresh_graph("dedupe-race-narrow")
     run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))

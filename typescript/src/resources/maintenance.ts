@@ -306,7 +306,7 @@ export class Maintenance extends Resource {
       );
       ops.addCounts(deleted, counts);
       if (nowCertified) held.push(group);
-      else if (folded.length) merged.push(m.narrowGroup(group, folded));
+      else if (folded !== null) merged.push(folded);
     }
     held.sort(
       (a, b) =>

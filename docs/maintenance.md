@@ -137,7 +137,8 @@ it to merge the group. An applied dedupe reads each group again under its
 source entity's lock, so a group certified after the scan is also left alone
 and listed in `certified`. A relation that no longer has the group's endpoints
 and type, such as one deleted and recreated between other entities, is not
-merged or deleted, and the applied result lists only the duplicates it folded.
+merged or deleted. The applied result is built from the merge itself: only the
+duplicates it folded, the keys each lost, and the versions it deleted.
 
 The `DedupeResult` lists each group's `survivor`, `duplicates`, `conflicts`,
 and `versions_lost` (each duplicate's version count, all deleted). It also has a

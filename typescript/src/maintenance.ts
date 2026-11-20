@@ -218,44 +218,43 @@ function earliest(timestamps: ReadonlyArray<Date | null>): Date | null {
 /**
  * Fold duplicate parallel relations into a survivor: merge properties, event time, and evidence, then delete.
  *
- * Properties are unioned with the survivor winning a conflict, then each duplicate in id order (see foldProperties). The survivor takes the earliest event_time of the group. Evidence is rewritten onto the survivor, which recounts its distinct sources. Every decision step that used any duplicate moves to the survivor before a duplicate is deleted, and deleting a duplicate never deletes a decision, so none is lost. The group is read again under its source entity's lock, and left alone when any of it is now certified. With ends, only relations that still have those endpoints and type are folded, and none when the survivor lost them.
+ * Properties are unioned with the survivor winning a conflict, then each duplicate in id order (see foldProperties). The survivor takes the earliest event_time of the group. Evidence is rewritten onto the survivor, which recounts its distinct sources. Every decision step that used any duplicate moves to the survivor before a duplicate is deleted, and deleting a duplicate never deletes a decision, so none is lost. The group is read again under its source entity's lock, and left alone when any of it is now certified. Only relations that still have the planned endpoints and type are folded, and none when the survivor lost them.
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
  * @param survivor (string): the relation id that is kept.
  * @param duplicates (readonly string[]): the relation ids folded into it.
- * @param ends (readonly [string, string, string] | null): the planned [from_entity, type, to_entity], checked again.
- * @return ([DeleteResult, boolean, string[]]): the delete counts of the removed duplicates, whether the group was left alone because a relation in it is certified, and the duplicates folded.
+ * @param ends (readonly [string, string, string]): the planned [from_entity, type, to_entity], checked again.
+ * @return ([DeleteResult, boolean, DedupeGroup | null]): the delete counts of the removed duplicates, whether the group was left alone because a relation in it is certified, and the group as merged (the duplicates folded, the keys each lost, and the versions deleted per duplicate), or null when none was.
  */
 export async function mergeRelations(
   runner: GraphPrimitives,
   ns: string,
   survivor: string,
   duplicates: readonly string[],
-  ends: readonly [string, string, string] | null = null,
-): Promise<[DeleteResult, boolean, string[]]> {
+  ends: readonly [string, string, string],
+): Promise<[DeleteResult, boolean, DedupeGroup | null]> {
   const counts = { ...ops.NO_DELETES };
   const planned = (rel: Relation | null): rel is Relation =>
-    rel !== null &&
-    (ends === null || (rel.from_entity === ends[0] && rel.type === ends[1] && rel.to_entity === ends[2]));
+    rel !== null && rel.from_entity === ends[0] && rel.type === ends[1] && rel.to_entity === ends[2];
   const before = await ops.getRelationCurrent(runner, ns, survivor);
-  if (before === null) return [counts, false, []];
+  if (before === null) return [counts, false, null];
   await runner.lockNode(ns, L_ENTITY, before.from_entity);
   const current = await ops.getRelationCurrent(runner, ns, survivor);
-  if (!planned(current)) return [counts, false, []];
+  if (!planned(current)) return [counts, false, null];
   const found: Relation[] = [];
   for (const rid of duplicates) {
     const rel = await ops.getRelationCurrent(runner, ns, rid);
     if (planned(rel)) found.push(rel);
   }
-  if ([current, ...found].some((rel) => rel.certified_at !== null)) return [counts, true, []];
-  if (!found.length) return [counts, false, []];
+  if ([current, ...found].some((rel) => rel.certified_at !== null)) return [counts, true, null];
+  if (!found.length) return [counts, false, null];
   const evidence: Evidence[] = [];
   for (const rel of found) {
     const rows = await ops.scan(ops.nodeListing(runner, ns, L_EVIDENCE, { equals: { target_id: rel.id } }));
     evidence.push(...rows.map(decodeEvidence));
   }
-  const [merged] = foldProperties(current, found);
+  const [merged, conflicts] = foldProperties(current, found);
   const first = earliest([current.event_time, ...found.map((rel) => rel.event_time)]);
   await ops.updateRelation(runner, ns, survivor, {
     set_properties: Object.fromEntries(
@@ -274,31 +273,23 @@ export async function mergeRelations(
   const rids = found.map((rel) => rel.id);
   const tids = await ops.tracesTouchingRelations(runner, ns, rids);
   await ops.repointSteps(runner, ns, tids, new Map(rids.map((rid) => [rid, survivor])));
+  const versionsLost: Record<string, number> = {};
   for (const rid of rids) {
-    counts.deleted_relation_versions += await runner.deleteEdges(ns, rid);
+    versionsLost[rid] = await runner.deleteEdges(ns, rid);
+    counts.deleted_relation_versions += versionsLost[rid];
     await ops.deleteEvidence(runner, ns, rid);
   }
   await ops.repointRetired(runner, ns, gone, survivor);
-  return [counts, false, rids];
-}
-
-/**
- * Restrict a planned dedupe group to the duplicates that were actually folded into its survivor.
- *
- * @param group (DedupeGroup): the planned group.
- * @param folded (readonly string[]): the duplicate ids merged at apply time.
- * @return (DedupeGroup): the group with only those duplicates, their conflicts, and their lost versions.
- */
-export function narrowGroup(group: DedupeGroup, folded: readonly string[]): DedupeGroup {
-  const kept = new Set(folded);
-  const only = <T>(record: Record<string, T>): Record<string, T> =>
-    Object.fromEntries(Object.entries(record).filter(([rid]) => kept.has(rid)));
-  return {
-    ...group,
-    duplicates: group.duplicates.filter((rid) => kept.has(rid)),
-    conflicts: only(group.conflicts),
-    versions_lost: only(group.versions_lost),
+  const group: DedupeGroup = {
+    from_entity: ends[0],
+    type: ends[1],
+    to_entity: ends[2],
+    survivor,
+    duplicates: rids,
+    conflicts,
+    versions_lost: versionsLost,
   };
+  return [counts, false, group];
 }
 
 export interface PruneBatch {
@@ -341,7 +332,7 @@ async function currentTouching(
  * @param eids (readonly string[]): the planned entity ids.
  * @param stillMatches ((e: Entity) => boolean): the prune criteria, applied to the entity as stored now.
  * @param includeCertified (boolean): also delete entities a certified relation connects.
- * @param caps (ReadonlyMap<string, ops.RelationCap> | null): the schema's max_count limits, to settle endpoints after deletes.
+ * @param caps (ReadonlyMap<string, ops.RelationCap>): the schema's max_count limits, to settle endpoints after deletes.
  * @return (PruneBatch): the delete counts, the entities and relations deleted, and the certified relations kept.
  */
 export async function pruneEntities(
@@ -350,7 +341,7 @@ export async function pruneEntities(
   eids: readonly string[],
   stillMatches: (e: Entity) => boolean,
   includeCertified: boolean,
-  caps: ReadonlyMap<string, ops.RelationCap> | null = null,
+  caps: ReadonlyMap<string, ops.RelationCap>,
 ): Promise<PruneBatch> {
   for (const eid of eids) await runner.lockNode(ns, L_ENTITY, eid);
   const planned = new Set(eids);
@@ -385,7 +376,7 @@ export async function pruneEntities(
  * @param rids (readonly string[]): the planned relation ids.
  * @param stillMatches ((r: Relation) => boolean): the prune criteria, applied to the relation as stored now.
  * @param includeCertified (boolean): also delete certified relations.
- * @param caps (ReadonlyMap<string, ops.RelationCap> | null): the schema's max_count limits, to settle endpoints after deletes.
+ * @param caps (ReadonlyMap<string, ops.RelationCap>): the schema's max_count limits, to settle endpoints after deletes.
  * @return (PruneBatch): the delete counts, the relations deleted, and the certified relations kept.
  */
 export async function pruneRelations(
@@ -394,7 +385,7 @@ export async function pruneRelations(
   rids: readonly string[],
   stillMatches: (r: Relation) => boolean,
   includeCertified: boolean,
-  caps: ReadonlyMap<string, ops.RelationCap> | null = null,
+  caps: ReadonlyMap<string, ops.RelationCap>,
 ): Promise<PruneBatch> {
   const doomed: string[] = [];
   const certified: string[] = [];

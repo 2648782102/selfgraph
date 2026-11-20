@@ -195,7 +195,7 @@ async def prune_entities(
     eids: list[str],
     still_matches: Callable[[Entity], bool],
     include_certified: bool,
-    caps: Mapping[str, _ops.RelationCap] | None = None,
+    caps: Mapping[str, _ops.RelationCap],
 ) -> PruneBatch:
     """Delete the entities a prune planned, after checking the plan again under their locks.
 
@@ -209,7 +209,7 @@ async def prune_entities(
     @param eids (list[str]): the planned entity ids.
     @param still_matches (Callable[[Entity], bool]): the prune criteria, applied to the entity as stored now.
     @param include_certified (bool): also delete entities a certified relation connects.
-    @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits, to settle endpoints after deletes.
+    @param caps (Mapping[str, RelationCap]): the schema's max_count limits, to settle endpoints after deletes.
     @return (PruneBatch): the delete counts, the entities and relations deleted, and the certified relations kept.
     """
     for eid in eids:
@@ -235,7 +235,7 @@ async def prune_relations(
     rids: list[str],
     still_matches: Callable[[Relation], bool],
     include_certified: bool,
-    caps: Mapping[str, _ops.RelationCap] | None = None,
+    caps: Mapping[str, _ops.RelationCap],
 ) -> PruneBatch:
     """Delete the relations a prune planned, after reading each again under its source entity's lock.
 
@@ -247,7 +247,7 @@ async def prune_relations(
     @param rids (list[str]): the planned relation ids.
     @param still_matches (Callable[[Relation], bool]): the prune criteria, applied to the relation as stored now.
     @param include_certified (bool): also delete certified relations.
-    @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits, to settle endpoints after deletes.
+    @param caps (Mapping[str, RelationCap]): the schema's max_count limits, to settle endpoints after deletes.
     @return (PruneBatch): the delete counts, the relations deleted, and the certified relations kept.
     """
     doomed: list[str] = []
@@ -298,65 +298,49 @@ def fold_properties(survivor: Relation, duplicates: list[Relation]) -> tuple[dic
     return merged, {rid: sorted(keys) for rid, keys in conflicts.items()}
 
 
-def narrow_group(group: DedupeGroup, folded: list[str]) -> DedupeGroup:
-    """Restrict a planned dedupe group to the duplicates that were actually folded into its survivor.
-
-    @param group (DedupeGroup): the planned group.
-    @param folded (list[str]): the duplicate ids merged at apply time.
-    @return (DedupeGroup): the group with only those duplicates, their conflicts, and their lost versions.
-    """
-    kept = set(folded)
-    return group.model_copy(
-        update={
-            "duplicates": [rid for rid in group.duplicates if rid in kept],
-            "conflicts": {rid: keys for rid, keys in group.conflicts.items() if rid in kept},
-            "versions_lost": {rid: n for rid, n in group.versions_lost.items() if rid in kept},
-        }
-    )
-
-
 async def merge_relations(
-    runner: Any, ns: str, survivor: str, duplicates: list[str], ends: tuple[str, str, str] | None = None
-) -> tuple[dict[str, int], bool, list[str]]:
+    runner: Any, ns: str, survivor: str, duplicates: list[str], ends: tuple[str, str, str]
+) -> tuple[dict[str, int], bool, DedupeGroup | None]:
     """Fold duplicate parallel relations into a survivor: merge properties, event time, and evidence, then delete.
 
     Properties are unioned with the survivor winning a conflict, then each duplicate in id order (see
     fold_properties). The survivor takes the earliest event_time of the group. Evidence is rewritten onto the
     survivor, which recounts its distinct sources. Every decision step that used any duplicate moves to the
     survivor before a duplicate is deleted, and deleting a duplicate never deletes a decision, so none is lost.
-    The group is read again under its source entity's lock, and left alone when any of it is now certified. With
-    ends, only relations that still have those endpoints and type are folded, and none when the survivor lost them.
+    The group is read again under its source entity's lock, and left alone when any of it is now certified. Only
+    relations that still have the planned endpoints and type are folded, and none when the survivor lost them.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param survivor (str): the relation id that is kept.
     @param duplicates (list[str]): the relation ids folded into it.
-    @param ends (tuple[str, str, str] | None): the planned (from_entity, type, to_entity), checked again.
-    @return (tuple[dict[str, int], bool, list[str]]): the DeleteResult counts of the removed duplicates, whether the
-        group was left alone because a relation in it is certified, and the duplicates folded.
+    @param ends (tuple[str, str, str]): the planned (from_entity, type, to_entity), checked again.
+    @return (tuple[dict[str, int], bool, DedupeGroup | None]): the DeleteResult counts of the removed duplicates,
+        whether the group was left alone because a relation in it is certified, and the group as merged (the
+        duplicates folded, the keys each lost, and the versions deleted per duplicate), or None when none was.
     """
     counts = dict(_ops._NO_DELETES)
 
     def planned(rel: Relation | None) -> bool:
-        return rel is not None and (ends is None or (rel.from_entity, rel.type, rel.to_entity) == ends)
+        return rel is not None and (rel.from_entity, rel.type, rel.to_entity) == ends
 
     current = await _ops.get_relation_current(runner, ns, survivor)
     if current is None:
-        return counts, False, []
+        return counts, False, None
     await runner.lock_node(ns, L_ENTITY, current.from_entity)
     current = await _ops.get_relation_current(runner, ns, survivor)
     if not planned(current):
-        return counts, False, []
+        return counts, False, None
     found = [rel for rid in duplicates if planned(rel := await _ops.get_relation_current(runner, ns, rid))]
     if any(rel.certified_at is not None for rel in (current, *found)):
-        return counts, True, []
+        return counts, True, None
     if not found:
-        return counts, False, []
+        return counts, False, None
     evidence = []
     for rel in found:
         rows = await _ops._paged(partial(runner.match_nodes, ns, L_EVIDENCE, equals={"target_id": rel.id}))
         evidence.extend(decode_evidence(row) for row in rows)
-    merged, _ = fold_properties(current, found)
+    merged, conflicts = fold_properties(current, found)
     first = min((aware(r.event_time) for r in (current, *found) if r.event_time is not None), default=None)
     same_time = to_iso(first) == to_iso(current.event_time)
     await _ops.update_relation(
@@ -374,11 +358,22 @@ async def merge_relations(
     found = [rel.id for rel in found]
     tids = await _ops._traces_touching_relations(runner, ns, found)
     await _ops._repoint_steps(runner, ns, tids, dict.fromkeys(found, survivor))
+    versions_lost: dict[str, int] = {}
     for rid in found:
-        counts["deleted_relation_versions"] += await runner.delete_edges(ns, rid)
+        versions_lost[rid] = await runner.delete_edges(ns, rid)
+        counts["deleted_relation_versions"] += versions_lost[rid]
         await _ops._delete_evidence(runner, ns, rid)
     await _ops.repoint_retired(runner, ns, gone, survivor)
-    return counts, False, found
+    group = DedupeGroup(
+        from_entity=ends[0],
+        type=ends[1],
+        to_entity=ends[2],
+        survivor=survivor,
+        duplicates=found,
+        conflicts=conflicts,
+        versions_lost=versions_lost,
+    )
+    return counts, False, group
 
 
 def lint(
