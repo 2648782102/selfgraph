@@ -17,7 +17,18 @@ from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
 from .client import SelfGraph
-from .errors import STORE_KUZU_HINT, NotFoundError, StoreError, ValidationError, needs_llm, setting_hint, surface_hint
+from .errors import (
+    STORE_KUZU_HINT,
+    NotFoundError,
+    StoreError,
+    ValidationError,
+    mask_uri,
+    needs_llm,
+    require_encoded_userinfo,
+    setting_hint,
+    split_scheme,
+    surface_hint,
+)
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace
 from .llm.base import check_llm_config
@@ -396,15 +407,16 @@ def ignored_settings(settings: GraphSettings) -> list[str]:
 
 
 def _require_server_uri(kind: str, uri: str) -> None:
-    """Reject a scheme-less URI that looks like a file path for a server store, which is a Kuzu path by mistake.
+    """Reject a server store URI with an unencoded user or password, or a scheme-less one that is a Kuzu path.
 
     @param kind (str): the resolved store name.
     @param uri (str): the configured URI.
-    @return (None): nothing; raises ValidationError on a path.
+    @return (None): nothing; raises ValidationError on a path or on an unencoded user or password.
     """
-    if "://" not in uri and (uri.endswith(".kuzu") or "/" in uri or os.sep in uri):
+    require_encoded_userinfo(uri)
+    if not split_scheme(uri)[0] and (uri.endswith(".kuzu") or "/" in uri or os.sep in uri):
         raise ValidationError(
-            f"{uri!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}",
+            f"{mask_uri(uri)!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}",
             code="invalid_setting",
             field="uri",
         )
@@ -413,27 +425,30 @@ def _require_server_uri(kind: str, uri: str) -> None:
 def _falkor_address(uri: str) -> tuple[Any, int | None, bool]:
     """Parse a FalkorDB address: host:port, or a redis://, rediss://, falkor://, or falkors:// URL.
 
+    urlparse refuses some netlocs (such as an unbalanced [ or ] in the host) with a ValueError that quotes the netloc,
+    so that error is turned into the masked address error after its except block, leaving it out of the traceback.
+
     @param uri (str): the address.
     @return (tuple[Any, int | None, bool]): the parsed URL, its port (None when absent), and whether it asks for
         TLS (rediss:// or falkors://).
     """
     from urllib.parse import urlparse
 
-    scheme = uri.partition("://")[0].lower() if "://" in uri else ""
+    scheme = split_scheme(uri)[0].lower()
     if scheme and scheme not in _FALKOR_SCHEMES:
         raise ValidationError(
-            f"invalid FalkorDB address {uri!r}: the 'falkordb' store expects {_FALKOR_ADDRESS}",
+            f"invalid FalkorDB address {mask_uri(uri)!r}: the 'falkordb' store expects {_FALKOR_ADDRESS}",
             code="invalid_setting",
             field="uri",
         )
-    parsed = urlparse(uri if scheme else f"//{uri}")
     try:
+        parsed = urlparse(uri if scheme else f"//{uri}")
         port = parsed.port
     except ValueError:
-        port = 0
+        parsed, port = None, 0
     if port == 0:
         raise ValidationError(
-            f"invalid FalkorDB address {uri!r}: expected host:port with a port from 1 to 65535",
+            f"invalid FalkorDB address {mask_uri(uri)!r}: expected host:port with a port from 1 to 65535",
             code="invalid_setting",
             field="uri",
         )

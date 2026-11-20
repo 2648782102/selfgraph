@@ -4,11 +4,14 @@ import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
 import {
+  maskUri,
   NotFoundError,
   needsLlm,
+  requireEncodedUserinfo,
   STORE_KUZU_HINT,
   StoreError,
   settingHint,
+  splitScheme,
   surfaceHint,
   ValidationError,
 } from "./errors.js";
@@ -425,22 +428,23 @@ const boltOptions = (settings: GraphSettings) => ({ auth: settings.auth, databas
  * @return ({ url: URL; tls: boolean }): the parsed URL and whether it asks for TLS (rediss:// or falkors://).
  */
 function falkorAddress(uri: string): { url: URL; tls: boolean } {
-  const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : "";
+  const [rawScheme, rest] = splitScheme(uri);
+  const scheme = rawScheme.toLowerCase();
   if (scheme && !FALKOR_SCHEMES.includes(scheme)) {
     throw new ValidationError(
-      `invalid FalkorDB address ${pyRepr(uri)}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
+      `invalid FalkorDB address ${pyRepr(maskUri(uri))}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
       { code: "invalid_setting", field: "uri" },
     );
   }
   let url: URL | null;
   try {
-    url = new URL(scheme ? `redis${uri.slice(scheme.length)}` : `redis://${uri}`);
+    url = pyRefusesNetloc(rest) ? null : new URL(scheme ? `redis${uri.slice(scheme.length)}` : `redis://${uri}`);
   } catch {
     url = null;
   }
   if (url === null || url.port === "0") {
     throw new ValidationError(
-      `invalid FalkorDB address ${pyRepr(uri)}: expected host:port with a port from 1 to 65535`,
+      `invalid FalkorDB address ${pyRepr(maskUri(uri))}: expected host:port with a port from 1 to 65535`,
       { code: "invalid_setting", field: "uri" },
     );
   }
@@ -501,7 +505,20 @@ export function ignoredSettings(settings: GraphSettings): Array<"auth" | "databa
 }
 
 /**
- * Require a server store's address: present, not a Kuzu path, and for FalkorDB a host:port or redis:// style URL.
+ * Whether a FalkorDB netloc has an unbalanced [ or ], which Python's urlsplit refuses, so both SDKs reject the same
+ * addresses.
+ *
+ * @param rest (string): the URI after its scheme and ://, or the whole URI when it has no scheme.
+ * @return (boolean): true when the netloc holds a [ without a ], or a ] without a [.
+ */
+function pyRefusesNetloc(rest: string): boolean {
+  const netloc = rest.split(/[/?#]/, 1)[0] ?? "";
+  return netloc.includes("[") !== netloc.includes("]");
+}
+
+/**
+ * Require a server store's address: present, with its user and password encoded, not a Kuzu path, and for FalkorDB a
+ * host:port or redis:// style URL.
  *
  * @param kind (string): the resolved server store name.
  * @param uri (string | null): the configured URI.
@@ -513,9 +530,10 @@ function requireStoreUri(kind: string, uri: string | null): void {
       { code: "invalid_setting", field: "uri" },
     );
   }
-  if (!uri.includes("://") && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
+  requireEncodedUserinfo(uri);
+  if (!splitScheme(uri)[0] && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
     throw new ValidationError(
-      `${pyRepr(uri)} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
+      `${pyRepr(maskUri(uri))} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
       { code: "invalid_setting", field: "uri" },
     );
   }

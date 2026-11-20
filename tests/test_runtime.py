@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 import weakref
 from types import SimpleNamespace
 
@@ -10,7 +11,16 @@ from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
 from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
 from selfgraph._serde import LABELS
-from selfgraph.errors import StoreError, TransientError, ValidationError, surface_hint
+from selfgraph.errors import (
+    StoreError,
+    TransientError,
+    ValidationError,
+    mask_uri,
+    redact_uri,
+    require_encoded_userinfo,
+    split_scheme,
+    surface_hint,
+)
 from selfgraph.models import CypherResult
 from selfgraph.runtime import (
     GraphSettings,
@@ -23,7 +33,7 @@ from selfgraph.runtime import (
     to_jsonable,
 )
 from selfgraph.stores import cypher
-from selfgraph.stores._cypher import bolt_auth, bolt_error, parse_auth, query_error
+from selfgraph.stores._cypher import bolt_auth, bolt_driver, bolt_error, parse_auth, query_error
 from selfgraph.stores.cypher import CypherStore
 from selfgraph.stores.hydradb import HydraDBStore
 from selfgraph.stores.kuzu import _kuzu_error
@@ -256,6 +266,163 @@ def test_store_errors_are_plain_and_actionable():
     assert str(authed._error(unauthorized)).startswith("authentication failed for bolt://127.0.0.1:1")
     run(store.close())
     run(authed.close())
+
+
+def test_store_errors_hide_uri_credentials():
+    assert mask_uri("redis://u:pw@host:1") == "redis://***@host:1"
+    assert mask_uri("u:pw@host:1") == "***@host:1"
+    assert mask_uri("bolt://host:7687") == "bolt://host:7687"
+    assert mask_uri("/tmp/graph.kuzu") == "/tmp/graph.kuzu"
+    assert mask_uri("bolt://u:pw@127.0.0.1:7687?a=b@c") == "bolt://***@127.0.0.1:7687?a=b@c"
+    assert mask_uri("bolt://h:1/db@x") == "bolt://h:1/db@x"
+    quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x"
+    for shown in (repr(quoted), json.dumps(quoted), quoted):
+        assert "ss3cr3t" not in redact_uri(f"Given URI: {shown}", quoted), shown
+    assert redact_uri(f"Given URI: {quoted!r}", quoted) == "Given URI: 'bolt://***@127.0.0.1:7687/db\"x'"
+    assert redact_uri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1") == "Given URI: 'bolt://***@h:1'"
+    dollar = "bolt://u:pw@h:1/d$&b"
+    assert redact_uri(f"x {dollar} y", dollar) == "x bolt://***@h:1/d$&b y"
+    assert mask_uri("u:p\uff20ss@h:1") == "***@h:1"
+    for at in ("\uff20", "\ufe6b"):
+        assert mask_uri(f"admin:s3cr3tPW{at}127.0.0.1:6379") == f"***{at}127.0.0.1:6379"
+        assert mask_uri(f"redis://admin:s3cr3tPW{at}127.0.0.1:6379") == f"redis://***{at}127.0.0.1:6379"
+        netloc = f"admin:s3cr3tPW{at}127.0.0.1:7687"
+        assert (
+            redact_uri(f"netloc {netloc!r} is invalid", f"bolt://{netloc}")
+            == f"netloc '***{at}127.0.0.1:7687' is invalid"
+        )
+    assert redact_uri("x u:pw$'@h y", "bolt://u:pw$'@h") == "x ***@h y"
+    leaks = ("hun", "ter2")
+    for store, uri in (
+        ("falkordb", "redis://u:hunter2@host:99999"),
+        ("falkordb", "http://u:hunter2@host:1"),
+        ("falkordb", "u:hunter2@host:6379/0"),
+        ("falkordb", "redis://u:hun\nter2@host:99999"),
+        ("neo4j", "u:hunter2@host/db"),
+    ):
+        with pytest.raises(ValidationError) as caught:
+            build_graph(GraphSettings(store=store, uri=uri))
+        assert "***@host" in str(caught.value) and not any(x in str(caught.value) for x in leaks), uri
+    for uri in (
+        "bolt://u:hunter2@host:7687",
+        "bolt://u:hun\nter2@host:7687",
+        "bolt://u:it's\"2@host:7687",
+        "bolt://u:it'shunter2@host:7687/db\"x",
+    ):
+        with pytest.raises(StoreError) as caught:
+            bolt_driver(uri, None)
+        assert "bolt://***@host:7687" in str(caught.value) and not any(
+            x in str(caught.value) for x in (*leaks, "it")
+        ), uri
+        assert caught.value.__cause__ is None and caught.value.__context__ is None, uri
+        shown = "".join(traceback.format_exception(caught.value))
+        assert not any(x in shown for x in (*leaks, "it's", "it\\'s")), uri
+    with pytest.raises(StoreError, match=r"^'http://\*\*\*@h:1' is not a Bolt URI"):
+        bolt_driver("http://u:hunter2@h:1", None)
+    denied = DriverError("Neo.ClientError.Security.Unauthorized", "invalid credentials")
+    assert str(bolt_error(denied, "bolt://u:hunter2@h:1", None)) == (
+        "authentication failed for bolt://***@h:1: check the token/password"
+    )
+    down = DriverError("", "Couldn't connect to bolt://u:hunter2@h:1")
+    assert str(bolt_error(down, "bolt://u:hunter2@h:1", None)).startswith("could not connect to bolt://***@h:1: ")
+    assert "hunter2" not in str(bolt_error(down, "bolt://u:hunter2@h:1", None))
+
+
+def test_store_uris_with_unencoded_userinfo_are_rejected():
+    unencoded = (
+        "the store URI has an unencoded character in its user or password; "
+        "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)"
+    )
+    for sep in ("/", "?", "#", "@", "[", "]", "\uff20", "\ufe6b", "\uff0f", "\uff1f", "\uff03", "\uff1a", "\uff3b"):
+        for store, uri in (
+            ("falkordb", f"redis://u:pa{sep}s3cr3tPW@127.0.0.1:6379"),
+            ("falkordb", f"u:pa{sep}s3cr3tPW@127.0.0.1:6379"),
+            ("neo4j", f"bolt://u:pa{sep}s3cr3tPW@127.0.0.1:7687"),
+            ("neo4j", f"u:pa{sep}s3cr3tPW@127.0.0.1:7687"),
+            ("hydradb", f"bolt://u:pa{sep}s3cr3tPW@127.0.0.1:7687"),
+            ("memgraph", f"bolt://u:pa{sep}s3cr3tPW@127.0.0.1:7687"),
+            ("cypher", f"bolt://u:pa{sep}s3cr3tPW@127.0.0.1:7687"),
+        ):
+            with pytest.raises(ValidationError) as caught:
+                build_graph(GraphSettings(store=store, uri=uri))
+            assert str(caught.value) == unencoded, (store, uri)
+            assert "cr3t" not in "".join(traceback.format_exception(caught.value)), (store, uri)
+        for uri in (f"bolt://u:pa{sep}s3cr3tPW@127.0.0.1:7687", f"http://u:pa{sep}s3cr3tPW@127.0.0.1:7687"):
+            with pytest.raises(ValidationError) as caught:
+                bolt_driver(uri, None)
+            assert str(caught.value) == unencoded, uri
+            assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
+    in_password = "admin:s3cr3tPW://x@127.0.0.1:6379"
+    lookalike_at = [
+        f"{scheme}{who}{at}127.0.0.1:7687"
+        for scheme in ("", "bolt://", "redis://")
+        for at in "\uff20\ufe6b"
+        for who in ("S3cr3tTOKEN", "admin:s3cr3tPW")
+    ]
+    misplaced = (
+        "redis://u:p[s3cr3t]@[::1]:6379",
+        "bolt://S3cr3tTOKEN\uff3b@[::1]:7687",
+        "bolt://admin:S3cr3t/PW\uff20127.0.0.1:7687",
+        "bolt://admin:S3cr3t?PW\uff20127.0.0.1:7687",
+        "bolt://S3cr3tTOK/EN\ufe6b127.0.0.1:7687",
+        "redis://admin:S3cr3t/PW\uff20127.0.0.1:6379",
+        "bolt://u:s3cr3t@h\uff0fx:7687",
+        "bolt://u:s3cr3t@[::1\uff3d:7687",
+        "bolt://h:7687/db\uff20s3cr3t",
+    )
+    for uri in (in_password, *lookalike_at, *misplaced):
+        for store in ("falkordb", "neo4j", "hydradb", "memgraph", "cypher"):
+            with pytest.raises(ValidationError) as caught:
+                build_graph(GraphSettings(store=store, uri=uri))
+            assert str(caught.value) == unencoded, (store, uri)
+            assert (caught.value.code, caught.value.field) == ("invalid_setting", "uri"), (store, uri)
+            assert "cr3t" not in "".join(traceback.format_exception(caught.value)), (store, uri)
+        with pytest.raises(ValidationError) as caught:
+            bolt_driver(uri, None)
+        assert str(caught.value) == unencoded, uri
+        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
+    for uri in ("bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1", in_password):
+        with pytest.raises(ValidationError, match=r"^the store URI has an unencoded character"):
+            bolt_driver(uri, None)
+    assert split_scheme("bolt://h:1") == ("bolt", "h:1")
+    assert split_scheme("a+b.c-d://h") == ("a+b.c-d", "h")
+    for uri in (in_password, "h:6379", "1x://h", "://h", "/tmp/a://b"):
+        assert split_scheme(uri) == ("", uri), uri
+    for uri in (
+        "bolt://u:p%2Fa%3Fb%23c%40d@127.0.0.1:7687",
+        "neo4j://127.0.0.1:7687/db?x=y#z",
+        "redis://u:pw@host:6379/0",
+        "host:6379",
+        "/tmp/graph.kuzu",
+        "bolt://[::1]:7687",
+        "bolt://u:pw@[::1]:7687",
+        "redis://u:p%5Bw%5D@[fe80::1]:6379",
+        "neo4j://h:7687/db?x=[1]",
+        "bolt://us\u00e9r:p\u00e4ss@h\u00f4st:7687",
+    ):
+        require_encoded_userinfo(uri)
+    for store, uri in (
+        ("neo4j", "bolt://[::1]:7687"),
+        ("falkordb", "redis://u:p%5Bw%5D@[::1]:6379"),
+        ("falkordb", "redis://us\u00e9r:p\u00e4ss@h:6379"),
+    ):
+        check_settings(GraphSettings(store=store, uri=uri))
+    run(bolt_driver("bolt://[::1]:7687", None).close())
+
+
+def test_falkordb_addresses_urlparse_refuses_are_masked():
+    for uri, masked in (
+        ("redis://u:s3cr3tPW@127.0.0.1[:6379", "redis://***@127.0.0.1[:6379"),
+        ("redis://u:s3cr3tPW@[::1:6379", "redis://***@[::1:6379"),
+        ("u:s3cr3tPW@::1]:6379", "***@::1]:6379"),
+    ):
+        with pytest.raises(ValidationError) as caught:
+            build_graph(GraphSettings(store="falkordb", uri=uri))
+        assert str(caught.value) == (
+            f"invalid FalkorDB address {masked!r}: expected host:port with a port from 1 to 65535"
+        ), uri
+        assert caught.value.__cause__ is None and caught.value.__context__ is None, uri
+        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
 
 
 def test_bolt_initialize_skips_existing_constraints():

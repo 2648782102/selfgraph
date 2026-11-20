@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as chunking from "../src/chunking.js";
-import { surfaceHint } from "../src/errors.js";
+import { maskUri, redactUri, requireEncodedUserinfo, splitScheme, surfaceHint } from "../src/errors.js";
 import type { Extractor, GraphPrimitives, GraphStore, JsonObject, Strategy } from "../src/index.js";
 import {
   ConflictError,
@@ -19,10 +19,11 @@ import {
   TransientError,
   ValidationError,
 } from "../src/index.js";
+import { pyRepr } from "../src/internal/py.js";
 import { childEdgeId, LABELS } from "../src/labels.js";
 import { Extraction, parseOrThrow } from "../src/models.js";
 import { HUB_DEGREE } from "../src/retrieval.js";
-import { boltError, parseAuth, queryError } from "../src/stores/bolt.js";
+import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { forEachStore, freshGraphs, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
@@ -1407,6 +1408,208 @@ describe("store setup errors", () => {
     const down = err("ServiceUnavailable", "Failed to connect to server");
     expect(boltError(down, "bolt://h:1", null)?.message).toMatch(/^could not connect to bolt:\/\/h:1: /);
     expect(boltError(err("Neo.ClientError.Statement.SyntaxError", "bad"), "bolt://h:1", null)).toBeNull();
+  });
+
+  it("hides the user and password of a store URI in every error", () => {
+    expect(maskUri("redis://u:pw@host:1")).toBe("redis://***@host:1");
+    expect(maskUri("u:pw@host:1")).toBe("***@host:1");
+    expect(maskUri("bolt://host:7687")).toBe("bolt://host:7687");
+    expect(maskUri("/tmp/graph.kuzu")).toBe("/tmp/graph.kuzu");
+    expect(maskUri("bolt://u:pw@127.0.0.1:7687?a=b@c")).toBe("bolt://***@127.0.0.1:7687?a=b@c");
+    expect(maskUri("bolt://h:1/db@x")).toBe("bolt://h:1/db@x");
+    const quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x";
+    for (const shown of [pyRepr(quoted), JSON.stringify(quoted), quoted]) {
+      expect(redactUri(`Given URI: ${shown}`, quoted)).not.toContain("ss3cr3t");
+    }
+    expect(redactUri(`Given URI: ${pyRepr(quoted)}`, quoted)).toBe("Given URI: 'bolt://***@127.0.0.1:7687/db\"x'");
+    expect(redactUri("Given URI: 'bolt://u:hun\\nter2@h:1'", "bolt://u:hun\nter2@h:1")).toBe(
+      "Given URI: 'bolt://***@h:1'",
+    );
+    const dollar = "bolt://u:pw@h:1/d$&b";
+    expect(redactUri(`x ${dollar} y`, dollar)).toBe("x bolt://***@h:1/d$&b y");
+    expect(maskUri("u:p\uff20ss@h:1")).toBe("***@h:1");
+    for (const at of ["\uff20", "\ufe6b"]) {
+      expect(maskUri(`admin:s3cr3tPW${at}127.0.0.1:6379`)).toBe(`***${at}127.0.0.1:6379`);
+      expect(maskUri(`redis://admin:s3cr3tPW${at}127.0.0.1:6379`)).toBe(`redis://***${at}127.0.0.1:6379`);
+      const netloc = `admin:s3cr3tPW${at}127.0.0.1:7687`;
+      expect(redactUri(`netloc ${pyRepr(netloc)} is invalid`, `bolt://${netloc}`)).toBe(
+        `netloc '***${at}127.0.0.1:7687' is invalid`,
+      );
+    }
+    expect(redactUri("x u:pw$'@h y", "bolt://u:pw$'@h")).toBe("x ***@h y");
+    const leaks = ["hun", "ter2"];
+    for (const [store, uri] of [
+      ["falkordb", "redis://u:hunter2@host:99999"],
+      ["falkordb", "http://u:hunter2@host:1"],
+      ["falkordb", "u:hunter2@host:6379/0"],
+      ["falkordb", "redis://u:hun\nter2@host:99999"],
+      ["neo4j", "u:hunter2@host/db"],
+    ] as const) {
+      let message = "";
+      try {
+        SelfGraph.connect({ store, uri });
+      } catch (exc) {
+        message = (exc as Error).message;
+      }
+      expect(message).toContain("***@host");
+      for (const leak of leaks) expect(message).not.toContain(leak);
+    }
+    expect(() => openDriver("http://u:hunter2@h:1", null, {})).toThrow(
+      new StoreError("'http://***@h:1' is not a Bolt URI; use bolt://host:port", {
+        code: "invalid_setting",
+        field: "uri",
+      }),
+    );
+    let refused: unknown;
+    try {
+      openDriver("bolt://u:hunter2@h:1?routing=x", null, {});
+    } catch (exc) {
+      refused = exc;
+    }
+    expect(refused).toBeInstanceOf(StoreError);
+    expect((refused as StoreError).message).toContain("Given URL: 'bolt://***@h:1?routing=x'");
+    expect((refused as StoreError).message).not.toContain("hunter2");
+    expect((refused as StoreError).cause).toBeUndefined();
+    const denied = err("Neo.ClientError.Security.Unauthorized", "invalid credentials");
+    expect(boltError(denied, "bolt://u:hunter2@h:1", null)?.message).toBe(
+      "authentication failed for bolt://***@h:1: check the token/password",
+    );
+    const down = err("ServiceUnavailable", "Couldn't connect to bolt://u:hunter2@h:1");
+    const message = boltError(down, "bolt://u:hunter2@h:1", null)?.message ?? "";
+    expect(message).toMatch(/^could not connect to bolt:\/\/\*\*\*@h:1: /);
+    expect(message).not.toContain("hunter2");
+  });
+
+  it("rejects a store URI whose user or password has an unencoded /, ?, #, @, [ or ], or an NFKC lookalike", async () => {
+    const unencoded =
+      "the store URI has an unencoded character in its user or password; " +
+      "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)";
+    const rejection = (open: () => unknown): Error => {
+      try {
+        open();
+      } catch (exc) {
+        return exc as Error;
+      }
+      throw new Error("expected a rejection");
+    };
+    for (const sep of [
+      "/",
+      "?",
+      "#",
+      "@",
+      "[",
+      "]",
+      "\uff20",
+      "\ufe6b",
+      "\uff0f",
+      "\uff1f",
+      "\uff03",
+      "\uff1a",
+      "\uff3b",
+    ]) {
+      for (const [store, uri] of [
+        ["falkordb", `redis://u:pa${sep}s3cr3tPW@127.0.0.1:6379`],
+        ["falkordb", `u:pa${sep}s3cr3tPW@127.0.0.1:6379`],
+        ["neo4j", `bolt://u:pa${sep}s3cr3tPW@127.0.0.1:7687`],
+        ["neo4j", `u:pa${sep}s3cr3tPW@127.0.0.1:7687`],
+        ["hydradb", `bolt://u:pa${sep}s3cr3tPW@127.0.0.1:7687`],
+        ["memgraph", `bolt://u:pa${sep}s3cr3tPW@127.0.0.1:7687`],
+        ["cypher", `bolt://u:pa${sep}s3cr3tPW@127.0.0.1:7687`],
+      ] as const) {
+        const exc = rejection(() => SelfGraph.connect({ store, uri }));
+        expect(exc).toBeInstanceOf(ValidationError);
+        expect(exc.message).toBe(unencoded);
+        expect(exc.cause).toBeUndefined();
+        expect(exc.stack ?? "").not.toContain("cr3t");
+      }
+      for (const uri of [`bolt://u:pa${sep}s3cr3tPW@127.0.0.1:7687`, `http://u:pa${sep}s3cr3tPW@127.0.0.1:7687`]) {
+        const exc = rejection(() => openDriver(uri, null, {}));
+        expect(exc).toBeInstanceOf(ValidationError);
+        expect(exc.message).toBe(unencoded);
+        expect(exc.stack ?? "").not.toContain("cr3t");
+      }
+    }
+    const inPassword = "admin:s3cr3tPW://x@127.0.0.1:6379";
+    const lookalikeAt = ["", "bolt://", "redis://"].flatMap((scheme) =>
+      ["\uff20", "\ufe6b"].flatMap((at) =>
+        ["S3cr3tTOKEN", "admin:s3cr3tPW"].map((who) => `${scheme}${who}${at}127.0.0.1:7687`),
+      ),
+    );
+    const misplaced = [
+      "redis://u:p[s3cr3t]@[::1]:6379",
+      "bolt://S3cr3tTOKEN\uff3b@[::1]:7687",
+      "bolt://admin:S3cr3t/PW\uff20127.0.0.1:7687",
+      "bolt://admin:S3cr3t?PW\uff20127.0.0.1:7687",
+      "bolt://S3cr3tTOK/EN\ufe6b127.0.0.1:7687",
+      "redis://admin:S3cr3t/PW\uff20127.0.0.1:6379",
+      "bolt://u:s3cr3t@h\uff0fx:7687",
+      "bolt://u:s3cr3t@[::1\uff3d:7687",
+      "bolt://h:7687/db\uff20s3cr3t",
+    ];
+    for (const uri of [inPassword, ...lookalikeAt, ...misplaced]) {
+      for (const store of ["falkordb", "neo4j", "hydradb", "memgraph", "cypher"] as const) {
+        const exc = rejection(() => SelfGraph.connect({ store, uri }));
+        expect(exc).toBeInstanceOf(ValidationError);
+        expect(exc.message).toBe(unencoded);
+        expect([(exc as ValidationError).code, (exc as ValidationError).field]).toEqual(["invalid_setting", "uri"]);
+        expect(exc.stack ?? "").not.toContain("cr3t");
+      }
+      const exc = rejection(() => openDriver(uri, null, {}));
+      expect(exc).toBeInstanceOf(ValidationError);
+      expect(exc.message).toBe(unencoded);
+      expect(exc.stack ?? "").not.toContain("cr3t");
+    }
+    for (const uri of ["bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1", inPassword]) {
+      expect(() => openDriver(uri, null, {})).toThrow(
+        new ValidationError(unencoded, { code: "invalid_setting", field: "uri" }),
+      );
+    }
+    expect(splitScheme("bolt://h:1")).toEqual(["bolt", "h:1"]);
+    expect(splitScheme("a+b.c-d://h")).toEqual(["a+b.c-d", "h"]);
+    for (const uri of [inPassword, "h:6379", "1x://h", "://h", "/tmp/a://b"]) {
+      expect(splitScheme(uri)).toEqual(["", uri]);
+    }
+    for (const uri of [
+      "bolt://u:p%2Fa%3Fb%23c%40d@127.0.0.1:7687",
+      "neo4j://127.0.0.1:7687/db?x=y#z",
+      "redis://u:pw@host:6379/0",
+      "host:6379",
+      "/tmp/graph.kuzu",
+      "bolt://[::1]:7687",
+      "bolt://u:pw@[::1]:7687",
+      "redis://u:p%5Bw%5D@[fe80::1]:6379",
+      "neo4j://h:7687/db?x=[1]",
+      "bolt://us\u00e9r:p\u00e4ss@h\u00f4st:7687",
+    ]) {
+      expect(() => requireEncodedUserinfo(uri)).not.toThrow();
+    }
+    for (const [store, uri] of [
+      ["neo4j", "bolt://[::1]:7687"],
+      ["falkordb", "redis://u:p%5Bw%5D@[::1]:6379"],
+      ["falkordb", "redis://us\u00e9r:p\u00e4ss@h:6379"],
+    ] as const) {
+      await SelfGraph.connect({ store, uri }).close();
+    }
+    await openDriver("bolt://[::1]:7687", null, {}).close();
+  });
+
+  it("masks FalkorDB addresses whose netloc Python's urlsplit refuses, as Python does", () => {
+    for (const [uri, masked] of [
+      ["redis://u:s3cr3tPW@127.0.0.1[:6379", "redis://***@127.0.0.1[:6379"],
+      ["redis://u:s3cr3tPW@[::1:6379", "redis://***@[::1:6379"],
+      ["u:s3cr3tPW@::1]:6379", "***@::1]:6379"],
+    ] as const) {
+      let exc: Error | undefined;
+      try {
+        SelfGraph.connect({ store: "falkordb", uri });
+      } catch (caught) {
+        exc = caught as Error;
+      }
+      expect(exc).toBeInstanceOf(ValidationError);
+      expect(exc?.message).toBe(`invalid FalkorDB address '${masked}': expected host:port with a port from 1 to 65535`);
+      expect(exc?.cause).toBeUndefined();
+      expect(exc?.stack ?? "").not.toContain("cr3t");
+    }
   });
 
   it("validates addresses, trims syntax errors, and names a missing HydraDB token or another engine", async () => {

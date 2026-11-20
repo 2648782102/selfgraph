@@ -313,6 +313,116 @@ export function surfaceHint(message: string): string {
 }
 
 /**
+ * Split a URI into its scheme and the rest, taking a scheme only when the URI starts with one followed by ://.
+ *
+ * @param uri (string): the URI, such as bolt://host:7687 or host:7687.
+ * @return ([string, string]): the scheme, empty when there is none, and the text after its ://, or the whole URI.
+ */
+export function splitScheme(uri: string): [string, string] {
+  const match = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(uri);
+  return match ? [uri.slice(0, match[0].length - 3), uri.slice(match[0].length)] : ["", uri];
+}
+
+const AT_SIGNS = ["@", "\uff20", "\ufe6b"];
+
+export const UNENCODED_USERINFO =
+  "the store URI has an unencoded character in its user or password; " +
+  "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)";
+
+/**
+ * Split off a URI's scheme and find its authority.
+ *
+ * @param uri (string): the URI, with or without a scheme.
+ * @return ([string, string]): the text after the scheme's :// (the whole URI when it has no scheme), and the authority
+ *   at its start, which runs to the first /, ? or #.
+ */
+function uriAuthority(uri: string): [string, string] {
+  const rest = splitScheme(uri)[1];
+  return [rest, rest.split(/[/?#]/, 1)[0] ?? ""];
+}
+
+/**
+ * Whether an authority holds non-ASCII text that NFKC turns into a /, ?, #, @, :, [ or ].
+ *
+ * Python's urlsplit refuses a netloc whose text NFKC turns into a /, ?, #, @ or : with a ValueError that quotes it,
+ * and other parsers read such a character as part of the host, so a fullwidth ＠ sends the password to the DNS resolver.
+ *
+ * @param authority (string): the URI text between the scheme's :// and the first /, ? or #.
+ * @return (boolean): true when one of its characters is non-ASCII and NFKC-normalizes to text holding a separator.
+ */
+function nfkcSeparator(authority: string): boolean {
+  return Array.from(authority).some(
+    (char) => char.codePointAt(0)! >= 0x80 && /[/?#@:[\]]/.test(char.normalize("NFKC")),
+  );
+}
+
+/**
+ * Reject a URI whose user or password holds an unencoded /, ?, #, @, [ or ], before any driver reads it.
+ *
+ * Drivers read such a URI as another host, port, path, or query and repeat pieces of the password in their errors,
+ * so the message names the problem without quoting the URI. Brackets around an IPv6 host stay valid.
+ *
+ * @param uri (string): the store URI, with or without a scheme.
+ * @return (void): nothing; throws ValidationError when the text between the scheme and the last @ (counting the
+ *   fullwidth ＠ and small ﹫) holds a /, ?, #, [ or ], the authority holds more than one @, or the authority holds a
+ *   character that NFKC turns into one of / ? # @ : [ ].
+ */
+export function requireEncodedUserinfo(uri: string): void {
+  const [rest, authority] = uriAuthority(uri);
+  const userinfo = rest.slice(0, Math.max(...AT_SIGNS.map((at) => rest.lastIndexOf(at)), 0));
+  if (/[/?#[\]]/.test(userinfo) || authority.split("@").length > 2 || nfkcSeparator(authority)) {
+    throw new ValidationError(UNENCODED_USERINFO, { code: "invalid_setting", field: "uri" });
+  }
+}
+
+/**
+ * Locate the user and password of a URI inside its authority.
+ *
+ * @param uri (string): the URI, with or without a scheme.
+ * @return ([number, string]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
+ *   the first /, ? or # after any scheme, counting the fullwidth ＠ and small ﹫ that NFKC turns into @ (parsers that
+ *   normalize read them as the separator); the userinfo is empty when the authority has none.
+ */
+function uriUserinfo(uri: string): [number, string] {
+  const [rest, authority] = uriAuthority(uri);
+  const end = Math.max(...AT_SIGNS.map((at) => authority.lastIndexOf(at)));
+  return [uri.length - rest.length, authority.slice(0, Math.max(end, 0))];
+}
+
+/**
+ * Hide the user and password of a URI so a message can show it.
+ *
+ * @param uri (string): the URI, such as redis://user:pass@host:6379.
+ * @return (string): the URI with its userinfo replaced by ***, such as redis://***@host:6379.
+ */
+export function maskUri(uri: string): string {
+  const [start, userinfo] = uriUserinfo(uri);
+  return userinfo ? `${uri.slice(0, start)}***${uri.slice(start + userinfo.length)}` : uri;
+}
+
+/**
+ * Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
+ *
+ * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
+ * @param uri (string | null | undefined): the configured URI.
+ * @return (string): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same
+ *   rendering of the masked URI, then each such rendering of the userinfo before its separator replaced by ***.
+ */
+export function redactUri(text: string, uri: string | null | undefined): string {
+  if (!uri) return text;
+  const [start, userinfo] = uriUserinfo(uri);
+  if (!userinfo) return text;
+  const masked = maskUri(uri);
+  const renders = [pyRepr, JSON.stringify, String] as ((value: string) => string)[];
+  const whole = renders.reduce((out, render) => out.replaceAll(render(uri), () => render(masked)), text);
+  const at = uri.charAt(start + userinfo.length);
+  return [userinfo, pyRepr(userinfo).slice(1, -1), JSON.stringify(userinfo).slice(1, -1)].reduce(
+    (out, form) => out.replaceAll(`${form}${at}`, () => `***${at}`),
+    whole,
+  );
+}
+
+/**
  * The message of a thrown value, or its text when it is not an Error.
  *
  * @param exc (unknown): the thrown value.
