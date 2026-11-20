@@ -191,10 +191,7 @@ export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver 
       ...config,
     });
   } catch (exc) {
-    throw new StoreError(
-      `cannot open a Bolt driver for ${pyRepr(maskUri(uri))}: ${redactUri(errorMessage(exc), uri)}`,
-      { cause: exc },
-    );
+    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(maskUri(uri))}: ${redactUri(errorMessage(exc), uri)}`);
   }
 }
 

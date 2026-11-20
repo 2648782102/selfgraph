@@ -92,7 +92,7 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
-        raise StoreError(f"cannot open a Bolt driver for {mask_uri(uri)!r}: {redact_uri(str(exc), uri)}") from exc
+        raise StoreError(f"cannot open a Bolt driver for {mask_uri(uri)!r}: {redact_uri(str(exc), uri)}") from None
 
 
 def bolt_failure(exc: BaseException) -> str | None:

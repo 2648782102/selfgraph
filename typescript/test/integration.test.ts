@@ -1417,9 +1417,24 @@ describe("store setup errors", () => {
     expect(maskUri("bolt://host:7687")).toBe("bolt://host:7687");
     expect(maskUri("/tmp/graph.kuzu")).toBe("/tmp/graph.kuzu");
     expect(maskUri("bolt://u:pw@127.0.0.1:7687?a=b@c")).toBe("bolt://***@127.0.0.1:7687?a=b@c");
-    expect(maskUri("bolt://h:1/db@x")).toBe("bolt://h:1/db@x");
-    expect(maskUri("bolt://h:1#a@b")).toBe("bolt://h:1#a@b");
-    expect(redactUri("no @ here: bolt://h:1/db@x", "bolt://h:1/db@x")).toBe("no @ here: bolt://h:1/db@x");
+    expect(maskUri("bolt://h:1/db@x")).toBe("bolt://***@x");
+    expect(maskUri("bolt://h:1#a@b")).toBe("bolt://***@b");
+    for (const sep of ["/", "?", "#"]) {
+      expect(maskUri(`redis://u:pa${sep}s3cr3tPW@127.0.0.1:6379`)).toBe("redis://***@127.0.0.1:6379");
+      expect(maskUri(`u:pa${sep}s3cr3tPW@host:6379`)).toBe("***@host:6379");
+      const uri = `bolt://u:pa${sep}s3cr3tPW@127.0.0.1:7687`;
+      expect(redactUri("Couldn't connect to s3cr3tPW@127.0.0.1:7687", uri)).toBe(
+        "Couldn't connect to ***@127.0.0.1:7687",
+      );
+      expect(redactUri("Given URI: 's3cr3tPW@127.0.0.1:7687'", uri)).toBe("Given URI: '***@127.0.0.1:7687'");
+      const down = err("ServiceUnavailable", "Couldn't connect to s3cr3tPW@127.0.0.1:7687");
+      expect(boltError(down, uri, null)?.message).toBe(
+        "could not connect to bolt://***@127.0.0.1:7687: Couldn't connect to ***@127.0.0.1:7687",
+      );
+    }
+    const dollar = "bolt://u:pw@h:1/d$&b";
+    expect(redactUri(`x ${dollar} y`, dollar)).toBe("x bolt://***@h:1/d$&b y");
+    expect(redactUri("x u:pw$'@h y", "bolt://u:pw$'@h")).toBe("x ***@h y");
     const quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x";
     for (const shown of [pyRepr(quoted), JSON.stringify(quoted), quoted]) {
       expect(redactUri(`Given URI: ${shown}`, quoted)).not.toContain("ss3cr3t");
@@ -1435,6 +1450,10 @@ describe("store setup errors", () => {
       ["falkordb", "u:hunter2@host:6379/0"],
       ["falkordb", "redis://u:hun\nter2@host:99999"],
       ["neo4j", "u:hunter2@host/db"],
+      ["falkordb", "redis://u:pa/hunter2@host:6379"],
+      ["falkordb", "redis://u:pa?hunter2@host:6379"],
+      ["falkordb", "redis://u:pa#hunter2@host:6379"],
+      ["neo4j", "u:pa/hunter2@host:6379"],
     ] as const) {
       let message = "";
       try {
@@ -1448,6 +1467,16 @@ describe("store setup errors", () => {
     expect(() => openDriver("http://u:hunter2@h:1", null, {})).toThrow(
       new StoreError("'http://***@h:1' is not a Bolt URI; use bolt://host:port"),
     );
+    let refused: unknown;
+    try {
+      openDriver("bolt://u:hunter2@h:1?routing=x", null, {});
+    } catch (exc) {
+      refused = exc;
+    }
+    expect(refused).toBeInstanceOf(StoreError);
+    expect((refused as StoreError).message).toContain("Given URL: 'bolt://***@h:1?routing=x'");
+    expect((refused as StoreError).message).not.toContain("hunter2");
+    expect((refused as StoreError).cause).toBeUndefined();
     const denied = err("Neo.ClientError.Security.Unauthorized", "invalid credentials");
     expect(boltError(denied, "bolt://u:hunter2@h:1", null)?.message).toBe(
       "authentication failed for bolt://***@h:1: check the token/password",

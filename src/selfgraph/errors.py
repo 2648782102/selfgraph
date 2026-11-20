@@ -112,15 +112,18 @@ def surface_hint(message: str) -> str:
 
 
 def _uri_userinfo(uri: str) -> tuple[int, str]:
-    """Locate the user and password of a URI inside its authority.
+    """Locate the user and password of a URI, erring toward hiding too much.
 
     @param uri (str): the URI, with or without a scheme.
-    @return (tuple[int, str]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
-        the first /, ? or # after any scheme; the userinfo is empty when the authority has no @.
+    @return (tuple[int, str]): the offset where the userinfo starts and the userinfo. It runs to the last @ of the
+        authority (up to the first /, ? or # after any scheme); when the authority has no @, it runs to the last @
+        anywhere after the scheme, so a password with an unencoded /, ? or # is still hidden. It is empty when the
+        URI has no @.
     """
     start = uri.index("://") + 3 if "://" in uri else 0
-    authority = re.split(r"[/?#]", uri[start:], maxsplit=1)[0]
-    return start, authority.rpartition("@")[0]
+    rest = uri[start:]
+    userinfo, at, _ = re.split(r"[/?#]", rest, maxsplit=1)[0].rpartition("@")
+    return start, userinfo if at else rest.rpartition("@")[0]
 
 
 def mask_uri(uri: str) -> str:
@@ -139,7 +142,8 @@ def redact_uri(text: str, uri: str | None) -> str:
     @param text (str): the message, which may quote the URI or repeat a driver's text about it.
     @param uri (str | None): the configured URI.
     @return (str): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same rendering
-        of the masked URI, then each such rendering of the userinfo alone replaced by ***.
+        of the masked URI, then each such rendering of the userinfo, and of its tail after the last /, ? or #, that
+        precedes an @ replaced by ***.
     """
     if not uri:
         return text
@@ -149,8 +153,10 @@ def redact_uri(text: str, uri: str | None) -> str:
     masked = mask_uri(uri)
     for render in (repr, lambda s: json.dumps(s, ensure_ascii=False), str):
         text = text.replace(render(uri), render(masked))
-    for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
-        text = text.replace(f"{form}@", "***@")
+    tail = re.split(r"[/?#]", userinfo)[-1]
+    for part in (userinfo, tail) if tail and tail != userinfo else (userinfo,):
+        for form in (part, repr(part)[1:-1], json.dumps(part, ensure_ascii=False)[1:-1]):
+            text = text.replace(f"{form}@", "***@")
     return text
 
 

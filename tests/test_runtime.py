@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 import weakref
 from types import SimpleNamespace
 
@@ -265,9 +266,23 @@ def test_store_errors_hide_uri_credentials():
     assert mask_uri("bolt://host:7687") == "bolt://host:7687"
     assert mask_uri("/tmp/graph.kuzu") == "/tmp/graph.kuzu"
     assert mask_uri("bolt://u:pw@127.0.0.1:7687?a=b@c") == "bolt://***@127.0.0.1:7687?a=b@c"
-    assert mask_uri("bolt://h:1/db@x") == "bolt://h:1/db@x"
-    assert mask_uri("bolt://h:1#a@b") == "bolt://h:1#a@b"
-    assert redact_uri("no @ here: bolt://h:1/db@x", "bolt://h:1/db@x") == "no @ here: bolt://h:1/db@x"
+    assert mask_uri("bolt://h:1/db@x") == "bolt://***@x"
+    assert mask_uri("bolt://h:1#a@b") == "bolt://***@b"
+    for sep in "/?#":
+        assert mask_uri(f"redis://u:pa{sep}s3cr3tPW@127.0.0.1:6379") == "redis://***@127.0.0.1:6379", sep
+        assert mask_uri(f"u:pa{sep}s3cr3tPW@host:6379") == "***@host:6379", sep
+        uri = f"bolt://u:pa{sep}s3cr3tPW@127.0.0.1:7687"
+        assert (
+            redact_uri("Couldn't connect to s3cr3tPW@127.0.0.1:7687", uri) == "Couldn't connect to ***@127.0.0.1:7687"
+        )
+        assert redact_uri("Given URI: 's3cr3tPW@127.0.0.1:7687'", uri) == "Given URI: '***@127.0.0.1:7687'"
+        down = DriverError("", "Couldn't connect to s3cr3tPW@127.0.0.1:7687")
+        assert str(bolt_error(down, uri, None)) == (
+            "could not connect to bolt://***@127.0.0.1:7687: Couldn't connect to ***@127.0.0.1:7687"
+        )
+    dollar = "bolt://u:pw@h:1/d$&b"
+    assert redact_uri(f"x {dollar} y", dollar) == "x bolt://***@h:1/d$&b y"
+    assert redact_uri("x u:pw$'@h y", "bolt://u:pw$'@h") == "x ***@h y"
     quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x"
     for shown in (repr(quoted), json.dumps(quoted), quoted):
         assert "ss3cr3t" not in redact_uri(f"Given URI: {shown}", quoted), shown
@@ -280,6 +295,10 @@ def test_store_errors_hide_uri_credentials():
         ("falkordb", "u:hunter2@host:6379/0"),
         ("falkordb", "redis://u:hun\nter2@host:99999"),
         ("neo4j", "u:hunter2@host/db"),
+        ("falkordb", "redis://u:pa/hunter2@host:6379"),
+        ("falkordb", "redis://u:pa?hunter2@host:6379"),
+        ("falkordb", "redis://u:pa#hunter2@host:6379"),
+        ("neo4j", "u:pa/hunter2@host:6379"),
     ):
         with pytest.raises(ValidationError) as caught:
             build_graph(GraphSettings(store=store, uri=uri))
@@ -295,6 +314,9 @@ def test_store_errors_hide_uri_credentials():
         assert "bolt://***@host:7687" in str(caught.value) and not any(
             x in str(caught.value) for x in (*leaks, "it")
         ), uri
+        assert caught.value.__cause__ is None and caught.value.__suppress_context__, uri
+        shown = "".join(traceback.format_exception(caught.value))
+        assert not any(x in shown for x in (*leaks, "it's", "it\\'s")), uri
     with pytest.raises(StoreError, match=r"^'http://\*\*\*@h:1' is not a Bolt URI"):
         bolt_driver("http://u:hunter2@h:1", None)
     denied = DriverError("Neo.ClientError.Security.Unauthorized", "invalid credentials")

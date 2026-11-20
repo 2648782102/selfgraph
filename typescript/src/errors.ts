@@ -91,16 +91,20 @@ export function surfaceHint(message: string): string {
 }
 
 /**
- * Locate the user and password of a URI inside its authority.
+ * Locate the user and password of a URI, erring toward hiding too much.
  *
  * @param uri (string): the URI, with or without a scheme.
- * @return ([number, string]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
- *   the first /, ? or # after any scheme; the userinfo is empty when the authority has no @.
+ * @return ([number, string]): the offset where the userinfo starts and the userinfo. It runs to the last @ of the
+ *   authority (up to the first /, ? or # after any scheme); when the authority has no @, it runs to the last @
+ *   anywhere after the scheme, so a password with an unencoded /, ? or # is still hidden. It is empty when the URI
+ *   has no @.
  */
 function uriUserinfo(uri: string): [number, string] {
   const start = uri.includes("://") ? uri.indexOf("://") + 3 : 0;
-  const authority = uri.slice(start).split(/[/?#]/, 1)[0] ?? "";
-  return [start, authority.slice(0, Math.max(authority.lastIndexOf("@"), 0))];
+  const rest = uri.slice(start);
+  const authority = rest.split(/[/?#]/, 1)[0] ?? "";
+  const scope = authority.includes("@") ? authority : rest;
+  return [start, scope.slice(0, Math.max(scope.lastIndexOf("@"), 0))];
 }
 
 /**
@@ -120,7 +124,8 @@ export function maskUri(uri: string): string {
  * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
  * @param uri (string | null | undefined): the configured URI.
  * @return (string): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same
- *   rendering of the masked URI, then each such rendering of the userinfo alone replaced by ***.
+ *   rendering of the masked URI, then each such rendering of the userinfo, and of its tail after the last /, ? or #,
+ *   that precedes an @ replaced by ***.
  */
 export function redactUri(text: string, uri: string | null | undefined): string {
   if (!uri) return text;
@@ -128,11 +133,12 @@ export function redactUri(text: string, uri: string | null | undefined): string 
   if (!userinfo) return text;
   const masked = maskUri(uri);
   const renders = [pyRepr, JSON.stringify, String] as ((value: string) => string)[];
-  const whole = renders.reduce((out, render) => out.replaceAll(render(uri), render(masked)), text);
-  return [userinfo, pyRepr(userinfo).slice(1, -1), JSON.stringify(userinfo).slice(1, -1)].reduce(
-    (out, form) => out.replaceAll(`${form}@`, "***@"),
-    whole,
-  );
+  const whole = renders.reduce((out, render) => out.replaceAll(render(uri), () => render(masked)), text);
+  const tail = userinfo.split(/[/?#]/).at(-1) ?? "";
+  const parts = tail && tail !== userinfo ? [userinfo, tail] : [userinfo];
+  return parts
+    .flatMap((part) => [part, pyRepr(part).slice(1, -1), JSON.stringify(part).slice(1, -1)])
+    .reduce((out, form) => out.replaceAll(`${form}@`, () => "***@"), whole);
 }
 
 /**
