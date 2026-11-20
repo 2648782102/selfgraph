@@ -84,7 +84,7 @@ def _forms(names: Iterable[str]) -> list[str]:
 
 
 class DefinitionIndex(NamedTuple):
-    """Each definition form's names and declaring types, and each name's certified flag across every declaration."""
+    """Each definition form's names and declaring types, and each name's certified flag across its declaring types."""
 
     owners: dict[str, dict[str, list[str]]]
     certified: dict[str, bool]
@@ -93,20 +93,24 @@ class DefinitionIndex(NamedTuple):
 def definition_index(schema: Schema | None) -> DefinitionIndex:
     """Index the schema's definitions by surface form, keeping every declaring entity type and every declaration.
 
-    A name declared twice by one type, or by several types, keeps the synonyms of every declaration.
+    A name declared twice by one type, or by several types, keeps the synonyms of every declaration. A type
+    certifies a name when any of its declarations of it is certified, and the name is certified only when every
+    declaring type certifies it.
 
     @param schema (Schema | None): the schema, or None for no definitions.
     @return (DefinitionIndex): each form's definitions and declaring types, and each name's certified flag.
     """
     owners: dict[str, dict[str, dict[str, None]]] = {}
-    certified: dict[str, bool] = {}
+    by_type: dict[str, dict[str, bool]] = {}
     for entity in schema.entities if schema is not None else ():
         for definition in entity.definitions:
-            certified[definition.name] = certified.get(definition.name, True) and definition.certified
+            flags = by_type.setdefault(definition.name, {})
+            flags[entity.name] = flags.get(entity.name, False) or definition.certified
             for form in _forms([definition.name, *definition.synonyms]):
                 owners.setdefault(form, {}).setdefault(definition.name, {})[entity.name] = None
     return DefinitionIndex(
-        {form: {name: list(types) for name, types in names.items()} for form, names in owners.items()}, certified
+        {form: {name: list(types) for name, types in names.items()} for form, names in owners.items()},
+        {name: all(flags.values()) for name, flags in by_type.items()},
     )
 
 
@@ -118,7 +122,7 @@ def schema_forms(
     Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each
     form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the
     first term that declares it. A definition form names every definition that declares it, and a name declared by
-    several entity types, or twice by one, is certified only when every declaration is.
+    several entity types is certified only when each of them certifies it in some declaration.
 
     @param schema (Schema | None): the schema, or None for no terms.
     @param definitions (DefinitionIndex | None): the schema's definition index when the caller already built it.

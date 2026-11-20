@@ -295,24 +295,24 @@ def test_a_shared_definition_name_is_certified_only_when_every_declaring_type_ce
     ]
 
 
-def test_a_definition_declared_twice_by_one_type_keeps_both_declarations():
+@pytest.mark.parametrize("certified_first", [True, False])
+def test_a_definition_declared_twice_by_one_type_keeps_both_declarations(certified_first):
+    declarations = [
+        {"name": "status", "expression": "a", "synonyms": ["payroll marker"], "certified": True},
+        {"name": "status", "expression": "b", "synonyms": ["staff metric"]},
+    ]
     schema = {
         "entities": [
-            {
-                "name": "Employee",
-                "definitions": [
-                    {"name": "status", "expression": "a", "synonyms": ["payroll marker"]},
-                    {"name": "status", "expression": "b"},
-                ],
-            },
+            {"name": "Employee", "definitions": declarations if certified_first else declarations[::-1]},
             {"name": "Person"},
         ]
     }
     g = fresh_graph("tier", schema=schema)
     run(g.insert.facts({"entities": [{"type": "Employee", "name": "Alice"}, {"type": "Person", "name": "Bob"}]}))
-    report = run(g.check_answerable("payroll marker", terms=["payroll marker"]))
-    assert [(t.status, t.matches) for t in report.terms] == [("definition", ["status"])]
-    assert [seed.id for seed in run(g.retrieve("payroll marker", depth=0)).seeds] == ["employee:alice"]
+    for term in ("payroll marker", "staff metric"):
+        report = run(g.check_answerable(term, terms=[term]))
+        assert [(t.status, t.matches, t.certified) for t in report.terms] == [("definition", ["status"], True)]
+        assert [seed.id for seed in run(g.retrieve(term, depth=0)).seeds] == ["employee:alice"]
 
 
 def test_check_answerable_ignores_possessive_and_contraction_endings():

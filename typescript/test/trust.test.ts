@@ -190,26 +190,29 @@ function suite(spec: StoreSpec): void {
     ]);
   });
 
-  it("keeps both declarations of a definition one type declares twice", () => {
-    const schema = asSchema({
-      entities: [
-        {
-          name: "Employee",
-          definitions: [
-            { name: "status", expression: "a", synonyms: ["payroll marker"] },
-            { name: "status", expression: "b" },
-          ],
-        },
-        { name: "Person" },
-      ],
-    });
-    const entities = [entity("employee:alice", "Alice", "Employee"), entity("person:bob", "Bob", "Person")];
-    const report = answerability("payroll marker", ["payroll marker"], entities, [], [], schema, 3);
-    expect(report.terms.map((term) => [term.status, term.matches])).toEqual([["definition", ["status"]]]);
-    const tokenize = (text: string) => new Set(text.toLowerCase().split(" "));
-    const expanded = expandTokens(new Set(["payroll", "marker"]), schema, tokenize);
-    expect([expanded.has("employee"), expanded.has("person")]).toEqual([true, false]);
-  });
+  it.each([true, false])(
+    "keeps both declarations of a definition one type declares twice (certified first=%s)",
+    (certifiedFirst) => {
+      const declarations = [
+        { name: "status", expression: "a", synonyms: ["payroll marker"], certified: true },
+        { name: "status", expression: "b", synonyms: ["staff metric"] },
+      ];
+      const schema = asSchema({
+        entities: [
+          { name: "Employee", definitions: certifiedFirst ? declarations : [...declarations].reverse() },
+          { name: "Person" },
+        ],
+      });
+      const entities = [entity("employee:alice", "Alice", "Employee"), entity("person:bob", "Bob", "Person")];
+      const tokenize = (text: string) => new Set(text.toLowerCase().split(" "));
+      for (const term of ["payroll marker", "staff metric"]) {
+        const report = answerability(term, [term], entities, [], [], schema, 3);
+        expect(report.terms.map((t) => [t.status, t.matches, t.certified])).toEqual([["definition", ["status"], true]]);
+        const expanded = expandTokens(new Set(term.split(" ")), schema, tokenize);
+        expect([expanded.has("employee"), expanded.has("person")]).toEqual([true, false]);
+      }
+    },
+  );
 
   it("matches explicit stopword and single-character entity names and aliases only", async () => {
     const schema = {

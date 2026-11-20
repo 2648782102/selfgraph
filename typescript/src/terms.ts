@@ -78,7 +78,7 @@ function forms(names: readonly string[]): string[] {
   return [...new Set(names.flatMap((name) => [name, spaced(name)]))];
 }
 
-/** Each definition form's names and declaring types, and each name's certified flag across every declaration. */
+/** Each definition form's names and declaring types, and each name's certified flag across its declaring types. */
 export interface DefinitionIndex {
   owners: Map<string, Map<string, string[]>>;
   certified: Map<string, boolean>;
@@ -87,17 +87,18 @@ export interface DefinitionIndex {
 /**
  * Index the schema's definitions by surface form, keeping every declaring entity type and every declaration.
  *
- * A name declared twice by one type, or by several types, keeps the synonyms of every declaration.
+ * A name declared twice by one type, or by several types, keeps the synonyms of every declaration. A type certifies a name when any of its declarations of it is certified, and the name is certified only when every declaring type certifies it.
  *
  * @param schema (ParsedSchema | null): the schema, or null for no definitions.
  * @return (DefinitionIndex): each form's definitions and declaring types, and each name's certified flag.
  */
 export function definitionIndex(schema: ParsedSchema | null): DefinitionIndex {
   const owners = new Map<string, Map<string, Set<string>>>();
-  const certified = new Map<string, boolean>();
+  const byType = new Map<string, Map<string, boolean>>();
   for (const entity of schema?.entities ?? []) {
     for (const definition of entity.definitions) {
-      certified.set(definition.name, (certified.get(definition.name) ?? true) && definition.certified);
+      const flags = byType.get(definition.name) ?? new Map<string, boolean>();
+      byType.set(definition.name, flags.set(entity.name, (flags.get(entity.name) ?? false) || definition.certified));
       for (const form of forms([definition.name, ...definition.synonyms])) {
         const names = owners.get(form) ?? new Map<string, Set<string>>();
         names.set(definition.name, (names.get(definition.name) ?? new Set<string>()).add(entity.name));
@@ -109,7 +110,7 @@ export function definitionIndex(schema: ParsedSchema | null): DefinitionIndex {
     owners: new Map(
       [...owners].map(([form, names]) => [form, new Map([...names].map(([name, types]) => [name, [...types]]))]),
     ),
-    certified,
+    certified: new Map([...byType].map(([name, flags]) => [name, [...flags.values()].every(Boolean)])),
   };
 }
 
@@ -145,7 +146,7 @@ export function groundedTerms(
 /**
  * Map every surface form of the schema's terms, by kind, to the terms it names and whether each is certified.
  *
- * Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the first term that declares it. A definition form names every definition that declares it, and a name declared by several entity types, or twice by one, is certified only when every declaration is.
+ * Entity types and relation types are named by name, alias, and synonym, and definitions by name and synonym; each form is also listed split into words, so InvoiceLine reads as "Invoice Line". A type or relation form names the first term that declares it. A definition form names every definition that declares it, and a name declared by several entity types is certified only when each of them certifies it in some declaration.
  *
  * @param schema (ParsedSchema | null): the schema, or null for no terms.
  * @param definitions (DefinitionIndex): the schema's definition index when the caller already built it.
