@@ -118,7 +118,7 @@ class _Parser(argparse.ArgumentParser):
         elif match and "invalid choice" in message:
             _, _, detail = message.partition(": ")
             value, _, choices = detail.removeprefix("invalid choice: ").partition(" (choose from ")
-            text = f"{flag} got {value}; choose from {choices.rstrip(')')}"
+            text = f"{flag} got {value}; choose from {_unquote_choices(choices.rstrip(')'))}"
         elif match:
             text = message.removeprefix(f"argument {flag}: ")
         else:
@@ -126,6 +126,15 @@ class _Parser(argparse.ArgumentParser):
         field = flag.removeprefix("--").replace("-", "_") if flag else None
         code = "invalid_setting" if flag in _SETTING_FLAGS else "invalid_argument"
         raise ValidationError(text, code=code, field=field)
+
+
+def _unquote_choices(choices: str) -> str:
+    """Drop the quotes argparse puts around each choice, so the text matches the TypeScript CLI.
+
+    @param choices (str): the choices as argparse prints them, such as "'a', 'b'".
+    @return (str): the choices joined by commas, such as "a, b".
+    """
+    return ", ".join(part.strip().strip("'\"") for part in choices.split(","))
 
 
 _ARGUMENT_ERROR = re.compile(r"argument (--[\w-]+):")
