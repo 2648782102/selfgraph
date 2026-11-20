@@ -399,7 +399,10 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
     ],
 )
 def test_typed_and_choice_flags_report_the_same_coded_error_as_typescript(capsys, argv, field, text):
-    assert main(["--store", "kuzu", "--uri", ":memory:", *argv]) == 2
+    args = argv if argv[0] == "--store" else ["--store", "kuzu", "--uri", ":memory:", *argv]
+    if any(flag in argv for flag in ("--limit", "--k", "--strength", "--since")):
+        pytest.importorskip("kuzu")
+    assert main(args) == 2
     err = capsys.readouterr().err
     assert "error[invalid_argument]:" in err
     assert text in err
