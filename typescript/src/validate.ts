@@ -274,7 +274,7 @@ export function requireBool(name: string, value: unknown): asserts value is bool
  */
 export function requireInt(field: string, value: unknown): asserts value is number {
   if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new ValidationError(`${field} must be an integer, got ${typeName(value)}`);
+    throw new ValidationError(`${field} must be an integer, got ${typeName(value)}`, { field });
   }
 }
 

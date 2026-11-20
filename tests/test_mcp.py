@@ -8,7 +8,7 @@ from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_updat
 
 import selfgraph
 import selfgraph.mcp.server as srv
-from selfgraph.errors import HINTS, WARNING_HINTS, ValidationError
+from selfgraph.errors import HINTS, WARNING_HINTS, SelfGraphError, ValidationError
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
@@ -135,8 +135,9 @@ def test_build_server_contract():
     if _HAS_MCP:
         assert srv.build_server() is not None
     else:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(SelfGraphError) as exc:
             srv.build_server()
+        assert exc.value.code == "missing_package"
 
 
 BYPASSES = [
@@ -269,6 +270,7 @@ def test_call_tool_arguments_results_and_errors(server):
         "error": "limit must be >= 1, got 0",
         "error_type": "ValidationError",
         "code": "invalid_argument",
+        "field": "limit",
         "hint": HINTS["invalid_argument"],
         "retryable": False,
         "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#invalid_argument",
@@ -279,44 +281,52 @@ def test_call_tool_arguments_results_and_errors(server):
         "error": "limit must be >= 1, got -1",
         "error_type": "ValidationError",
         "code": "invalid_argument",
+        "field": "limit",
         "retryable": False,
         "tool": "list_entities",
     }
-    with pytest.raises(
-        Exception,
-        match=r"ValidationError\[unknown_key\]: unknown option 'properties' for update_relation; did you mean",
-    ):
-        run(server.call_tool("update_relation", {"id": "relation:x", "properties": {"a": 1}}))
+    assert tool_failure(server, "update_relation", {"id": "relation:x", "properties": {"a": 1}}) == {
+        "error": "unknown option 'properties' for update_relation; did you mean 'set_properties'? "
+        "(valid options: id, set_properties, remove_properties, event_time, evidence)",
+        "error_type": "ValidationError",
+        "code": "unknown_key",
+        "field": "properties",
+        "hint": HINTS["unknown_key"],
+        "retryable": False,
+        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#unknown_key",
+        "agent_guide": "site-packages/selfgraph/errors.md#unknown_key",
+        "tool": "update_relation",
+    }
     for tool, args, message in (
         ("get_schema", {"format": "bogus"}, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"),
         ("create_entity", {"name": "a"}, "invalid arguments: type: field required"),
         ("list_entities", {"limit": "x"}, "invalid arguments: limit: expected number"),
     ):
-        with pytest.raises(Exception) as exc:
-            run(server.call_tool(tool, args))
-        field = message.split(": ")[1]
-        assert str(exc.value).endswith(f"ValidationError[invalid_argument]: {message}\nfield: {field}")
-        assert "pydantic" not in str(exc.value)
+        failure = tool_failure(server, tool, args)
+        assert (failure["error"], failure["code"], failure["field"]) == (
+            message,
+            "invalid_argument",
+            message.split(": ")[1],
+        )
     for flag in ("no", "false", "0", 0, None):
         for tool, args in (
             ("maintenance_prune", {"min_relevance": 2.0}),
             ("maintenance_decay", {}),
             ("maintenance_dedupe_relations", {}),
         ):
-            with pytest.raises(Exception, match="dry_run"):
-                run(server.call_tool(tool, {**args, "dry_run": flag}))
-        with pytest.raises(Exception, match="include_invalidated"):
-            run(server.call_tool("list_relations", {"include_invalidated": flag}))
-        with pytest.raises(Exception, match="newest_first"):
-            run(server.call_tool("relation_versions", {"id": "relation:ab", "newest_first": flag}))
+            assert tool_failure(server, tool, {**args, "dry_run": flag})["field"] == "dry_run"
+        assert tool_failure(server, "list_relations", {"include_invalidated": flag})["field"] == "include_invalidated"
+        assert (
+            tool_failure(server, "relation_versions", {"id": "relation:ab", "newest_first": flag})["field"]
+            == "newest_first"
+        )
     assert sorted(e["id"] for e in run(srv.list_entities())["items"]) == ["t:a", "t:b"]
     for tool, args in (
         ("list_decisions", {"status": "bogus"}),
         ("list_preferences", {"stance": "bogus"}),
         ("create_decision", {"title": "D", "steps": ["relation:ab"], "status": "bogus"}),
     ):
-        with pytest.raises(Exception, match="invalid arguments"):
-            run(server.call_tool(tool, args))
+        assert tool_failure(server, tool, args)["error"].startswith("invalid arguments: ")
 
 
 NUMBER_ARGUMENT_CASES = [
@@ -337,12 +347,17 @@ NUMBER_ARGUMENT_CASES = [
 
 @pytest.mark.parametrize(("tool", "args", "message"), NUMBER_ARGUMENT_CASES)
 def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, args, message):
-    with pytest.raises(Exception) as exc:
-        run(server.call_tool(tool, args))
-    field = message.split(":")[0]
-    assert str(exc.value).endswith(
-        f"ValidationError[invalid_argument]: invalid arguments: {message}\nfield: {field}\nhint: {HINTS['invalid_argument']}"
-    )
+    assert tool_failure(server, tool, args) == {
+        "error": f"invalid arguments: {message}",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "field": message.split(":")[0],
+        "hint": HINTS["invalid_argument"],
+        "retryable": False,
+        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#invalid_argument",
+        "agent_guide": "site-packages/selfgraph/errors.md#invalid_argument",
+        "tool": tool,
+    }
 
 
 def test_a_session_gets_each_code_hint_once_and_each_new_warning_code_hint(server):
@@ -359,8 +374,11 @@ def test_a_session_gets_each_code_hint_once_and_each_new_warning_code_hint(serve
     assert missing["error"].endswith("; did you mean 'company:b'?")
     assert [missing["tool"], missing["hint"]] == ["delete_entity", HINTS["not_found"]]
     assert "hint" not in tool_failure(server, "delete_entity", {"id": "company:bb"})
-    run(srv.configure(srv._settings))
-    assert tool_failure(server, "delete_entity", {"id": "company:bb"})["hint"] == HINTS["not_found"]
+    assert tool_failure(server, "list_entities", {"limit": "x"})["hint"] == HINTS["invalid_argument"]
+    assert "hint" not in tool_failure(server, "list_entities", {"limit": "x"})
+    other = srv.build_server()
+    assert tool_failure(other, "delete_entity", {"id": "company:bb"})["hint"] == HINTS["not_found"]
+    assert tool_failure(other, "list_entities", {"limit": "x"})["hint"] == HINTS["invalid_argument"]
 
 
 def test_whole_floats_pass_as_integers_and_integers_as_numbers(server):

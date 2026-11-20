@@ -740,7 +740,6 @@ export const TOOLS: Tool[] = [
 ];
 
 let settings: GraphSettings | null = null;
-const hinted = new Set<string>();
 const graph = new Lazy(async () => {
   if (settings === null) settings = settingsFromEnv();
   const g = SelfGraph.connect(settings);
@@ -755,7 +754,6 @@ const graph = new Lazy(async () => {
  */
 export async function configure(value: GraphSettings | null = null): Promise<void> {
   settings = value ?? settingsFromEnv();
-  hinted.clear();
   await close();
 }
 
@@ -765,19 +763,13 @@ export async function close(): Promise<void> {
 }
 
 /**
- * Validate the arguments and run a tool, turning an error into a structured {error, error_type, code, retryable, docs} result flagged as an MCP error.
- *
- * @param target (Tool | string): the tool, or its name.
- * @param args (Record<string, unknown>): the arguments.
- * @return ({ result: unknown; isError: boolean }): the JSON-ready result, and whether it is an error.
- */
-/**
  * Record that this session has seen a code, so its hint and links are sent only the first time.
  *
+ * @param hinted (Set<string>): the codes the session has seen.
  * @param code (string): the error or warning code.
  * @return (boolean): whether the session had not seen the code before.
  */
-function firstTime(code: string): boolean {
+function firstTime(hinted: Set<string>, code: string): boolean {
   const first = !hinted.has(code);
   hinted.add(code);
   return first;
@@ -788,11 +780,12 @@ function firstTime(code: string): boolean {
  *
  * @param exc (SelfGraphError): the error.
  * @param tool (string): the tool that failed.
+ * @param hinted (Set<string>): the codes the session has seen.
  * @return (Record<string, unknown>): the error fields, worded for the server, with the tool name.
  */
-function errorResult(exc: SelfGraphError, tool: string): Record<string, unknown> {
+function errorResult(exc: SelfGraphError, tool: string, hinted: Set<string>): Record<string, unknown> {
   const fields: Record<string, unknown> = { ...exc.toJSON(), error: surfaceHint(exc.message), tool };
-  if (firstTime(exc.code)) return fields;
+  if (firstTime(hinted, exc.code)) return fields;
   const { hint: _hint, docs: _docs, agent_guide: _guide, ...rest } = fields;
   return rest;
 }
@@ -801,9 +794,10 @@ function errorResult(exc: SelfGraphError, tool: string): Record<string, unknown>
  * Add the hint of each warning code in a result that the session has not seen yet, as warning_hints.
  *
  * @param result (unknown): the tool result.
+ * @param hinted (Set<string>): the codes the session has seen.
  * @return (unknown): the result, with warning_hints when a warning code is new.
  */
-function withWarningHints(result: unknown): unknown {
+function withWarningHints(result: unknown, hinted: Set<string>): unknown {
   const warnings = (result as { warnings?: unknown } | null)?.warnings;
   if (!Array.isArray(warnings)) return result;
   const codes = new Set(warnings.map((w) => (w as { code?: unknown })?.code).filter((c) => typeof c === "string"));
@@ -811,15 +805,24 @@ function withWarningHints(result: unknown): unknown {
     [...codes]
       .filter((code) => WARNING_HINTS[code] !== undefined)
       .sort()
-      .filter(firstTime)
+      .filter((code) => firstTime(hinted, code))
       .map((code) => [code, WARNING_HINTS[code]]),
   );
   return Object.keys(hints).length ? { ...(result as object), warning_hints: hints } : result;
 }
 
+/**
+ * Validate the arguments and run a tool, turning an error into a structured {error, error_type, code, retryable, docs} result flagged as an MCP error.
+ *
+ * @param target (Tool | string): the tool, or its name.
+ * @param args (Record<string, unknown>): the arguments.
+ * @param hinted (Set<string>): the codes the session has seen; a new set makes the call its own session.
+ * @return ({ result: unknown; isError: boolean }): the JSON-ready result, and whether it is an error.
+ */
 export async function callTool(
   target: Tool | string,
   args: Record<string, unknown> = {},
+  hinted: Set<string> = new Set(),
 ): Promise<{ result: unknown; isError: boolean }> {
   const t = typeof target === "string" ? TOOLS.find((tool) => tool.name === target) : target;
   try {
@@ -830,10 +833,13 @@ export async function callTool(
     }
     const parsed = z.object(t.input).safeParse(args);
     if (!parsed.success) throw validationError("invalid arguments", parsed.error, args);
-    return { result: withWarningHints(toJsonable(await t.run(await graph.get(), parsed.data))), isError: false };
+    return {
+      result: withWarningHints(toJsonable(await t.run(await graph.get(), parsed.data)), hinted),
+      isError: false,
+    };
   } catch (exc) {
     if (exc instanceof SelfGraphError) {
-      return { result: errorResult(exc, t?.name ?? String(target)), isError: true };
+      return { result: errorResult(exc, t?.name ?? String(target), hinted), isError: true };
     }
     const name = exc instanceof Error ? exc.name : "Error";
     return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };
@@ -899,10 +905,11 @@ interface McpServerLike {
  *
  * @param target (Tool | string): the tool, or its name.
  * @param args (Record<string, unknown>): the arguments.
+ * @param hinted (Set<string>): the codes the server's session has seen.
  * @return (Promise<object>): the content, structured content, and error flag.
  */
-async function respond(target: Tool | string, args: Record<string, unknown>) {
-  const { result, isError } = await callTool(target, args);
+async function respond(target: Tool | string, args: Record<string, unknown>, hinted: Set<string>) {
+  const { result, isError } = await callTool(target, args, hinted);
   const content = [{ type: "text", text: JSON.stringify(result, null, 2) }];
   const structured = result !== null && typeof result === "object" && !Array.isArray(result) ? result : { result };
   return { content, structuredContent: structured, isError };
@@ -929,15 +936,16 @@ export async function buildServer(name = "selfgraph"): Promise<McpServerLike> {
   );
   const server = new McpServer({ name, version }, { instructions: INSTRUCTIONS });
   server.validateToolInput = async (_tool, args) => args;
+  const hinted = new Set<string>();
   for (const t of TOOLS) {
     server.registerTool(
       t.name,
       { description: t.description, inputSchema: z.looseObject(t.input), annotations: toolAnnotations(t.name) },
-      (args) => respond(t, args),
+      (args) => respond(t, args, hinted),
     );
   }
   server.server.setRequestHandler(CallToolRequestSchema, (request: CallToolRequest) =>
-    respond(request.params.name, request.params.arguments ?? {}),
+    respond(request.params.name, request.params.arguments ?? {}, hinted),
   );
   return server;
 }

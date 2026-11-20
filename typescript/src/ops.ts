@@ -793,10 +793,17 @@ const SUGGEST_SCAN = 500;
  * @return (Promise<NotFoundError>): the error, naming the namespace, and the suggestion when an id is close.
  */
 export async function missingEntity(runner: Runner, ns: string, eid: string): Promise<NotFoundError> {
-  const prefix = `${eid.split(":")[0]}:`;
-  const rows = await runner.matchNodes(ns, L_ENTITY, { id_gt: prefix, limit: SUGGEST_SCAN });
-  const ids = rows.map((r) => r.id as string).filter((id) => id.startsWith(prefix));
-  return new NotFoundError("Entity", eid, undefined, { namespace: ns, suggestion: suggestKey(eid, ids) });
+  const cut = eid.indexOf(":");
+  const [kind, name] = cut < 0 ? [eid, ""] : [eid.slice(0, cut), eid.slice(cut + 1)];
+  const chars = Array.from(name);
+  const ids = new Set<string>();
+  for (const stem of new Set([chars.slice(0, -2), chars.slice(0, 1), []].map((part) => `${kind}:${part.join("")}`))) {
+    for (const row of await runner.matchNodes(ns, L_ENTITY, { id_gt: stem, limit: SUGGEST_SCAN })) {
+      if ((row.id as string).startsWith(stem)) ids.add(row.id as string);
+    }
+  }
+  const suggestion = suggestKey(eid, [...ids]);
+  return new NotFoundError("Entity", eid, undefined, { namespace: ns, suggestion });
 }
 
 /**

@@ -1021,7 +1021,7 @@ async def retrieve(
         ("budget_tokens", budget_tokens, 1),
     ):
         if value < least:
-            raise ValidationError(f"{name} must be >= {least}, got {value}")
+            raise ValidationError(f"{name} must be >= {least}, got {value}", field=name)
 
     ns = graph.namespace
     query_tokens, exact = _tokens(query), _short_tokens(query)

@@ -130,8 +130,12 @@ The object does not exist in the namespace the message names. Check the id and
 the namespace, and use the `did you mean` suggestion when there is one. Do not
 create a placeholder object just to make the call pass.
 
-For an entity id, the message suggests the closest existing id of the same type,
-such as `did you mean 'person:ada'?`, when one is close.
+For an entity id, the message suggests a close existing id of the same type,
+such as `did you mean 'person:ada'?`. To stay cheap, the lookup reads at most
+500 ids from each of three places: ids that share all but the last two
+characters of the missing id, ids that share the name's first character, and
+the type's first ids. It suggests the closest id among those, so in a large
+namespace a closer id elsewhere can be missed.
 
 #### `already_exists`
 
@@ -333,7 +337,10 @@ suffix, as in JSON output.
 Store setup failures are listed in [Backends](backends.md#errors). In addition:
 
 - A connection failure names the host, port, and reason, such as
-  `failed connecting to FalkorDB at localhost:6379: connection refused`. The Neo4j
+  `failed connecting to FalkorDB at localhost:6379: connection refused`. The
+  reason is `connection refused`, `connection reset`, `host not found`,
+  `host lookup failed`, `host unreachable`, or `connection timed out` when the
+  driver says which, in both SDKs and for every server store. The Neo4j
   driver's generic text about the encryption default changing in Neo4j 4.0 is
   dropped.
 - A FalkorDB address with a bad port (`host:abc`) or an unsupported scheme (such

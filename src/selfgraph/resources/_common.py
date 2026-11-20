@@ -128,9 +128,9 @@ class Resource:
         """
         _require_int("limit", limit)
         if limit < 1:
-            raise ValidationError(f"limit must be >= 1, got {limit}")
+            raise ValidationError(f"limit must be >= 1, got {limit}", field="limit")
         if limit > _MAX_LIMIT:
-            raise ValidationError(f"limit must be <= {_MAX_LIMIT}, got {limit}")
+            raise ValidationError(f"limit must be <= {_MAX_LIMIT}, got {limit}", field="limit")
         reader, ns = await self._c._reader(), self._c.namespace
         if by_id is not None:
             after = decode_key_cursor(cursor, by_id)

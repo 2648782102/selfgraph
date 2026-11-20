@@ -199,7 +199,7 @@ def _require_int(field: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a non-bool integer.
     """
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValidationError(f"{field} must be an integer, got {type_name(value)}")
+        raise ValidationError(f"{field} must be an integer, got {type_name(value)}", field=field)
 
 
 def _require_bool(name: str, value: object) -> None:
@@ -972,13 +972,16 @@ async def missing_entity(runner: Any, ns: str, eid: str) -> NotFoundError:
 
     @param runner (Any): the store.
     @param ns (str): namespace.
-    @param eid (str): the missing entity id.
+    @param eid (str): the missing entity id; ids sharing a stem of it are read, at most _SUGGEST_SCAN per stem.
     @return (NotFoundError): the error, naming the namespace, and the suggestion when an id is close.
     """
-    prefix = eid.partition(":")[0] + ":"
-    rows = await runner.match_nodes(ns, L_ENTITY, order_by="id", id_gt=prefix, limit=_SUGGEST_SCAN)
-    ids = [r["id"] for r in rows if r["id"].startswith(prefix)]
-    return NotFoundError("Entity", eid, namespace=ns, suggestion=suggest_key(eid, ids))
+    kind, _, name = eid.partition(":")
+    ids: dict[str, None] = {}
+    for stem in dict.fromkeys(f"{kind}:{part}" for part in (name[:-2], name[:1], "")):
+        rows = await runner.match_nodes(ns, L_ENTITY, order_by="id", id_gt=stem, limit=_SUGGEST_SCAN)
+        ids.update(dict.fromkeys(r["id"] for r in rows if r["id"].startswith(stem)))
+    suggestion = suggest_key(eid, list(ids))
+    return NotFoundError("Entity", eid, namespace=ns, suggestion=suggestion)
 
 
 async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:

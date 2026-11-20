@@ -195,7 +195,7 @@ process can exit, and the next call reopens it.
 | `build_server()`: returns the server | `await buildServer()` |
 | `run_stdio(settings=None)`: configures and serves over stdio | `await runStdio(settings?)` |
 | `await close()` | `await close()` |
-| `TOOLS`: the tool functions | `TOOLS`, plus `callTool(tool, args)`, which runs one tool without a server and resolves to `{ result, isError }` |
+| `TOOLS`: the tool functions | `TOOLS`, plus `callTool(tool, args, hinted?)`, which runs one tool without a server and resolves to `{ result, isError }`; pass the same `hinted` set across calls to send each code's hint once, as a server session does |
 
 ## Errors
 
@@ -219,22 +219,21 @@ that failed, and its text is the same object as JSON:
 An error about one argument or key also carries `field`, such as
 `"field": "limit"`. The `hint`, `docs`, and `agent_guide` fields come with the
 first error of each code in a session, and are left out after that, so a
-repeated failure costs fewer tokens. A new session (`configure`) starts over.
+repeated failure costs fewer tokens. Each server built with `build_server()`
+(`buildServer()` in TypeScript) is its own session, so two servers in one
+process do not share it; `configure` changes the backend and keeps the session.
 
 A result with warnings, such as an insert, carries `warning_hints`, the hint
 of each [warning code](errors.md#warning-codes) the session has not seen yet.
+Each warning in `warnings` keeps its code every time; only the hint is sent once.
 
 An error that is not a SelfGraph error has `error_type` `InternalError` and no
 code.
 
-- Arguments that do not match a tool's schema fail as a `ValidationError` with
-  one `path: message` line per problem
-  (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`). TypeScript
-  returns them as the result above. Python's MCP SDK checks arguments before
-  the tool runs, so it reports them as the text
-  `ValidationError[<code>]: <message>`, then a `field: <field>` line when one
-  is at fault and a `hint: <hint>` line the first time the code appears, with
-  code `invalid_argument`, or `unknown_key` for an unknown argument.
+- Arguments that do not match a tool's schema fail as the result above, a
+  `ValidationError` with code `invalid_argument` (`unknown_key` for an unknown
+  argument), `field`, and one `path: message` line per problem
+  (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`).
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
 - An unknown tool name fails as a tool error.

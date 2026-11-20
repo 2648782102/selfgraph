@@ -950,7 +950,7 @@ export function buildParser(): Command<[], GlobalOptions> {
  * @param command (string): the command that failed, such as "selfgraph relation certify".
  * @return (string): the lines.
  */
-export function errorText(exc: SelfGraphError, command: string): string {
+function errorText(exc: SelfGraphError, command: string): string {
   return [
     `error[${exc.code}]: ${surfaceHint(exc.message).trimEnd()}`,
     `command: ${command}`,

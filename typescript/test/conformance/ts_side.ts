@@ -8,6 +8,7 @@ import {
   fromTables,
   ids,
   KuzuStore,
+  Neo4jStore,
   SelfGraph,
   SelfGraphError,
   toJsonable,
@@ -656,13 +657,14 @@ const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
 /**
  * Call MCP tools with text, boolean, and null arguments the servers must reject before running the tool.
  *
- * @return (Promise<string[]>): the error text each call reports.
+ * @return (Promise<object[]>): the error text, code, and field each call reports, or "accepted".
  */
-async function mcpArgumentErrors(): Promise<string[]> {
-  const errors: string[] = [];
+async function mcpArgumentErrors(): Promise<(object | string)[]> {
+  const errors: (object | string)[] = [];
   for (const [name, args] of MCP_ARGUMENT_CASES) {
     const { result, isError } = await callTool(name, args);
-    errors.push(isError ? (result as { error: string }).error : "accepted");
+    const { error, code, field } = result as { error: string; code: string; field?: string };
+    errors.push(isError ? { error, code, ...(field === undefined ? {} : { field }) } : "accepted");
   }
   return errors;
 }
@@ -780,6 +782,10 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
     entity_retype: await errorOf(() => graph.entities.update("person:jane-doe", { type: "Company" } as never)),
     rel_create_dangling: await errorOf(() => graph.relations.create("person:jane-doe", "KNOWS", "person:ghost")),
     list_bad_cursor: await errorOf(() => graph.entities.list({ cursor: "nope" })),
+    store_refused: await errorOf(() => new SelfGraph(new Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
+    list_limit_zero: await errorOf(() => graph.entities.list({ limit: 0 })),
+    list_limit_text: await errorOf(() => graph.entities.list({ limit: "5" } as never)),
+    entity_missing_near: await errorOf(() => graph.entities.delete("person:jane-do")),
   };
 }
 

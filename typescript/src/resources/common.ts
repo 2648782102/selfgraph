@@ -131,8 +131,8 @@ export const VERSIONS_KEYS = ["newest_first"];
 function pageLimit(options: PageOptions): number {
   const limit: unknown = options.limit ?? DEFAULT_PAGE_LIMIT;
   requireInt("limit", limit);
-  if (limit < 1) throw new ValidationError(`limit must be >= 1, got ${limit}`);
-  if (limit > MAX_LIMIT) throw new ValidationError(`limit must be <= ${MAX_LIMIT}, got ${limit}`);
+  if (limit < 1) throw new ValidationError(`limit must be >= 1, got ${limit}`, { field: "limit" });
+  if (limit > MAX_LIMIT) throw new ValidationError(`limit must be <= ${MAX_LIMIT}, got ${limit}`, { field: "limit" });
   return limit;
 }
 

@@ -389,7 +389,7 @@ class LLMResolver:
             raise ValidationError(f"band low must be below band high, got {band!r}")
         _ops._require_int("max_questions", max_questions)
         if max_questions < 1:
-            raise ValidationError(f"max_questions must be >= 1, got {max_questions}")
+            raise ValidationError(f"max_questions must be >= 1, got {max_questions}", field="max_questions")
         self._llm = client
         self.band = (float(low), float(high))
         self.max_questions = max_questions

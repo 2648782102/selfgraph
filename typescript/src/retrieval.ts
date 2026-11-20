@@ -1060,7 +1060,7 @@ export async function retrieve(
     ["budget_tokens", budgetTokens, 1],
   ] as const;
   for (const [name, value, least] of bounds) {
-    if (value < least) throw new ValidationError(`${name} must be >= ${least}, got ${value}`);
+    if (value < least) throw new ValidationError(`${name} must be >= ${least}, got ${value}`, { field: name });
   }
   return graph.read((store, ns) =>
     run(graph, store, ns, query, { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds, skipHubs }),

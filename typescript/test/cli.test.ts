@@ -212,6 +212,9 @@ describe("built CLI against Kuzu", () => {
       expect([res.code, res.err], args.join(" ")).toEqual([2, expect.stringContaining(message)]);
       expect(res.err).not.toMatch(/isoformat|SelfGraph options/);
     }
+    expect(cli([...kuzu, "retrieve", "x", "--k", "0"]).err).toBe(
+      cliError("invalid_argument", "k must be >= 1, got 0", "selfgraph retrieve", "k"),
+    );
     const bad = cli([...kuzu, "insert", "facts", "-"], {
       input: JSON.stringify({ entities: [{ type: "P" }, { name: 3, type: "P" }] }),
     });

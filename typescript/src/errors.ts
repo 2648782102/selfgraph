@@ -105,10 +105,10 @@ export const WARNING_HINTS: Readonly<Record<string, string>> = {
   ner_extraction:
     "Text was extracted with spaCy NER, without an LLM (Python only). Configure an LLM when the graph matters.",
 };
-export const DOCS_URL = `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md`;
-export const AGENT_GUIDE = "node_modules/@hydradb/selfgraph/errors.md";
+const DOCS_URL = `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md`;
+const AGENT_GUIDE = "node_modules/@hydradb/selfgraph/errors.md";
 
-export type ErrorFields = {
+type ErrorFields = {
   error: string;
   error_type: string;
   code: ErrorCode;
@@ -137,22 +137,38 @@ export class SelfGraphError extends Error {
     if (options?.field !== undefined) this.field = options.field;
   }
 
-  /** How to repair this error's code, as its docs section says. */
+  /**
+   * How to repair this error's code, as its docs section says.
+   *
+   * @return (string): the repair.
+   */
   get hint(): string {
     return HINTS[this.code];
   }
 
-  /** Whether the same call can succeed when run again unchanged: true for a TransientError. */
+  /**
+   * Whether the same call can succeed when run again unchanged.
+   *
+   * @return (boolean): true for a TransientError.
+   */
   get retryable(): boolean {
     return this instanceof TransientError;
   }
 
-  /** The docs section for this error's code, at the installed release. */
+  /**
+   * The docs section for this error's code, at the installed release.
+   *
+   * @return (string): the URL.
+   */
   get docs(): string {
     return `${DOCS_URL}#${this.code}`;
   }
 
-  /** The same docs section in the copy installed with the package, readable without a network. */
+  /**
+   * The same docs section in the copy installed with the package, readable without a network.
+   *
+   * @return (string): the path, relative to the project root.
+   */
   get agentGuide(): string {
     return `${AGENT_GUIDE}#${this.code}`;
   }
@@ -315,6 +331,8 @@ const CONNECT_CODES: Readonly<Record<string, string>> = {
   ETIMEDOUT: "connection timed out",
 };
 
+const CAUSED_BY = /Caused by: \w+ (E[A-Z_]+)\b/;
+
 type ErrorLinks = {
   code?: unknown;
   cause?: unknown;
@@ -364,14 +382,14 @@ export function connectionFailure(exc: unknown): string {
 }
 
 /**
- * Describe a failed connection in plain words ("connection refused") when the error chain says which.
+ * Describe a failed connection in plain words ("connection refused") when the error chain, or a Bolt driver's "Caused by" text, says which.
  *
  * @param exc (unknown): the thrown value.
  * @return (string): the phrase, or the error's reason.
  */
 export function connectionReason(exc: unknown): string {
-  const err = connectError(exc);
-  return err === null ? errorReason(exc) : CONNECT_CODES[err.code as string]!;
+  const code = connectError(exc)?.code ?? CAUSED_BY.exec(errorMessage(exc))?.[1];
+  return CONNECT_CODES[code as string] ?? errorReason(exc);
 }
 
 /**

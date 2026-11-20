@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { version } from "../package.json";
+import { HINTS } from "../src/errors.js";
 import { TOOLS } from "../src/mcp.js";
 import {
   buildCli,
@@ -103,8 +105,14 @@ describe.skipIf(!neo4jUp)("built MCP server over stdio", () => {
       const missing = await client.callTool({ name: "delete_entity", arguments: { id: "agent:nobody" } });
       expect(missing.isError).toBe(true);
       expect(missing.structuredContent).toEqual({
-        error: "Entity 'agent:nobody' does not exist",
+        error: `Entity 'agent:nobody' does not exist in namespace '${ns}'`,
         error_type: "NotFoundError",
+        code: "not_found",
+        hint: HINTS.not_found,
+        retryable: false,
+        docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#not_found`,
+        agent_guide: "node_modules/@hydradb/selfgraph/errors.md#not_found",
+        tool: "delete_entity",
       });
       const write = await client.callTool({ name: "run_cypher", arguments: { query: "MATCH (n) DETACH DELETE n" } });
       expect(write.isError).toBe(true);

@@ -43,7 +43,6 @@ __all__ = ["configure", "close", "build_server", "run_stdio", "TOOLS"]
 
 _settings: GraphSettings | None = None
 _graph: SelfGraph | None = None
-_hinted: set[str] = set()
 _opening: asyncio.Future[SelfGraph] | None = None
 
 _WRITE_CLAUSE = re.compile(
@@ -102,46 +101,50 @@ def _json_result(result: Any, *, error: bool = False) -> Any:
     )
 
 
-def _first_time(code: str) -> bool:
+def _first_time(hinted: set[str], code: str) -> bool:
     """Record that this session has seen a code, so its hint and links are sent only the first time.
 
+    @param hinted (set[str]): the codes the session has seen.
     @param code (str): the error or warning code.
     @return (bool): whether the session had not seen the code before.
     """
-    first = code not in _hinted
-    _hinted.add(code)
+    first = code not in hinted
+    hinted.add(code)
     return first
 
 
-def _error_result(exc: SelfGraphError, tool: str) -> dict[str, Any]:
-    """The structured result for a failed tool, with the hint and links only the first time the session sees its code.
+def _error_result(exc: SelfGraphError, tool: str, hinted: set[str]) -> Any:
+    """The error result for a failed tool, with the hint and links only the first time the session sees its code.
 
     @param exc (SelfGraphError): the error.
     @param tool (str): the tool that failed.
-    @return (dict[str, Any]): the error fields, worded for the server, with the tool name.
+    @param hinted (set[str]): the codes the session has seen.
+    @return (CallToolResult): the error fields, worded for the server, with the tool name.
     """
     fields = {**exc.to_dict(), "error": surface_hint(str(exc)), "tool": tool}
-    if not _first_time(exc.code):
+    if not _first_time(hinted, exc.code):
         for key in ("hint", "docs", "agent_guide"):
             del fields[key]
-    return fields
+    return _json_result(fields, error=True)
 
 
-def _with_warning_hints(result: dict[str, Any]) -> dict[str, Any]:
+def _with_warning_hints(result: dict[str, Any], hinted: set[str]) -> dict[str, Any]:
     """Add the hint of each warning code in a result that the session has not seen yet, as warning_hints.
 
     @param result (dict[str, Any]): the tool result.
+    @param hinted (set[str]): the codes the session has seen.
     @return (dict[str, Any]): the result, with warning_hints when a warning code is new.
     """
     codes = {w.get("code") for w in result.get("warnings") or [] if isinstance(w, dict)} & WARNING_HINTS.keys()
-    hints = {code: WARNING_HINTS[code] for code in sorted(codes) if _first_time(code)}
+    hints = {code: WARNING_HINTS[code] for code in sorted(codes) if _first_time(hinted, code)}
     return {**result, "warning_hints": hints} if hints else result
 
 
-def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+def _tool(fn: Callable[..., Awaitable[Any]], hinted: set[str]) -> Callable[..., Awaitable[Any]]:
     """Wrap a tool so an error fails the call with a structured error result and a null or list result is sent as JSON.
 
     @param fn (Callable[..., Awaitable[Any]]): the tool coroutine to wrap.
+    @param hinted (set[str]): the codes the server's session has seen.
     @return (Callable[..., Awaitable[Any]]): the wrapped tool.
     """
 
@@ -150,12 +153,12 @@ def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         try:
             result = await fn(*args, **kwargs)
         except SelfGraphError as exc:
-            return _json_result(_error_result(exc, fn.__name__), error=True)
+            return _error_result(exc, fn.__name__, hinted)
         except Exception as exc:  # noqa: BLE001
             return _json_result({"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}, error=True)
         if result is None or isinstance(result, list):
             return _json_result(result)
-        return _with_warning_hints(result) if isinstance(result, dict) else result
+        return _with_warning_hints(result, hinted) if isinstance(result, dict) else result
 
     return wrapper
 
@@ -201,7 +204,6 @@ async def configure(settings: GraphSettings | None = None) -> None:
     """
     global _settings
     _settings = settings or settings_from_env()
-    _hinted.clear()
     await close()
 
 
@@ -998,43 +1000,39 @@ def _server_class():
         ) from exc
 
 
-class _ArgumentError(PydanticValidationError):
-    def __str__(self) -> str:
-        return self.title
-
-
-def _check_arguments(server: Any, name: str) -> None:
-    """Make a registered tool reject undeclared argument names and report bad arguments as "path: message" lines.
-
-    The replacement still raises a pydantic ValidationError, which the SDK reports as a tool error with its text.
+def _check_arguments(server: Any, name: str, hinted: set[str]) -> None:
+    """Make a registered tool reject undeclared argument names and return bad arguments as a structured error result.
 
     @param server (Any): the MCP server holding the tool.
     @param name (str): the tool name.
-    @return (None): nothing; the tool's argument model is replaced in place.
+    @param hinted (set[str]): the codes the server's session has seen.
+    @return (None): nothing; the tool's argument model and run method are replaced in place.
     """
     tool = server._tool_manager.get_tool(name)
     model = tool.fn_metadata.arg_model
     allowed = [field.alias or key for key, field in model.model_fields.items()]
+    run = tool.run
 
     def validate(cls: Any, obj: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(obj, dict):
+            check_options(name, obj, allowed)
         try:
-            if isinstance(obj, dict):
-                check_options(name, obj, allowed)
             return super(checked, cls).model_validate(obj, *args, **kwargs)
-        except ValidationError as exc:
-            failure = exc
         except PydanticValidationError as exc:
-            failure = validation_error("invalid arguments", exc)
-        lines = [f"ValidationError[{failure.code}]: {failure}"]
-        if failure.field is not None:
-            lines.append(f"field: {failure.field}")
-        if _first_time(failure.code):
-            lines.append(f"hint: {failure.hint}")
-        raise _ArgumentError.from_exception_data("\n".join(lines), [])
+            raise validation_error("invalid arguments", exc) from None
+
+    async def checked_run(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await run(*args, **kwargs)
+        except Exception as exc:
+            if isinstance(exc.__cause__, SelfGraphError):
+                return _error_result(exc.__cause__, name, hinted)
+            raise
 
     checked = create_model(model.__name__, __base__=model)
     checked.model_validate = classmethod(validate)  # type: ignore[method-assign]
     tool.fn_metadata.arg_model = checked
+    object.__setattr__(tool, "run", checked_run)
 
 
 def build_server(name: str = "selfgraph"):
@@ -1053,14 +1051,15 @@ def build_server(name: str = "selfgraph"):
         server._mcp_server.version = __version__
     logging.getLogger("mcp").setLevel(logging.WARNING)
     options = inspect.signature(server.tool).parameters
+    hinted: set[str] = set()
     for fn in TOOLS:
         kwargs: dict[str, Any] = {"structured_output": True} if "structured_output" in options else {}
         if "annotations" in options:
             from mcp.types import ToolAnnotations
 
             kwargs["annotations"] = ToolAnnotations(**_annotations(fn.__name__))
-        server.tool(**kwargs)(_tool(fn))
-        _check_arguments(server, fn.__name__)
+        server.tool(**kwargs)(_tool(fn, hinted))
+        _check_arguments(server, fn.__name__, hinted)
     return server
 
 

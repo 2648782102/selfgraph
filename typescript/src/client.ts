@@ -306,7 +306,7 @@ export class SelfGraph {
     }
     const depth = options.depth ?? 3;
     requireInt("depth", depth);
-    if (depth < 1) throw new ValidationError(`depth must be >= 1, got ${depth}`);
+    if (depth < 1) throw new ValidationError(`depth must be >= 1, got ${depth}`, { field: "depth" });
     const asOf = ops.parseAsOf(options.as_of, options.known_at);
     const report = await this.graph.read((store, ns) =>
       checkAnswerable(store, ns, this.schema, question, terms, asOf, depth),

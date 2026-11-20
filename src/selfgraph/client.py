@@ -416,7 +416,7 @@ class SelfGraph:
             terms = list(dict.fromkeys(t.strip() for t in terms))
         _ops._require_int("depth", depth)
         if depth < 1:
-            raise ValidationError(f"depth must be >= 1, got {depth}")
+            raise ValidationError(f"depth must be >= 1, got {depth}", field="depth")
         as_of = _ops.parse_as_of(as_of, known_at)
         await self._ensure_ready()
         report = await _check_answerable(self, question, terms=terms, as_of=as_of, depth=depth)

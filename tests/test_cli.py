@@ -423,9 +423,11 @@ def test_exit_codes_and_context_only(capsys, tmp_path):
     assert kuzu_main(tmp_path, "insert", "facts", str(tmp_path / "nofile.json")) == 2
     capsys.readouterr()
     assert kuzu_main(tmp_path, "retrieve", "x", "--depth", "-1", "--k", "0", "--budget-tokens", "0") == 2
-    assert capsys.readouterr().err == cli_error("invalid_argument", "depth must be >= 0, got -1", "selfgraph retrieve")
+    assert capsys.readouterr().err == cli_error(
+        "invalid_argument", "depth must be >= 0, got -1", "selfgraph retrieve", "depth"
+    )
     assert kuzu_main(tmp_path, "retrieve", "x", "--k", "0") == 2
-    assert capsys.readouterr().err == cli_error("invalid_argument", "k must be >= 1, got 0", "selfgraph retrieve")
+    assert capsys.readouterr().err == cli_error("invalid_argument", "k must be >= 1, got 0", "selfgraph retrieve", "k")
     facts = json_file(tmp_path, "ab.json", AB_FACTS)
     assert kuzu_main(tmp_path, "insert", "facts", facts) == 0
     capsys.readouterr()

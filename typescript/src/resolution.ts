@@ -425,7 +425,8 @@ export class LLMResolver implements EntityResolver {
     if (!(low < high)) throw new ValidationError(`band low must be below band high, got ${pyRepr(band)}`);
     const maxQuestions = options.max_questions ?? MAX_QUESTIONS;
     requireInt("max_questions", maxQuestions);
-    if (maxQuestions < 1) throw new ValidationError(`max_questions must be >= 1, got ${maxQuestions}`);
+    if (maxQuestions < 1)
+      throw new ValidationError(`max_questions must be >= 1, got ${maxQuestions}`, { field: "max_questions" });
     this.llm = client;
     this.band = [low, high];
     this.max_questions = maxQuestions;

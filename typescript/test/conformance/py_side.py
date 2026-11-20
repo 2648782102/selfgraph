@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pydantic import ValidationError as PydanticValidationError
 from pydantic import validate_call
 
-from selfgraph import EvidenceInput, Extraction, KuzuStore, Schema, SelfGraph, ValidationError, _serde, ids
+from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, SelfGraph, ValidationError, _serde, ids
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _kv
@@ -591,7 +591,7 @@ async def mcp_argument_errors():
 
     The tools are validated directly, so the check runs without the mcp package.
 
-    @return (list[str]): the error text each call reports.
+    @return (list[dict | str]): the error text, code, and field each call reports, or "accepted".
     """
     errors = []
     for name, args in MCP_ARGUMENT_CASES:
@@ -599,7 +599,8 @@ async def mcp_argument_errors():
             await validate_call(getattr(mcp_server, name))(**args)
             errors.append("accepted")
         except PydanticValidationError as exc:
-            errors.append(str(validation_error("invalid arguments", exc)))
+            fields = validation_error("invalid arguments", exc).to_dict()
+            errors.append({key: fields[key] for key in ("error", "code", "field") if key in fields})
     return errors
 
 
@@ -760,6 +761,10 @@ async def choice_errors(graph):
         "entity_retype": await error_of(graph.entities.update("person:jane-doe", type="Company")),
         "rel_create_dangling": await error_of(graph.relations.create("person:jane-doe", "KNOWS", "person:ghost")),
         "list_bad_cursor": await error_of(graph.entities.list(cursor="nope")),
+        "store_refused": await error_of(SelfGraph(store=Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
+        "list_limit_zero": await error_of(graph.entities.list(limit=0)),
+        "list_limit_text": await error_of(graph.entities.list(limit="5")),
+        "entity_missing_near": await error_of(graph.entities.delete("person:jane-do")),
     }
 
 

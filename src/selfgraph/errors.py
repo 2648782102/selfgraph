@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import re
+import socket
 from typing import Any, Literal
 
 __all__ = [
@@ -427,6 +428,7 @@ _CONNECT_CODES = {
     errno.EHOSTUNREACH: "host unreachable",
     errno.ETIMEDOUT: "connection timed out",
 }
+_LOOKUP_CODES = {socket.EAI_NONAME: "host not found", socket.EAI_AGAIN: "host lookup failed"}
 _DANGLING = re.compile(r":[\s.]*$")
 _DRIVER_BOILERPLATE = re.compile(
     r"(?:Connection Failed\. )?Please ensure that your database is listening on the correct host and port[^.]*\. "
@@ -456,7 +458,8 @@ def _connect_failure(exc: BaseException | None, seen: set[int]) -> str:
     if exc is None or id(exc) in seen:
         return ""
     seen.add(id(exc))
-    phrase = _CONNECT_CODES.get(getattr(exc, "errno", None))
+    codes = _LOOKUP_CODES if isinstance(exc, socket.gaierror) else _CONNECT_CODES
+    phrase = codes.get(getattr(exc, "errno", None))
     return phrase or _connect_failure(exc.__cause__ or exc.__context__, seen)
 
 
