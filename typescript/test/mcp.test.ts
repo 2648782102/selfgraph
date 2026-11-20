@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 
 import { HINTS, WARNING_HINTS } from "../src/errors.js";
-import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
+import { buildGraph, DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
 import {
   buildServer,
   callTool,
@@ -77,6 +77,21 @@ async function mcpError(name: string, args: Record<string, unknown>): Promise<{ 
   return result as { error: string; error_type: string };
 }
 
+it("graph_diff keeps proto and nested source metadata keys", async () => {
+  const namespace = "mcp_diff_proto";
+  const text = '{"__proto__":"literal","nested":[{"__proto__":{"kept":true},"sibling":"kept"}]}';
+  await close();
+  const g = buildGraph({ ...DEFAULT_SETTINGS, store: "kuzu", uri, namespace });
+  try {
+    await g.insert.text("Ann works at Acme.", { source_id: "proto", metadata: JSON.parse(text) });
+  } finally {
+    await g.close();
+  }
+  await configure({ namespace });
+  const result = await mcpOk<{ source_versions_added: { metadata: unknown }[] }>("graph_diff", { since: "1900-01-01" });
+  expect(result.source_versions_added.map((v) => JSON.stringify(v.metadata))).toEqual([text]);
+});
+
 it("graph_diff returns stored changes and validates the window", async () => {
   await configure({ namespace: "mcp_diff" });
   await mcpOk("create_entity", { name: "Ann", type: "Person" });
@@ -85,7 +100,7 @@ it("graph_diff returns stored changes and validates the window", async () => {
     until: "2100-01-01",
   });
   expect(result.entities_created.map((e) => e.id)).toEqual(["person:ann"]);
-  expect(result.limitations).toEqual(["Deletes and merges are not visible."]);
+  expect(result.limitations).toEqual(["Deletes and entity edits are not visible."]);
   expect((await callTool("graph_diff", { since: "2100-01-01", until: "1900-01-01" })).isError).toBe(true);
 });
 

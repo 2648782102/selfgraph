@@ -3658,19 +3658,35 @@ async def get_trace(runner: Any, ns: str, tid: str) -> DecisionTrace | None:
 async def get_traces(runner: Any, ns: str, tids: list[str]) -> list[DecisionTrace]:
     """Fetch many decision traces by id, in the order given, skipping ids with no trace.
 
-    A store that reads the children of many parents at once (children_of) loads every trace's steps in one read.
-
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param tids (list[str]): decision ids.
     @return (list[DecisionTrace]): the traces found.
     """
-    many = getattr(runner, "children_of", None)
-    if many is None:
-        return [t for t in [await get_trace(runner, ns, tid) for tid in tids] if t is not None]
     nodes = await _nodes_by_id(runner, ns, L_TRACE, tids)
-    steps = await many(ns, L_TRACE, list(nodes), R_HAS_STEP, L_STEP)
-    return [decode_trace(nodes[tid], _steps_of(steps.get(tid, []))) for tid in tids if tid in nodes]
+    return await decode_traces(runner, ns, [nodes[tid] for tid in tids if tid in nodes])
+
+
+async def decode_traces(runner: Any, ns: str, rows: list[dict[str, Any]]) -> list[DecisionTrace]:
+    """Rebuild stored decision traces with their steps, in the order given, reading every trace's steps at once.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param rows (list[dict[str, Any]]): the stored decision trace nodes.
+    @return (list[DecisionTrace]): the traces.
+    """
+    tids = [row["id"] for row in rows]
+    many = getattr(runner, "children_of", None)
+    if many is not None:
+        steps = await many(ns, L_TRACE, tids, R_HAS_STEP, L_STEP)
+    else:
+        edges = await _edges_into(runner, ns, L_TRACE, L_STEP, "from_in", tids, type=R_HAS_STEP)
+        nodes = await _nodes_by_id(runner, ns, L_STEP, [edge["to_id"] for edge in edges])
+        steps = {}
+        for edge in edges:
+            if edge["to_id"] in nodes:
+                steps.setdefault(edge["from_id"], []).append(nodes[edge["to_id"]])
+    return [decode_trace(row, _steps_of(steps.get(row["id"], []))) for row in rows]
 
 
 async def _resolve_steps(runner: Any, ns: str, step_rel_ids: list[str]) -> list[DecisionStep]:
@@ -3972,7 +3988,7 @@ async def list_traces(
         _require_choice("decision status", status, _STATUSES)
         equals["status"] = status
     rows = await runner.match_nodes(ns, L_TRACE, equals=equals, order_by="id", skip=skip, limit=limit, id_gt=after)
-    return [decode_trace(props, await _read_steps(runner, ns, props["id"])) for props in rows]
+    return await decode_traces(runner, ns, rows)
 
 
 async def delete_trace(runner: Any, ns: str, tid: str) -> dict[str, int]:

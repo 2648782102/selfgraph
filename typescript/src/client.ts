@@ -257,11 +257,11 @@ export class SelfGraph {
   }
 
   /**
-   * List stored changes in the known-time window (since, until]. Deletes and merges are not visible.
+   * List the history stored in the known-time window (since, until], defaulting until to now.
    *
    * @param since (DateTimeInput): exclusive lower bound, with no offset read as UTC.
    * @param until (DateTimeInput | null): inclusive upper bound, or now.
-   * @return (GraphDiff): stored creations, revisions, retirements, and limitations.
+   * @return (GraphDiff): entities created; relations added, revised, retired, certified, and uncertified; preferences added and revised; decisions created and updated; merges and unmerges; source versions added.
    */
   async diff(since: DateTimeInput, until?: DateTimeInput | null): Promise<GraphDiff> {
     const start = parseTime(since, "since");

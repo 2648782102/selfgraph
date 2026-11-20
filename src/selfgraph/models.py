@@ -68,6 +68,7 @@ __all__ = [
     "MergeRecord",
     "UnmergeResult",
     "SourceDiff",
+    "SourceVersion",
     "TermCoverage",
     "AnswerabilityReport",
     "LintIssue",
@@ -428,16 +429,6 @@ class Relation(BaseModel):
     certifications: list[Certification] = Field(default_factory=list)
 
 
-class GraphDiff(BaseModel):
-    since: datetime
-    until: datetime
-    relations_added: list[Relation] = Field(default_factory=list)
-    relations_retired: list[Relation] = Field(default_factory=list)
-    relations_revised: list[Relation] = Field(default_factory=list)
-    entities_created: list[Entity] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=lambda: ["Deletes and merges are not visible."])
-
-
 class Preference(BaseModel):
     id: str
     revision: int
@@ -514,6 +505,34 @@ class SourceDiff(BaseModel):
     kept: list[str] = Field(default_factory=list)
     added: list[str] = Field(default_factory=list)
     retired: list[str] = Field(default_factory=list)
+
+
+class SourceVersion(BaseModel):
+    id: str
+    source_id: str
+    media_type: str
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    event_time: datetime | None = None
+    created_at: datetime
+
+
+class GraphDiff(BaseModel):
+    since: datetime
+    until: datetime
+    relations_added: list[Relation] = Field(default_factory=list)
+    relations_retired: list[Relation] = Field(default_factory=list)
+    relations_revised: list[Relation] = Field(default_factory=list)
+    entities_created: list[Entity] = Field(default_factory=list)
+    relations_certified: list[Relation] = Field(default_factory=list)
+    relations_uncertified: list[Relation] = Field(default_factory=list)
+    preferences_added: list[Preference] = Field(default_factory=list)
+    preferences_revised: list[Preference] = Field(default_factory=list)
+    decisions_created: list[DecisionTrace] = Field(default_factory=list)
+    decisions_updated: list[DecisionTrace] = Field(default_factory=list)
+    entities_merged: list[MergeRecord] = Field(default_factory=list)
+    entities_unmerged: list[MergeRecord] = Field(default_factory=list)
+    source_versions_added: list[SourceVersion] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=lambda: ["Deletes and entity edits are not visible."])
 
 
 class InsertResult(BaseModel):

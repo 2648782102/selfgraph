@@ -9,6 +9,7 @@ import {
   type JsonObject,
   type Preference,
   type Relation,
+  type SourceVersion,
   type Stance,
   type Status,
 } from "./models.js";
@@ -248,5 +249,22 @@ export function decodeTrace(props: Props, steps: DecisionStep[]): DecisionTrace 
     event_time: fromIso(props.event_time),
     created_at: date(props.created_at),
     updated_at: date(props.updated_at),
+  };
+}
+
+/**
+ * Rebuild a source version from its stored node.
+ *
+ * @param props (Props): the source version node.
+ * @return (SourceVersion): the version.
+ */
+export function decodeSourceVersion(props: Props): SourceVersion {
+  return {
+    id: str(props.id),
+    source_id: str(props.source_id),
+    media_type: str(props.media_type),
+    metadata: loads(props.metadata_json, {}),
+    event_time: fromIso(props.event_time),
+    created_at: date(props.created_at),
   };
 }

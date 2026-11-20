@@ -1424,7 +1424,19 @@ async def write(graph):
         "relations": [(r.id, r.revision, r.is_current) for r in replayed.relations],
         "warnings": [w.code for w in replayed.warnings],
     }
-    await graph.insert.text("Mira knows Niko.", source_id="diff-source")
+    marked = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_diff_certify")
+    await marked.insert.facts({"entities": [{"type": "Person", "name": "Ann"}, {"type": "Person", "name": "Bob"}]})
+    knows = await marked.relations.create("person:ann", "KNOWS", "person:bob")
+    await marked.relations.certify(knows.id, by="alice")
+    await marked.relations.certify(knows.id, by="bob")
+    await marked.relations.uncertify(knows.id)
+    marks = await marked.diff("1900-01-01", "2100-01-01")
+    out["diff_certifications"] = [
+        [[r.id, r.revision, [[c.by, c.until is not None] for c in r.certifications]] for r in relations]
+        for relations in (marks.relations_certified, marks.relations_uncertified)
+    ]
+    metadata = {"__proto__": "literal", "nested": [{"__proto__": {"kept": True}, "sibling": "kept"}]}
+    await graph.insert.text("Mira knows Niko.", source_id="diff-source", metadata=metadata)
     await graph.insert.text("Mira knows Omar.", source_id="diff-source", replace_source=True)
     extra_ns = f"{graph.namespace}:extra"
     await graph.store.upsert_nodes(
@@ -1837,14 +1849,24 @@ async def all_evidence(list_fn, oid):
 
 async def diff_windows(graph):
     d = await graph.diff("1900-01-01", "2100-01-01")
-    times = sorted(
-        {
+    stamps = [
+        *(
             at
             for r in [*d.relations_added, *d.relations_revised, *d.relations_retired]
             for at in (r.created_at, r.invalidated_known_at)
-            if at is not None
-        }
-    )
+        ),
+        *(
+            at
+            for r in [*d.relations_certified, *d.relations_uncertified]
+            for c in r.certifications
+            for at in (c.at, c.until)
+        ),
+        *(p.created_at for p in [*d.preferences_added, *d.preferences_revised]),
+        *(at for t in [*d.decisions_created, *d.decisions_updated] for at in (t.created_at, t.updated_at)),
+        *(at for m in [*d.entities_merged, *d.entities_unmerged] for at in (m.created_at, m.reverted_at)),
+        *(v.created_at for v in d.source_versions_added),
+    ]
+    times = sorted({at for at in stamps if at is not None})
     if not times:
         return []
     first, middle, last = times[0], times[len(times) // 2], times[-1]
@@ -1860,6 +1882,15 @@ async def diff_windows(graph):
                 "revised": [[r.id, r.revision] for r in d.relations_revised],
                 "retired": [[r.id, r.revision, r.invalidated_by] for r in d.relations_retired],
                 "entities": [e.id for e in d.entities_created],
+                "certified": [[r.id, r.revision] for r in d.relations_certified],
+                "uncertified": [[r.id, r.revision] for r in d.relations_uncertified],
+                "preferences_added": [[p.id, p.revision] for p in d.preferences_added],
+                "preferences_revised": [[p.id, p.revision] for p in d.preferences_revised],
+                "decisions_created": [t.id for t in d.decisions_created],
+                "decisions_updated": [t.id for t in d.decisions_updated],
+                "merged": [m.id for m in d.entities_merged],
+                "unmerged": [m.id for m in d.entities_unmerged],
+                "sources": [[v.source_id, v.id] for v in d.source_versions_added],
                 "limitations": d.limitations,
             }
         )

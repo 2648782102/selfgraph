@@ -240,20 +240,46 @@ the notes into a folder you can open as a vault.
 
 ## Changes between known times
 
-`await graph.diff(since, until=None)` returns `GraphDiff` with `relations_added`,
-`relations_revised`, `relations_retired`, and `entities_created`. `SyncSelfGraph`
-has the same method. The window is `(since, until]`, using `created_at` and
-`invalidated_known_at`, not `event_time`. `until` defaults to now; naive times
-mean UTC. Retired relations include `invalidated_by`.
+`await graph.diff(since, until=None)` returns `GraphDiff`, one list per kind of
+stored change. `SyncSelfGraph` has the same method. The window is
+`(since, until]` on the known-time axis, not `event_time`. `until` defaults to
+now; naive times mean UTC.
 
-Each new relation revision is listed. Reassertions count as revisions. A relation
-created, revised, and retired in the same window appears in all three lists.
+| List | Holds | In the window when |
+|------|-------|--------------------|
+| `entities_created` | `Entity` | `created_at` |
+| `relations_added` | `Relation` revision 1 | `created_at` |
+| `relations_revised` | `Relation` revision 2 and later | `created_at` |
+| `relations_retired` | `Relation` with `invalidated_by` | `invalidated_known_at` |
+| `relations_certified` | `Relation` version | a certification's `at` |
+| `relations_uncertified` | `Relation` version | a certification's `until` |
+| `preferences_added` | `Preference` revision 1 | `created_at` |
+| `preferences_revised` | `Preference` revision 2 and later | `created_at` |
+| `decisions_created` | `DecisionTrace` | `created_at` |
+| `decisions_updated` | `DecisionTrace` | `updated_at`, when later than `created_at` |
+| `entities_merged` | `MergeRecord` | `created_at` |
+| `entities_unmerged` | `MergeRecord` | `reverted_at` |
+| `source_versions_added` | `SourceVersion` | `created_at` |
+
+A `SourceVersion` holds the stored `id`, `source_id`, `media_type`, `metadata`,
+`event_time`, and `created_at` of one version of a source.
+
+Each new relation or preference revision is listed. Reassertions count as
+revisions. One record can appear in several lists: a relation created, revised,
+and retired in the same window appears in all three, and a merge made and undone
+in the window appears in both merge lists. Certifications are read from every
+version of a relation, so a certification on a version that was later revised
+still shows. A relation version certified by one verifier and then by another
+in the window is in both certification lists. A decision stores only its latest
+update time, so an update is listed only in the window that holds the latest one.
+Relation and preference lists are sorted by id and revision, retired relations by
+id and retirement time, and the others by id.
+
 This scans the namespace's stored records, not an isolated snapshot or an audit
-log. Deletes and merges are not visible. The result includes
-`limitations: ["Deletes and merges are not visible."]`. Deleted records and
-overwritten retirement history cannot be recovered.
+log. Deletes and entity edits are not visible. The result includes
+`limitations: ["Deletes and entity edits are not visible."]`. Deleted records
+and overwritten retirement history cannot be recovered.
 A delete-triggered restoration is visible as a new relation revision, but the
 deleted record and the deletion event are not.
-Returned entity fields and relation metadata reflect stored values, not their
-historical values. Preferences, decisions, and entity edits are not included.
+Returned records reflect their stored values, not their historical values.
 TypeScript uses `await graph.diff(since, until)`. Both SDKs return the same fields.

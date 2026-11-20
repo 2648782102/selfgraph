@@ -1464,7 +1464,23 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     relations: replayed.relations.map((r) => [r.id, r.revision, r.is_current]),
     warnings: replayed.warnings.map((w) => w.code),
   };
-  await graph.insert.text("Mira knows Niko.", { source_id: "diff-source" });
+  const marked = new SelfGraph(graph.store, { namespace: `${graph.namespace}_diff_certify` });
+  await marked.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Person", name: "Bob" },
+    ],
+  });
+  const knows = await marked.relations.create("person:ann", "KNOWS", "person:bob");
+  await marked.relations.certify(knows.id, { by: "alice" });
+  await marked.relations.certify(knows.id, { by: "bob" });
+  await marked.relations.uncertify(knows.id);
+  const marks = await marked.diff("1900-01-01", "2100-01-01");
+  out.diff_certifications = [marks.relations_certified, marks.relations_uncertified].map((relations) =>
+    relations.map((r) => [r.id, r.revision, r.certifications.map((c) => [c.by, c.until !== null])]),
+  );
+  const metadata = JSON.parse('{"__proto__":"literal","nested":[{"__proto__":{"kept":true},"sibling":"kept"}]}');
+  await graph.insert.text("Mira knows Niko.", { source_id: "diff-source", metadata });
   await graph.insert.text("Mira knows Omar.", { source_id: "diff-source", replace_source: true });
   const extraNs = `${graph.namespace}:extra`;
   await graph.store.upsertNodes(

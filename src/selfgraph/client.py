@@ -425,11 +425,11 @@ class SelfGraph:
         return report
 
     async def diff(self, since: datetime | str, until: datetime | str | None = None) -> GraphDiff:
-        """List stored changes in the known-time window (since, until], defaulting until to now.
+        """List the history stored in the known-time window (since, until], defaulting until to now.
 
         @param since (datetime | str): exclusive lower bound, naive times read as UTC.
         @param until (datetime | str | None): inclusive upper bound, or now.
-        @return (GraphDiff): additions, retirements, revisions, and entities created.
+        @return (GraphDiff): the change lists per kind: entities, relations, certifications, and history.
         """
         start = _ops.parse_time(since, "since")
         end = _ops.parse_time(until, "until")

@@ -13,6 +13,7 @@ from .models import (
     Evidence,
     Preference,
     Relation,
+    SourceVersion,
 )
 
 _ISO_TIME = re.compile(
@@ -392,4 +393,20 @@ def decode_trace(props: dict[str, Any], steps: list[DecisionStep]) -> DecisionTr
         event_time=from_iso(props.get("event_time")),
         created_at=from_iso(props["created_at"]),
         updated_at=from_iso(props["updated_at"]),
+    )
+
+
+def decode_source_version(props: dict[str, Any]) -> SourceVersion:
+    """Rebuild a source version from its stored node.
+
+    @param props (dict[str, Any]): the source version node.
+    @return (SourceVersion): the version.
+    """
+    return SourceVersion(
+        id=props["id"],
+        source_id=props["source_id"],
+        media_type=props["media_type"],
+        metadata=_loads(props.get("metadata_json"), {}),
+        event_time=from_iso(props.get("event_time")),
+        created_at=from_iso(props["created_at"]),
     )
