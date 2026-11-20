@@ -101,18 +101,6 @@ def _json_result(result: Any, *, error: bool = False) -> Any:
     )
 
 
-def _first_time(hinted: set[str], code: str) -> bool:
-    """Record that this session has seen a code, so its hint and links are sent only the first time.
-
-    @param hinted (set[str]): the codes the session has seen.
-    @param code (str): the error or warning code.
-    @return (bool): whether the session had not seen the code before.
-    """
-    first = code not in hinted
-    hinted.add(code)
-    return first
-
-
 def _error_result(exc: SelfGraphError, tool: str, hinted: set[str]) -> Any:
     """The error result for a failed tool, with the hint and links only the first time the session sees its code.
 
@@ -122,9 +110,11 @@ def _error_result(exc: SelfGraphError, tool: str, hinted: set[str]) -> Any:
     @return (CallToolResult): the error fields, worded for the server, with the tool name.
     """
     fields = {**exc.to_dict(), "error": surface_hint(str(exc)), "tool": tool}
-    if not _first_time(hinted, exc.code):
+    code = exc.code
+    if code in hinted:
         for key in ("hint", "docs", "agent_guide"):
             del fields[key]
+    hinted.add(code)
     return _json_result(fields, error=True)
 
 
@@ -136,7 +126,8 @@ def _with_warning_hints(result: dict[str, Any], hinted: set[str]) -> dict[str, A
     @return (dict[str, Any]): the result, with warning_hints when a warning code is new.
     """
     codes = {w.get("code") for w in result.get("warnings") or [] if isinstance(w, dict)} & WARNING_HINTS.keys()
-    hints = {code: WARNING_HINTS[code] for code in sorted(codes) if _first_time(hinted, code)}
+    hints = {code: WARNING_HINTS[code] for code in sorted(codes - hinted)}
+    hinted.update(codes)
     return {**result, "warning_hints": hints} if hints else result
 
 

@@ -656,10 +656,11 @@ export async function listEvidence(
   const targetId = kind === "entity" ? ids.canonicalEntityId(given) : given;
   const rows = await runner.matchNodes(ns, L_EVIDENCE, { equals: { target_id: targetId }, skip, limit });
   if (!rows.length && skip === 0) {
-    const exists =
-      kind === "entity" ? await runner.nodeExists(ns, L_ENTITY, targetId) : await relationExists(runner, ns, targetId);
-    if (!exists && kind === "entity") throw await missingEntity(runner, ns, targetId);
-    if (!exists) throw new NotFoundError("Relation", targetId, undefined, { namespace: ns });
+    if (kind === "entity") {
+      if (!(await runner.nodeExists(ns, L_ENTITY, targetId))) throw await missingEntity(runner, ns, targetId);
+    } else if (!(await relationExists(runner, ns, targetId))) {
+      throw new NotFoundError("Relation", targetId, undefined, { namespace: ns });
+    }
   }
   return rows.map(decodeEvidence);
 }

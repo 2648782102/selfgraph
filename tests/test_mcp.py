@@ -4,7 +4,7 @@ import json
 import logging
 
 import pytest
-from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_update_recorder, run
+from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
 
 import selfgraph
 import selfgraph.mcp.server as srv
@@ -271,10 +271,8 @@ def test_call_tool_arguments_results_and_errors(server):
         "error_type": "ValidationError",
         "code": "invalid_argument",
         "field": "limit",
-        "hint": HINTS["invalid_argument"],
         "retryable": False,
-        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#invalid_argument",
-        "agent_guide": "site-packages/selfgraph/errors.md#invalid_argument",
+        **error_links("invalid_argument"),
         "tool": "list_entities",
     }
     assert tool_failure(server, "list_entities", {"limit": -1}) == {
@@ -291,10 +289,8 @@ def test_call_tool_arguments_results_and_errors(server):
         "error_type": "ValidationError",
         "code": "unknown_key",
         "field": "properties",
-        "hint": HINTS["unknown_key"],
         "retryable": False,
-        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#unknown_key",
-        "agent_guide": "site-packages/selfgraph/errors.md#unknown_key",
+        **error_links("unknown_key"),
         "tool": "update_relation",
     }
     for tool, args, message in (
@@ -352,10 +348,8 @@ def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, ar
         "error_type": "ValidationError",
         "code": "invalid_argument",
         "field": message.split(":")[0],
-        "hint": HINTS["invalid_argument"],
         "retryable": False,
-        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#invalid_argument",
-        "agent_guide": "site-packages/selfgraph/errors.md#invalid_argument",
+        **error_links("invalid_argument"),
         "tool": tool,
     }
 

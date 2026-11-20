@@ -312,9 +312,9 @@ def _id_command(sub: Any, resource: str, action: str, *, paged: bool = False, **
             result = await current_relation(graph, args.id, _RETIRED_HINT)
         else:
             result = await getattr(getattr(graph, resource), action)(args.id, **page)
-        if result is None and action == "get" and resource == "entities":
-            raise await _ops.missing_entity(graph.store, graph.namespace, args.id)
         if result is None and action == "get":
+            if resource == "entities":
+                raise await _ops.missing_entity(graph.store, graph.namespace, args.id)
             raise NotFoundError(_OBJECT_TYPES[resource], args.id, namespace=graph.namespace)
         return result
 

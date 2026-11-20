@@ -755,12 +755,9 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
     )
     if not rows and skip == 0:
         if kind == "entity":
-            exists = await runner.node_exists(ns, L_ENTITY, target_id)
-        else:
-            exists = await relation_exists(runner, ns, target_id)
-        if not exists:
-            if kind == "entity":
+            if not await runner.node_exists(ns, L_ENTITY, target_id):
                 raise await missing_entity(runner, ns, target_id)
+        elif not await relation_exists(runner, ns, target_id):
             raise NotFoundError("Relation", target_id, namespace=ns)
     return [decode_evidence(r) for r in rows]
 
@@ -972,7 +969,7 @@ async def missing_entity(runner: Any, ns: str, eid: str) -> NotFoundError:
 
     @param runner (Any): the store.
     @param ns (str): namespace.
-    @param eid (str): the missing entity id; ids sharing a stem of it are read, at most _SUGGEST_SCAN per stem.
+    @param eid (str): the missing entity id.
     @return (NotFoundError): the error, naming the namespace, and the suggestion when an id is close.
     """
     kind, _, name = eid.partition(":")

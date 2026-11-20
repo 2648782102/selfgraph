@@ -9,9 +9,8 @@ import types
 from typing import get_args
 
 import pytest
-from helpers import new_graph, run, unique_ns
+from helpers import DriverError, FakeLLM, error_links, new_graph, run, unique_ns
 
-import selfgraph
 from selfgraph import (
     Extraction,
     HydraDBStore,
@@ -56,17 +55,6 @@ def _warning_codes():
     return found
 
 
-class _DriverError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        """A Bolt driver error with a server code.
-
-        @param code (str): the server code.
-        @param message (str): the message.
-        """
-        super().__init__(message)
-        self.code = code
-
-
 class _ProviderError(Exception):
     def __init__(self, status_code: int) -> None:
         """An LLM provider error with an HTTP status.
@@ -87,20 +75,6 @@ class _Resolver:
 
     async def resolve(self, candidate, existing):
         return ResolutionDecision(target_id=self.target, confidence=1.0, reason="test")
-
-
-class _LLM:
-    def __init__(self, output) -> None:
-        """An LLM client that returns a fixed output, or raises it when it is an exception.
-
-        @param output (Any): the output.
-        """
-        self.output = output
-
-    async def generate(self, *, system, user, output):
-        if isinstance(self.output, Exception):
-            raise self.output
-        return self.output
 
 
 class _BusyGraph:
@@ -233,10 +207,14 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "missing_package": lambda: _without_kuzu(monkeypatch, str(tmp_path / "missing")),
         "not_found": lambda: g.entities.delete("person:nobody"),
         "already_exists": lambda: g.entities.create("Ada", "Person"),
-        "extraction_failed": lambda: SelfGraph(store=g.store, llm=_LLM(RuntimeError("boom"))).insert.text("Ada."),
+        "extraction_failed": lambda: SelfGraph(
+            store=g.store, llm=FakeLLM({"_EntitiesOut": RuntimeError("boom")})
+        ).insert.text("Ada."),
         "llm_auth_failed": lambda: _raise(_fatal(_ProviderError(401), llm, llm.model)),
         "llm_model_not_found": lambda: _raise(_fatal(_ProviderError(404), llm, llm.model)),
-        "invalid_llm_output": lambda: SelfGraph(store=g.store, llm=_LLM({"nothing": 1})).insert.text("Ada."),
+        "invalid_llm_output": lambda: SelfGraph(
+            store=g.store, llm=FakeLLM({"_EntitiesOut": {"nothing": 1}})
+        ).insert.text("Ada."),
         "invalid_prompt_template": lambda: SelfGraph(
             store=g.store, prompts={"entities": {"version": "v1", "system": "s", "user": "no placeholder"}}
         ),
@@ -245,11 +223,11 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "store_closed": lambda: SelfGraph(store=closed_store).entities.list(),
         "store_unreachable": lambda: SelfGraph(store=Neo4jStore(CLOSED_PORT, auth=("neo4j", "pw"))).entities.list(),
         "store_locked": lambda: _raise(_kuzu_error(RuntimeError("IO exception: Could not set lock on file : g"), "x")),
-        "store_auth_failed": lambda: _raise(no_token._error(_DriverError("Neo.ClientError.Security.Unauthorized", ""))),
-        "database_not_found": lambda: _raise(hydradb._error(_DriverError("", "database does not exist"))),
-        "wrong_engine": lambda: _raise(hydradb._error(_DriverError("", "unsupported protocol version"))),
+        "store_auth_failed": lambda: _raise(no_token._error(DriverError("Neo.ClientError.Security.Unauthorized", ""))),
+        "database_not_found": lambda: _raise(hydradb._error(DriverError("", "database does not exist"))),
+        "wrong_engine": lambda: _raise(hydradb._error(DriverError("", "unsupported protocol version"))),
         "write_too_large": lambda: hydradb.upsert_node("n", "Entity", "x", {"id": "x", "blob": "x" * 3_000_000}),
-        "write_conflict": lambda: _raise(hydradb._error(_DriverError("", "transaction conflict"))),
+        "write_conflict": lambda: _raise(hydradb._error(DriverError("", "transaction conflict"))),
         "store_busy": lambda: _busy_falkordb(monkeypatch).run_cypher("RETURN 1"),
     }
     codes |= {code: _code(call) for code, call in triggers.items()}
@@ -269,10 +247,8 @@ def test_an_error_carries_its_code_hint_retryability_and_both_docs_links():
         "error": "Entity 'person:nobody' does not exist",
         "error_type": "NotFoundError",
         "code": "not_found",
-        "hint": HINTS["not_found"],
         "retryable": False,
-        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#not_found",
-        "agent_guide": "site-packages/selfgraph/errors.md#not_found",
+        **error_links("not_found"),
     }
     assert [TransientError().retryable, StoreError().retryable] == [True, False]
 

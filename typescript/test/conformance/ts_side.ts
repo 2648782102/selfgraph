@@ -680,7 +680,7 @@ class Opaque {}
  * Run a call that should fail and return its error as the wire fields both SDKs report.
  *
  * @param call (() => Promise<unknown>): the call.
- * @return (Promise<object | string>): the error's toJSON() fields with docs and agent_guide cut to their anchor, since each SDK links its own release and install path, and the namespace masked, since each side has its own, or "accepted" when the call succeeds.
+ * @return (Promise<object | string>): the error's toJSON() fields, with the namespace and links reduced to what both SDKs share, or "accepted" when the call succeeds.
  */
 async function errorOf(call: () => Promise<unknown>): Promise<object | string> {
   try {

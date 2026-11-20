@@ -964,10 +964,10 @@ function errorText(exc: SelfGraphError, command: string): string {
 /**
  * Print a library diagnostic on stderr, with a warning code's hint the first time the code appears.
  *
- * @param hinted (Set<string>): the warning codes whose hint was already printed.
  * @return ((message: string) => void): the logger.
  */
-function stderrLogger(hinted: Set<string>): (message: string) => void {
+function stderrLogger(): (message: string) => void {
+  const hinted = new Set<string>();
   return (message) => {
     const code = message.split(": ")[0]!;
     const hint = hinted.has(code) || WARNING_HINTS[code] === undefined ? "" : `\nhint: ${WARNING_HINTS[code]}`;
@@ -1001,7 +1001,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const program = buildParser();
   const words = ["selfgraph"];
   prepare(program, words);
-  const previous = setLogger(stderrLogger(new Set()));
+  const previous = setLogger(stderrLogger());
   try {
     await program.parseAsync(argv, { from: "user" });
     return 0;

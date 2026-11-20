@@ -294,6 +294,20 @@ export function runCli(
 }
 
 /**
+ * The hint and both docs links an error of a code carries.
+ *
+ * @param code (ErrorCode): the error code.
+ * @return ({ hint: string; docs: string; agent_guide: string }): the fields.
+ */
+export function errorLinks(code: ErrorCode): { hint: string; docs: string; agent_guide: string } {
+  return {
+    hint: HINTS[code],
+    docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#${code}`,
+    agent_guide: `node_modules/@hydradb/selfgraph/errors.md#${code}`,
+  };
+}
+
+/**
  * The stderr text the CLI prints for a SelfGraph error.
  *
  * @param code (ErrorCode): the error code.
@@ -303,13 +317,14 @@ export function runCli(
  * @return (string): the lines, ending in a newline.
  */
 export function cliError(code: ErrorCode, message: string, command: string, field?: string): string {
+  const { hint, docs, agent_guide } = errorLinks(code);
   return [
     `error[${code}]: ${message}`,
     `command: ${command}`,
     ...(field === undefined ? [] : [`field: ${field}`]),
-    `hint: ${HINTS[code]}`,
-    `docs: https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#${code}`,
-    `agent guide: node_modules/@hydradb/selfgraph/errors.md#${code}`,
+    `hint: ${hint}`,
+    `docs: ${docs}`,
+    `agent guide: ${agent_guide}`,
     "",
   ].join("\n");
 }

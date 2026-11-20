@@ -763,19 +763,6 @@ export async function close(): Promise<void> {
 }
 
 /**
- * Record that this session has seen a code, so its hint and links are sent only the first time.
- *
- * @param hinted (Set<string>): the codes the session has seen.
- * @param code (string): the error or warning code.
- * @return (boolean): whether the session had not seen the code before.
- */
-function firstTime(hinted: Set<string>, code: string): boolean {
-  const first = !hinted.has(code);
-  hinted.add(code);
-  return first;
-}
-
-/**
  * The structured result for a failed tool, with the hint and links only the first time the session sees its code.
  *
  * @param exc (SelfGraphError): the error.
@@ -785,7 +772,10 @@ function firstTime(hinted: Set<string>, code: string): boolean {
  */
 function errorResult(exc: SelfGraphError, tool: string, hinted: Set<string>): Record<string, unknown> {
   const fields: Record<string, unknown> = { ...exc.toJSON(), error: surfaceHint(exc.message), tool };
-  if (firstTime(hinted, exc.code)) return fields;
+  const code = exc.code;
+  const seen = hinted.has(code);
+  hinted.add(code);
+  if (!seen) return fields;
   const { hint: _hint, docs: _docs, agent_guide: _guide, ...rest } = fields;
   return rest;
 }
@@ -801,14 +791,13 @@ function withWarningHints(result: unknown, hinted: Set<string>): unknown {
   const warnings = (result as { warnings?: unknown } | null)?.warnings;
   if (!Array.isArray(warnings)) return result;
   const codes = new Set(warnings.map((w) => (w as { code?: unknown })?.code).filter((c) => typeof c === "string"));
-  const hints = Object.fromEntries(
-    [...codes]
-      .filter((code) => WARNING_HINTS[code] !== undefined)
-      .sort()
-      .filter((code) => firstTime(hinted, code))
-      .map((code) => [code, WARNING_HINTS[code]]),
-  );
-  return Object.keys(hints).length ? { ...(result as object), warning_hints: hints } : result;
+  const fresh: string[] = [];
+  for (const code of [...codes].filter((code) => WARNING_HINTS[code] !== undefined).sort()) {
+    if (!hinted.has(code)) fresh.push(code);
+    hinted.add(code);
+  }
+  const hints = Object.fromEntries(fresh.map((code) => [code, WARNING_HINTS[code]]));
+  return fresh.length ? { ...(result as object), warning_hints: hints } : result;
 }
 
 /**

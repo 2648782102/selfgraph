@@ -672,9 +672,8 @@ async def error_of(call):
     """Await a call that should fail and return its error as the wire fields both SDKs report.
 
     @param call (Awaitable): the pending call.
-    @return (dict | str): the error's to_dict() fields with docs and agent_guide cut to their anchor, since each SDK
-        links its own release and install path, and the namespace masked, since each side has its own, or "accepted"
-        when the call succeeds.
+    @return (dict | str): the error's to_dict() fields, with the namespace and links reduced to what both SDKs share,
+        or "accepted" when the call succeeds.
     """
     try:
         await call

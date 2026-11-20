@@ -12,7 +12,9 @@ from typing import Any
 
 import pytest
 
+import selfgraph
 from selfgraph import Neo4jStore, SelfGraph
+from selfgraph.errors import HINTS
 
 
 def _env(*names, default=None):
@@ -206,6 +208,19 @@ def cli(g: SelfGraph, argv: list[str], capsys: Any) -> Any:
     return json.loads(capsys.readouterr().out)
 
 
+def error_links(code: str) -> dict[str, str]:
+    """The hint and both docs links an error of a code carries.
+
+    @param code (str): the error code.
+    @return (dict[str, str]): hint, docs, and agent_guide.
+    """
+    return {
+        "hint": HINTS[code],
+        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#{code}",
+        "agent_guide": f"site-packages/selfgraph/errors.md#{code}",
+    }
+
+
 def cli_error(code: str, message: str, command: str, field: str | None = None) -> str:
     """The stderr text the CLI prints for a SelfGraph error.
 
@@ -215,15 +230,9 @@ def cli_error(code: str, message: str, command: str, field: str | None = None) -
     @param field (str | None): the field at fault, when one is.
     @return (str): the lines, ending in a newline.
     """
-    import selfgraph
-    from selfgraph.errors import HINTS
-
+    links = error_links(code)
     lines = [f"error[{code}]: {message}", f"command: {command}", *([f"field: {field}"] if field else [])]
-    lines += [
-        f"hint: {HINTS[code]}",
-        f"docs: https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#{code}",
-        f"agent guide: site-packages/selfgraph/errors.md#{code}",
-    ]
+    lines += [f"hint: {links['hint']}", f"docs: {links['docs']}", f"agent guide: {links['agent_guide']}"]
     return "\n".join(lines) + "\n"
 
 

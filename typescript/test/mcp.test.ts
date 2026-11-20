@@ -1,6 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
 
-import { version } from "../package.json";
 import { HINTS, WARNING_HINTS } from "../src/errors.js";
 import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
 import {
@@ -12,7 +11,7 @@ import {
   runStdio,
   TOOLS,
 } from "../src/mcp.js";
-import { A_KNOWS_B, ANN_AT_ACME, SINGLE_EMPLOYER, tempKuzu } from "./helpers.js";
+import { A_KNOWS_B, ANN_AT_ACME, errorLinks, SINGLE_EMPLOYER, tempKuzu } from "./helpers.js";
 
 const BYPASSES = [
   "WITH 1 AS x insert (m:X) RETURN 1",
@@ -105,10 +104,8 @@ describe("MCP run_cypher guard", () => {
       error_type: "ValidationError",
       code: "unknown_key",
       field: "properties",
-      hint: HINTS.unknown_key,
       retryable: false,
-      docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#unknown_key`,
-      agent_guide: "node_modules/@hydradb/selfgraph/errors.md#unknown_key",
+      ...errorLinks("unknown_key"),
       tool: "update_relation",
     });
   });
@@ -378,18 +375,13 @@ describe("MCP tools over Kuzu", () => {
       expect(hints.check_answerable).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
       expect(hints.insert_facts).toMatchObject({ idempotentHint: true });
-      const firstOfCode = {
-        hint: HINTS.invalid_argument,
-        docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#invalid_argument`,
-        agent_guide: "node_modules/@hydradb/selfgraph/errors.md#invalid_argument",
-      };
       for (const [tool, args, message, field, links] of [
         [
           "get_schema",
           { format: "bogus" },
           "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'",
           { field: "format" },
-          firstOfCode,
+          errorLinks("invalid_argument"),
         ],
         ["create_entity", { name: "a" }, "invalid arguments: type: field required", { field: "type" }, {}],
         ["list_entitys", {}, "unknown tool 'list_entitys'", {}, {}],
