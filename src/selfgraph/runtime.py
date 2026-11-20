@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import os
 import re
 import sys
+import threading
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, TypeVar
@@ -650,24 +653,52 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
 def build_graph(settings: GraphSettings) -> SelfGraph:
     """Construct a SelfGraph from settings; does not call initialize.
 
+    When a step after the store fails, such as the LLM setup, the store is closed before the error is raised, so a
+    failed start does not keep an embedded store's file lock.
+
     @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
     @return (SelfGraph): the constructed graph.
     """
     settings = check_settings(settings)
     namespace = "default" if settings.namespace is None else settings.namespace
-    return SelfGraph(
-        store=_build_store(settings),
-        llm=_build_llm(settings),
-        instructions=settings.instructions,
-        prompts=settings.prompts,
-        namespace=namespace,
-        schema=settings.schema,
-        schema_mode=settings.schema_mode or "warn",
-        resolver=settings.resolver,
-        contradiction=settings.contradiction,
-        level=settings.level or "balanced",
-        max_tier=settings.max_tier or "max",
-    )
+    store = _build_store(settings)
+    try:
+        return SelfGraph(
+            store=store,
+            llm=_build_llm(settings),
+            instructions=settings.instructions,
+            prompts=settings.prompts,
+            namespace=namespace,
+            schema=settings.schema,
+            schema_mode=settings.schema_mode or "warn",
+            resolver=settings.resolver,
+            contradiction=settings.contradiction,
+            level=settings.level or "balanced",
+            max_tier=settings.max_tier or "max",
+        )
+    except BaseException:
+        _close_unused(store)
+        raise
+
+
+def _close_unused(store: GraphStore) -> None:
+    """Close a store no call has used yet, before build_graph returns.
+
+    build_graph is synchronous, and the CLI and the MCP server call it from a running event loop, so the close runs to
+    completion on its own loop in a short-lived thread. An error from the close is dropped, so the caller sees the
+    error that stopped the build.
+
+    @param store (GraphStore): the store build_graph opened.
+    @return (None): nothing.
+    """
+
+    def close() -> None:
+        with suppress(Exception):
+            asyncio.run(store.close())
+
+    closing = threading.Thread(target=close, name="selfgraph-close-store")
+    closing.start()
+    closing.join()
 
 
 async def current_relation(graph: SelfGraph, rid: str, hint: str) -> Relation | None:

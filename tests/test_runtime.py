@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
-from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
+from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph, runtime
 from selfgraph._serde import LABELS
 from selfgraph.errors import (
     StoreError,
@@ -153,6 +153,43 @@ def test_check_settings_needs_no_store():
         SelfGraph.connect(store="kuzu", namspace="x")
     with pytest.raises(ValidationError, match="did you mean 'store'"):
         SelfGraph.from_env(stor="kuzu")
+
+
+def _fail_after_the_store(**options):
+    raise ValidationError("the LLM setup failed", code="invalid_setting")
+
+
+@pytest.mark.parametrize("in_loop", [False, True])
+def test_a_build_that_fails_after_the_store_releases_the_kuzu_lock(tmp_path, monkeypatch, in_loop):
+    monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
+    path = str(tmp_path / "g.kuzu")
+
+    async def build_in_loop():
+        build_graph(GraphSettings(store="kuzu", uri=path))
+
+    with pytest.raises(ValidationError, match="the LLM setup failed"):
+        run(build_in_loop()) if in_loop else build_graph(GraphSettings(store="kuzu", uri=path))
+    opened = subprocess.run(
+        [sys.executable, "-c", f"import kuzu; kuzu.Database({path!r})"], capture_output=True, text=True, timeout=60
+    )
+    assert opened.returncode == 0, opened.stderr
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_a_build_that_fails_after_the_store_closes_it_and_raises_the_build_error(monkeypatch, close_fails):
+    closed = []
+
+    class Store:
+        async def close(self):
+            closed.append(True)
+            if close_fails:
+                raise StoreError("close failed")
+
+    monkeypatch.setattr(runtime, "_build_store", lambda settings: Store())
+    monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
+    with pytest.raises(ValidationError, match="the LLM setup failed"):
+        build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI))
+    assert closed == [True]
 
 
 def test_jsonable_and_dumps():
