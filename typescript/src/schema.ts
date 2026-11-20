@@ -4,7 +4,7 @@ import { ValidationError } from "./errors.js";
 import { canonicalId, entityId, normalizeRelType, normalizeText, relationId, slug } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
-import { pyRepr } from "./internal/py.js";
+import { pyRepr, pyStrip } from "./internal/py.js";
 import { L_ENTITY } from "./labels.js";
 import {
   asInput,
@@ -36,8 +36,16 @@ export type SchemaMode = (typeof SCHEMA_MODES)[number];
 export const CONTRADICTION_MODES = ["off", "warn", "supersede", "llm"] as const;
 export type ContradictionMode = (typeof CONTRADICTION_MODES)[number];
 
+const schemaName = z.string().transform((value, ctx) => {
+  if (!value || !pyStrip(value)) {
+    ctx.addIssue({ code: "custom", message: `Must be a non-empty string, got ${pyRepr(value)}` });
+    return z.NEVER;
+  }
+  return value;
+});
+
 export const PropertySpec = z.strictObject({
-  name: z.string(),
+  name: schemaName,
   type: PropertyTypeSchema.default("string"),
   required: z.boolean().default(false),
   description: optString,
@@ -58,7 +66,7 @@ export const Definition = z.strictObject({
 });
 
 export const EntityType = z.strictObject({
-  name: z.string(),
+  name: schemaName,
   description: optString,
   aliases: z.array(z.string()).default([]),
   synonyms: z.array(z.string()).default([]),
@@ -76,7 +84,7 @@ export const RelationEndpoint = z.strictObject({
 });
 
 export const RelationType = z.strictObject({
-  type: z.string(),
+  type: schemaName,
   description: optString,
   aliases: z.array(z.string()).default([]),
   synonyms: z.array(z.string()).default([]),
