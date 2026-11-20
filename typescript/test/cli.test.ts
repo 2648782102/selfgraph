@@ -111,8 +111,10 @@ describe("built CLI against Kuzu", () => {
     const result = cli(["--schema", bad, ...kuzu, "entity", "list"]);
 
     expect(result.code).toBe(2);
-    expect(result.err).toContain("error[invalid_argument]: cannot read");
-    expect(result.err).toContain("not valid UTF-8");
+    expect(result.err).toContain(
+      `error[invalid_argument]: cannot read ${pyRepr(bad)}: not valid UTF-8; save the file as UTF-8 and try again`,
+    );
+    expect(result.err).toContain("field: path");
     expect(result.err).not.toContain("stack");
   });
 
