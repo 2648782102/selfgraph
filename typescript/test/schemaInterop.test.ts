@@ -208,12 +208,18 @@ describe("Neo4j graph schema interop", () => {
       [1.5, "number"],
       ["age", "string"],
     ] as const) {
-      expect(() =>
+      let err: unknown;
+      try {
         fromNeo4jOntology({
           node_types: ["Person"],
           constraints: [{ type: "EXISTENCE", node_type: "Person", property_names: bad }],
-        }),
-      ).toThrow(`constraints[0].property_names must be a list, got ${name}`);
+        });
+        expect.unreachable(`property_names ${String(JSON.stringify(bad))} should have been rejected`);
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error).message).toBe(`constraints[0].property_names must be a list, got ${name}`);
+      expect((err as ValidationError).field).toBe("property_names");
     }
   });
 

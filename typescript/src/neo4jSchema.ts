@@ -69,7 +69,7 @@ function mapping(value: unknown, where: string): Obj {
 function items(data: Obj, key: string, where: string): unknown[] {
   const value = data[key];
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) throw new ValidationError(`${where}.${key} must be a list, got ${typeName(value)}`);
+  if (!Array.isArray(value)) throw new ValidationError(`${where}.${key} must be a list, got ${typeName(value)}`, { field: key });
   return [...value];
 }
 
@@ -162,11 +162,7 @@ function pattern(raw: unknown, where: string): [string, string, string] {
 function applyConstraint(types: Map<string, TypeBody>, constraint: Obj, where: string, dropped: string[]): void {
   const kind = constraint.type;
   const label = constraint.node_type || constraint.relationship_type;
-  const rawNames = constraint.property_names;
-  if (rawNames != null && !Array.isArray(rawNames)) {
-    throw new ValidationError(`${where}.property_names must be a list, got ${typeName(rawNames)}`);
-  }
-  let names = [...((rawNames as unknown[] | undefined) ?? [])];
+  let names = items(constraint, "property_names", where);
   if (!names.length && constraint.property_name) names = [constraint.property_name];
   const scope = `${String(label)}(${names.map(String).join(", ")})`;
   if (!REQUIRED_KINDS.includes(kind as string)) {
