@@ -752,8 +752,9 @@ def check_tests_on_main(files, base_commit, merge_base, python):
     finally:
         shutil.rmtree(base_tree, ignore_errors=True)
     if messages:
-        allowed = "tests-ok" in os.environ.get("PR_LABELS", "").split(",")
-        return ("warn", ["allowed for this PR (tests-ok)"] + messages + notes) if allowed else ("fail", messages + notes)
+        if "tests-ok" in os.environ.get("PR_LABELS", "").split(","):
+            return "warn", ["allowed for this PR (tests-ok)"] + messages + notes
+        return "fail", messages + notes
     tested = [fn for _, _, fn in nodes] + [t for ts in ts_tests.values() for t in ts]
     return "pass", [f"all {len(tested)} changed tests fail or error on main, so they guard the fix"] + notes
 
