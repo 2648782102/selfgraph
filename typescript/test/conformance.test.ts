@@ -124,7 +124,7 @@ const live = new Map<string, boolean>();
 for (const spec of specs) live.set(spec.name, await reachable(spec));
 
 describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
-  it("rejects empty Kuzu parameters with the same error fields in both languages", async () => {
+  it.skipIf(!live.get("kuzu"))("rejects empty Kuzu parameters with the same error fields in both languages", async () => {
     expect(await kuzuParamErrors()).toEqual(py("kuzu_params", "-", "-"));
     expect(await kuzuParamErrors()).toEqual({
       list: expect.objectContaining({
