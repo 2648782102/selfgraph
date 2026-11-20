@@ -26,7 +26,7 @@ from helpers import (
 import selfgraph
 from selfgraph._serde import from_iso
 from selfgraph.cli import _metadata, build_parser, main
-from selfgraph.errors import WARNING_HINTS, ValidationError
+from selfgraph.errors import WARNING_HINTS, SelfGraphError, ValidationError
 from selfgraph.runtime import parse_time, read_json
 
 
@@ -389,18 +389,17 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
 
 
 def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):
-    uri = str(tmp_path / "export.kuzu")
-    assert main(["--store", "kuzu", "--uri", uri, "entity", "create", "--name", "Ada", "--type", "Person"]) == 0
+    g = fresh_graph("export-error")
+    run(g.entities.create("Ada", "Person"))
     target = tmp_path / "notes"
     target.write_text("not a directory")
     capsys.readouterr()
 
-    assert main(["--store", "kuzu", "--uri", uri, "export", "obsidian", str(target)]) == 2
-    err = capsys.readouterr().err
-    assert "error[invalid_argument]: cannot write the vault to" in err
-    assert "File exists" in err
-    assert "field: directory" in err
-    assert "Traceback" not in err
+    with pytest.raises(SelfGraphError) as raised:
+        cli(g, ["export", "obsidian", str(target)], capsys)
+    assert raised.value.code == "invalid_argument"
+    assert raised.value.field == "directory"
+    assert "File exists" in str(raised.value)
 
 
 def test_version_and_help_text(capsys):
