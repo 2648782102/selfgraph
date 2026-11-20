@@ -694,13 +694,10 @@ describe("LLM extraction through the AI SDK", () => {
         .generate({ system: "", user: "x", output: z.object({ ok: z.boolean() }) })
         .catch((e: unknown) => e);
       const message = error instanceof Error ? error.message : String(error);
-      if (status === 403) {
+      expect(message.startsWith(expected), message).toBe(true);
+      if (status === 404) {
         expect(message).toBe(
-          "LLM access denied for provider openai and model 'm': check the API key, set by api_key in the llm config (or SELFGRAPH_LLM_API_KEY)",
-        );
-      } else {
-        expect(message).toBe(
-          `LLM model 'm' was not found for provider openai at http://127.0.0.1:${port}: ` +
+          `${expected} at http://127.0.0.1:${port}: ` +
             "check the llm_model option (or SELFGRAPH_LLM_MODEL) and the provider",
         );
       }
