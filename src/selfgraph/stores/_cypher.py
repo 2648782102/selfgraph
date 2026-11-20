@@ -75,16 +75,16 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
     try:
         from neo4j import AsyncGraphDatabase
     except ImportError as exc:  # pragma: no cover
-        raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j") from exc
+        raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j", code="missing_package") from exc
     scheme, sep, _ = uri.partition("://")
     if sep and scheme.lower() not in _BOLT_SCHEMES:
-        raise StoreError(f"{uri!r} is not a Bolt URI; use bolt://host:port")
+        raise StoreError(f"{uri!r} is not a Bolt URI; use bolt://host:port", code="invalid_setting")
     kwargs.setdefault("connection_timeout", BOLT_CONNECT_TIMEOUT)
     kwargs.setdefault("connection_acquisition_timeout", BOLT_CONNECT_TIMEOUT)
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
-        raise StoreError(f"cannot open a Bolt driver for {uri!r}: {exc}") from exc
+        raise StoreError(f"cannot open a Bolt driver for {uri!r}: {exc}", code="invalid_setting") from exc
 
 
 def bolt_failure(exc: BaseException) -> str | None:
@@ -113,11 +113,13 @@ def bolt_error(exc: BaseException, uri: str, database: str | None) -> StoreError
     """
     failure = bolt_failure(exc)
     if failure == "auth":
-        return StoreError(f"authentication failed for {uri}: check the token/password")
+        return StoreError(f"authentication failed for {uri}: check the token/password", code="store_auth_failed")
     if failure == "database":
-        return StoreError(f"database {database!r} not found" if database else "database not found")
+        return StoreError(
+            f"database {database!r} not found" if database else "database not found", code="database_not_found"
+        )
     if failure == "unreachable":
-        return StoreError(f"could not connect to {uri}: {error_reason(exc)}")
+        return StoreError(f"could not connect to {uri}: {error_reason(exc)}", code="store_unreachable")
     return None
 
 
@@ -279,7 +281,7 @@ class CypherRunner:
         @return (None): nothing; raises StoreError after close.
         """
         if self._closed:
-            raise StoreError(STORE_CLOSED_MESSAGE)
+            raise StoreError(STORE_CLOSED_MESSAGE, code="store_closed")
 
     async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
         """Run one raw Cypher statement (backend-specific escape hatch).

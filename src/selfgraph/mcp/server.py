@@ -85,12 +85,26 @@ def _is_blocked_query(query: str) -> bool:
     return any(head and _READ_OPENERS.match(head) is None for head in heads)
 
 
-def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Callable[..., Awaitable[Any]]:
-    """Wrap a tool so any error fails the call with the error type and message, flagged as an MCP error, and a
-    null or list result is sent as one JSON text content alongside the structured result.
+def _json_result(result: Any, *, error: bool = False) -> Any:
+    """Send a result as one JSON text content alongside its structured form: an object as is, else {"result": ...}.
+
+    @param result (Any): the JSON-ready result.
+    @param error (bool): whether the call failed.
+    @return (CallToolResult): the tool result.
+    """
+    from mcp.types import CallToolResult
+
+    text = json.dumps(result, indent=2, ensure_ascii=False)
+    structured = result if isinstance(result, dict) else {"result": result}
+    return CallToolResult.model_validate(
+        {"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": error}
+    )
+
+
+def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    """Wrap a tool so an error fails the call with a structured error result and a null or list result is sent as JSON.
 
     @param fn (Callable[..., Awaitable[Any]]): the tool coroutine to wrap.
-    @param tool_error (type[Exception]): the SDK's ToolError, which the server reports with the error flag set.
     @return (Callable[..., Awaitable[Any]]): the wrapped tool.
     """
 
@@ -99,16 +113,11 @@ def _tool(fn: Callable[..., Awaitable[Any]], tool_error: type[Exception]) -> Cal
         try:
             result = await fn(*args, **kwargs)
         except SelfGraphError as exc:
-            raise tool_error(f"{type(exc).__name__}: {surface_hint(str(exc))}") from exc
+            return _json_result({**exc.to_dict(), "error": surface_hint(str(exc))}, error=True)
         except Exception as exc:  # noqa: BLE001
-            raise tool_error(f"InternalError: {type(exc).__name__}: {exc}") from exc
+            return _json_result({"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}, error=True)
         if result is None or isinstance(result, list):
-            from mcp.types import CallToolResult
-
-            text = json.dumps(result, indent=2, ensure_ascii=False)
-            return CallToolResult.model_validate(
-                {"content": [{"type": "text", "text": text}], "structuredContent": {"result": result}}
-            )
+            return _json_result(result)
         return result
 
     return wrapper
@@ -745,7 +754,8 @@ async def run_cypher(query: str, params: dict | None = None) -> dict[str, Any]:
             "CALL, LOAD, COPY, IMPORT, EXPORT, INSTALL, UNINSTALL, ATTACH, USE, COMMENT, GRANT, REVOKE, DENY, and "
             "transaction or admin commands such as BEGIN, COMMIT, TERMINATE), even as a bare alias or variable "
             "name (backtick-quote it), and no unicode escape (pass such text as a parameter). Use the typed "
-            "resources or insert for writes."
+            "resources or insert for writes.",
+            code="read_only_query",
         )
     bound = bind_params(query, params)
     g = await _graph_handle()
@@ -929,25 +939,24 @@ def _annotations(name: str) -> dict[str, bool]:
 
 
 def _server_class():
-    """The MCP server and tool-error classes across SDK versions: MCPServer (mcp >= 2) or FastMCP (mcp 1.x).
+    """The MCP server class across SDK versions: MCPServer (mcp >= 2) or FastMCP (mcp 1.x).
 
-    @return (tuple[type, type[Exception]]): the server class and its ToolError.
+    @return (type): the server class.
     """
     try:
         from mcp.server.mcpserver import MCPServer
-        from mcp.server.mcpserver.exceptions import ToolError
 
-        return MCPServer, ToolError
+        return MCPServer
     except ImportError:
         pass
     try:
         from mcp.server.fastmcp import FastMCP
-        from mcp.server.fastmcp.exceptions import ToolError
 
-        return FastMCP, ToolError
+        return FastMCP
     except ImportError as exc:  # pragma: no cover - optional dep
-        raise RuntimeError(
-            "the 'mcp' package is required to run the MCP server; pip install \"selfgraph[mcp]\""
+        raise SelfGraphError(
+            "the 'mcp' package is required to run the MCP server; pip install \"selfgraph[mcp]\"",
+            code="missing_package",
         ) from exc
 
 
@@ -975,10 +984,10 @@ def _check_arguments(server: Any, name: str) -> None:
                 check_options(name, obj, allowed)
             return super(checked, cls).model_validate(obj, *args, **kwargs)
         except ValidationError as exc:
-            message = str(exc)
+            failure = exc
         except PydanticValidationError as exc:
-            message = validation_message("invalid arguments", exc)
-        raise _ArgumentError.from_exception_data(f"ValidationError: {message}", [])
+            failure = ValidationError(validation_message("invalid arguments", exc))
+        raise _ArgumentError.from_exception_data(f"ValidationError[{failure.code}]: {failure}", [])
 
     checked = create_model(model.__name__, __base__=model)
     checked.model_validate = classmethod(validate)  # type: ignore[method-assign]
@@ -993,7 +1002,7 @@ def build_server(name: str = "selfgraph"):
     """
     from .. import __version__
 
-    server_class, tool_error = _server_class()
+    server_class = _server_class()
     if "version" in inspect.signature(server_class).parameters:
         server = server_class(name, version=__version__, instructions=INSTRUCTIONS, log_level="WARNING")
     else:
@@ -1007,7 +1016,7 @@ def build_server(name: str = "selfgraph"):
             from mcp.types import ToolAnnotations
 
             kwargs["annotations"] = ToolAnnotations(**_annotations(fn.__name__))
-        server.tool(**kwargs)(_tool(fn, tool_error))
+        server.tool(**kwargs)(_tool(fn))
         _check_arguments(server, fn.__name__)
     return server
 

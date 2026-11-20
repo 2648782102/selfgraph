@@ -1,6 +1,6 @@
 import { contradictionTier, GraphAccess, seedTier } from "./access.js";
 import { graphDiff } from "./diff.js";
-import { LLM_HINT, StoreError, ValidationError } from "./errors.js";
+import { needsLlm, StoreError, ValidationError } from "./errors.js";
 import { obsidianVault } from "./export.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
@@ -136,8 +136,7 @@ export class SelfGraph {
     requireLevel("level", level);
     requireLevel("max_tier", maxTier);
     const llm = resolveLlm(options.llm);
-    if (level === "max" && maxTier === "max" && llm === null)
-      throw new ValidationError(`level 'max' needs an LLM: ${LLM_HINT}`);
+    if (level === "max" && maxTier === "max" && llm === null) throw needsLlm("level 'max'");
     const embedder = options.embedder ?? null;
     if (embedder !== null && typeof (embedder as { embed?: unknown }).embed !== "function") {
       throw new ValidationError(`embedder must have an embed method, got ${typeName(embedder)}`);
@@ -148,7 +147,7 @@ export class SelfGraph {
     if (extraction !== null) requireTier("extraction", extraction);
     else if (extractor === null) extraction = llm !== null ? "llm" : preset.extraction;
     if (extraction !== null) extraction = clamp("extraction", extraction, maxTier);
-    if (extraction === "llm" && llm === null) throw new ValidationError(`extraction 'llm' needs an LLM: ${LLM_HINT}`);
+    if (extraction === "llm" && llm === null) throw needsLlm("extraction 'llm'");
     this.extraction = extraction === "spacy" ? "regex" : extraction;
     const seeds = options.seeds ?? (embedder !== null || preset.seeds !== "embeddings" ? preset.seeds : "synonyms");
     const seeding = seedTier(seeds, embedder, maxTier);

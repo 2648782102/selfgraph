@@ -667,25 +667,25 @@ class Opaque:
 
 
 async def error_of(call):
-    """Await a call that should fail and return its error class and message.
+    """Await a call that should fail and return its error as the wire fields both SDKs report.
 
     @param call (Awaitable): the pending call.
-    @return (list): the error class name and message, or ["accepted"] when the call succeeds.
+    @return (dict | str): the error's to_dict() fields, or "accepted" when the call succeeds.
     """
     try:
         await call
     except SelfGraphError as exc:
-        return [type(exc).__name__, str(exc)]
-    return ["accepted"]
+        return exc.to_dict()
+    return "accepted"
 
 
 async def choice_errors(graph):
-    """Pass a bad stance, status, or evidence shape to each resource method that takes one.
+    """Pass bad input (a stance, status, evidence shape, key, type, reference, or cursor) to resource methods.
 
     An Opaque instance stands in for bad evidence because both SDKs name a class instance by its class.
 
     @param graph (SelfGraph): the conformance graph.
-    @return (dict): each case's error class and message.
+    @return (dict): each case's error fields.
     """
     works_at = ids.relation_id("person:jane-doe", "WORKS_AT", "company:acme")
     dec = ids.decision_id("person:jane-doe", "Pick HydraDB")
@@ -748,6 +748,10 @@ async def choice_errors(graph):
         ),
         "dec_create_steps_text": await error_of(graph.decisions.create("Bad steps", steps="step")),
         "entity_inf_property": await error_of(graph.entities.create("Inf", "Person", properties={"d": float("inf")})),
+        "facts_unknown_key": await error_of(graph.insert.facts({"entities": [{"nmae": "A", "type": "Person"}]})),
+        "entity_retype": await error_of(graph.entities.update("person:jane-doe", type="Company")),
+        "rel_create_dangling": await error_of(graph.relations.create("person:jane-doe", "KNOWS", "person:ghost")),
+        "list_bad_cursor": await error_of(graph.entities.list(cursor="nope")),
     }
 
 

@@ -794,7 +794,8 @@ async def _require_endpoints(
     ]
     if missing:
         raise ValidationError(
-            f"relation endpoint{'s' if len(missing) > 1 else ''} not found ({', '.join(missing)}); {hint}"
+            f"relation endpoint{'s' if len(missing) > 1 else ''} not found ({', '.join(missing)}); {hint}",
+            code="unknown_reference",
         )
 
 
@@ -802,7 +803,7 @@ async def _require_entity(
     runner: Any, ns: str, eid: str | None, context: str, known: set[str] | frozenset[str] = frozenset()
 ) -> None:
     if eid is not None and not await _entity_known(runner, ns, eid, known):
-        raise ValidationError(f"{context} references unknown entity {eid!r}")
+        raise ValidationError(f"{context} references unknown entity {eid!r}", code="unknown_reference")
 
 
 async def _require_preference_refs(
@@ -938,7 +939,9 @@ async def validate_facts(
         _require_text("preference key", pref.key)
         _validate_strength(pref.strength)
         if not await _entity_known(runner, ns, pref.subject_entity, entities):
-            raise ValidationError(f"preference references unknown subject entity {pref.subject_entity!r}")
+            raise ValidationError(
+                f"preference references unknown subject entity {pref.subject_entity!r}", code="unknown_reference"
+            )
         await _require_preference_refs(runner, ns, pref.value_entity, pref.about_entity, entities)
 
     for dec in facts.decisions:
@@ -953,7 +956,7 @@ async def validate_facts(
         _require_list("decision alternative_entities", dec.alternative_entities)
         for rel_id in dec.steps:
             if rel_id not in relations and not await relation_exists(runner, ns, rel_id):
-                raise ValidationError(f"decision step references unknown relation {rel_id!r}")
+                raise ValidationError(f"decision step references unknown relation {rel_id!r}", code="unknown_reference")
         await _require_trace_refs(runner, ns, dec.actor_entity, dec.outcome_entity, dec.alternative_entities, entities)
     return facts
 
@@ -1181,7 +1184,9 @@ async def update_entity(
         raise TransientError(f"entity {eid!r} was changed concurrently; retry")
     new_type = _clean_text(fields["type"]) if "type" in fields else existing.type
     if _ids.slug(new_type) != _ids.slug(_ids.normalize_text(existing.type)):
-        raise ValidationError(f"type is part of the id {eid!r}; create a new entity to change its type")
+        raise ValidationError(
+            f"type is part of the id {eid!r}; create a new entity to change its type", code="immutable_identity"
+        )
     if new_type not in schema_types:
         new_type = existing.type
     new_name = _clean_text(fields["name"]) if "name" in fields else existing.name
@@ -1605,7 +1610,9 @@ async def _write_relation_version(
     if not await runner.create_edge(ns, rtype, L_ENTITY, from_id, L_ENTITY, to_id, props):
         hint = "create the entities first, then reference them by id ('type:name')"
         await _require_endpoints(runner, ns, from_id, to_id, hint)
-        raise ValidationError(f"relation endpoints not found (from={from_id!r}, to={to_id!r}); {hint}")
+        raise ValidationError(
+            f"relation endpoints not found (from={from_id!r}, to={to_id!r}); {hint}", code="unknown_reference"
+        )
     return decode_relation(props, from_entity=from_id, to_entity=to_id, type=rtype)
 
 
@@ -1657,7 +1664,8 @@ def _require_same_ends(rid: str, stored: tuple[str, str, str], given: tuple[str,
     if stored != given:
         raise ValidationError(
             f"relation {rid!r} already exists with different endpoints/type; "
-            "endpoints and type are immutable; create a new relation to change them"
+            "endpoints and type are immutable; create a new relation to change them",
+            code="immutable_identity",
         )
 
 
@@ -1685,7 +1693,9 @@ async def _lock_current(
         if latest is None:
             raise NotFoundError(kind.capitalize(), oid)
         if latest["props"].get("invalidated_at"):
-            raise ValidationError(f"{invalidated_note(_relation_of(latest))}; create it again to reassert it")
+            raise ValidationError(
+                f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
+            )
         raise TransientError(f"{kind} {oid!r} has no current version right now (concurrent write); retry")
     await runner.lock_node(ns, *lock_on(before))
     current = await get(runner, ns, oid)
@@ -1975,7 +1985,8 @@ class Contradictions:
                 raise ValidationError(
                     f"relation {rid} would exceed max_count {limit} for {canonical} at {side} entity {endpoint} "
                     f"(current: {', '.join(group)}); schema_mode 'strict' rejects it; use "
-                    "contradiction='supersede' to retire the older relation instead"
+                    "contradiction='supersede' to retire the older relation instead",
+                    code="schema_violation",
                 )
             warnings.append(
                 InsertWarning(
@@ -3015,7 +3026,10 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
         newest = await _newest_edge(runner, ns, rid, _is_relation_type)
         if newest is None:
             raise NotFoundError("Relation", rid)
-        raise ValidationError(f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified")
+        raise ValidationError(
+            f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified",
+            code="relation_invalidated",
+        )
     current = _relation_of(edge)
     held = next((c for c in current.certifications if c.until is None), None)
     if (held.by if held else None) == by:
@@ -3128,7 +3142,7 @@ async def _ensure_profile(runner: Any, ns: str, subject_id: str, created_at: dat
     if await runner.node_exists(ns, L_PROFILE, pid):
         return pid
     if not await runner.node_exists(ns, L_ENTITY, subject_id):
-        raise ValidationError(f"preference references unknown subject entity {subject_id!r}")
+        raise ValidationError(f"preference references unknown subject entity {subject_id!r}", code="unknown_reference")
     await runner.upsert_node(
         ns,
         L_PROFILE,
@@ -3215,7 +3229,8 @@ def _require_same_preference(pid: str, stored: tuple[str, ...], given: tuple[str
     if stored != given:
         raise ValidationError(
             f"preference {pid!r} already exists with different subject/stance/key/value; "
-            "these identify the preference and are immutable; create a new preference to change them"
+            "these identify the preference and are immutable; create a new preference to change them",
+            code="immutable_identity",
         )
 
 
@@ -3582,7 +3597,7 @@ async def _resolve_steps(runner: Any, ns: str, step_rel_ids: list[str]) -> list[
     for order, rel_id in enumerate(step_rel_ids):
         edge = newest.get(rel_id) if versions is not None else await _newest_edge(runner, ns, rel_id, _is_relation_type)
         if edge is None:
-            raise ValidationError(f"decision step references unknown relation {rel_id!r}")
+            raise ValidationError(f"decision step references unknown relation {rel_id!r}", code="unknown_reference")
         steps.append(
             DecisionStep(order=order, relation_id=rel_id, from_entity=edge["from_id"], to_entity=edge["to_id"])
         )

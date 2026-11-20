@@ -142,7 +142,6 @@ function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null 
   const status = err?.statusCode;
   const message = `${String(err?.message ?? "")} ${String(err?.responseBody ?? "")}`;
   const provider = config.provider;
-  const options = { cause: exc };
   if (name === "AI_LoadAPIKeyError" || MISSING_KEY.test(message)) {
     const envVar = KEY_VAR.exec(message)?.[0];
     if (config.prebuilt) {
@@ -150,21 +149,27 @@ function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null 
       return new ExtractionError(
         `no API key for LLM provider ${provider}: SelfGraph cannot pass a key to a prebuilt AI SDK model; ` +
           `${set}, or pass apiKey when you create the provider`,
-        options,
+        { cause: exc, code: "llm_auth_failed" },
       );
     }
     const google = ["google", "gemini"].includes(provider.toLowerCase());
     const keyVar = google ? `${GOOGLE_KEY_ENV.slice(0, -1).join(", ")}, or ${GOOGLE_KEY_ENV.at(-1)}` : envVar;
     const own = keyVar ? `the provider's ${keyVar} variable` : "the provider's own key variable";
-    return new ExtractionError(`no API key for LLM provider ${provider}: pass ${KEY_SOURCES}, or set ${own}`, options);
+    return new ExtractionError(`no API key for LLM provider ${provider}: pass ${KEY_SOURCES}, or set ${own}`, {
+      cause: exc,
+      code: "llm_auth_failed",
+    });
   }
   if (name === "GatewayAuthenticationError" || status === 401 || BAD_KEY.test(message)) {
-    return new ExtractionError(`LLM authentication failed for provider ${provider}: ${KEY_HINT}`, options);
+    return new ExtractionError(`LLM authentication failed for provider ${provider}: ${KEY_HINT}`, {
+      cause: exc,
+      code: "llm_auth_failed",
+    });
   }
   if (name === "GatewayForbiddenError" || status === 403) {
     return new ExtractionError(
       `LLM access denied for provider ${provider} and model ${JSON.stringify(config.model)}: ${KEY_HINT}`,
-      options,
+      { cause: exc, code: "llm_auth_failed" },
     );
   }
   if (["AI_NoSuchModelError", "GatewayModelNotFoundError", "GatewayNotFoundError"].includes(name) || status === 404) {
@@ -172,7 +177,7 @@ function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null 
     return new ExtractionError(
       `LLM model ${JSON.stringify(config.model)} was not found for provider ${provider}${where}: ` +
         `check ${settingHint("llm_model")} and the provider`,
-      options,
+      { cause: exc, code: "llm_model_not_found" },
     );
   }
   return null;
@@ -190,6 +195,7 @@ function requireProvider(config: ParsedLLMConfig): void {
   throw new ValidationError(
     `unknown LLM provider ${pyRepr(config.provider)}: use one of ${KNOWN_PROVIDERS.join(", ")}, set base_url for an ` +
       `OpenAI-compatible endpoint, or pass an AI SDK model as llm${hint}`,
+    { code: "invalid_setting" },
   );
 }
 

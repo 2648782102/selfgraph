@@ -132,7 +132,10 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
     } catch (exc) {
       if (exc instanceof StoreError) throw exc;
       const reason = errorReason(exc).replace(/^Failed to connect to FalkorDB: /, "");
-      throw new StoreError(`failed connecting to FalkorDB at ${this.host}:${this.port}: ${reason}`, { cause: exc });
+      throw new StoreError(`failed connecting to FalkorDB at ${this.host}:${this.port}: ${reason}`, {
+        cause: exc,
+        code: "store_unreachable",
+      });
     }
     let res: GraphReply<Record<string, unknown>>;
     try {
@@ -140,7 +143,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
     } catch (exc) {
       const message = errorMessage(exc);
       if (TRANSIENT_MARKERS.some((k) => message.toLowerCase().includes(k))) {
-        throw new TransientError(`FalkorDB transient error: ${message}`, { cause: exc });
+        throw new TransientError(`FalkorDB transient error: ${message}`, { cause: exc, code: "store_busy" });
       }
       throw new StoreError(`FalkorDB query failed: ${message}`, { cause: exc });
     }

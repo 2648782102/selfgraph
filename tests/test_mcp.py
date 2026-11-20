@@ -8,11 +8,25 @@ from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_updat
 
 import selfgraph
 import selfgraph.mcp.server as srv
-from selfgraph.errors import ValidationError
+from selfgraph.errors import DOCS_URL, ValidationError
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
 TOOL_NAMES = [fn.__name__ for fn in srv.TOOLS]
+
+
+def tool_failure(server, tool, args):
+    """Call a tool that must fail and return its structured error, checking the JSON text matches it.
+
+    @param server (Any): the MCP server.
+    @param tool (str): the tool name.
+    @param args (dict): the arguments.
+    @return (dict): the structured error.
+    """
+    result = run(server.call_tool(tool, args))
+    assert result.is_error
+    assert json.loads(result.content[0].text) == result.structured_content
+    return result.structured_content
 
 
 @pytest.fixture
@@ -251,10 +265,16 @@ def test_call_tool_arguments_results_and_errors(server):
     assert len(result.content) == 1
     assert [v["revision"] for v in json.loads(result.content[0].text)] == [1]
     assert result.structured_content == {"result": json.loads(result.content[0].text)}
-    with pytest.raises(Exception, match="limit must be >= 1, got 0"):
-        run(server.call_tool("list_entities", {"limit": 0}))
+    assert tool_failure(server, "list_entities", {"limit": 0}) == {
+        "error": "limit must be >= 1, got 0",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "retryable": False,
+        "docs": f"{DOCS_URL}#invalid_argument",
+    }
     with pytest.raises(
-        Exception, match="unknown option 'properties' for update_relation; did you mean 'set_properties'"
+        Exception,
+        match=r"ValidationError\[unknown_key\]: unknown option 'properties' for update_relation; did you mean",
     ):
         run(server.call_tool("update_relation", {"id": "relation:x", "properties": {"a": 1}}))
     for tool, args, message in (
@@ -264,7 +284,7 @@ def test_call_tool_arguments_results_and_errors(server):
     ):
         with pytest.raises(Exception) as exc:
             run(server.call_tool(tool, args))
-        assert str(exc.value).endswith(f"ValidationError: {message}")
+        assert str(exc.value).endswith(f"ValidationError[invalid_argument]: {message}")
         assert "pydantic" not in str(exc.value)
     for flag in ("no", "false", "0", 0, None):
         for tool, args in (
@@ -308,7 +328,7 @@ NUMBER_ARGUMENT_CASES = [
 def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, args, message):
     with pytest.raises(Exception) as exc:
         run(server.call_tool(tool, args))
-    assert str(exc.value).endswith(f"ValidationError: invalid arguments: {message}")
+    assert str(exc.value).endswith(f"ValidationError[invalid_argument]: invalid arguments: {message}")
 
 
 def test_whole_floats_pass_as_integers_and_integers_as_numbers(server):
@@ -399,8 +419,8 @@ def test_graph_diff_tool_returns_structured_changes_and_validates_window(server)
     result = run(server.call_tool("graph_diff", {"since": "2000-01-01", "until": "2099-01-01"}))
     assert [r["id"] for r in result.structured_content["relations_added"]] == ["relation:ab"]
     assert [e["id"] for e in result.structured_content["entities_created"]] == ["t:a", "t:b"]
-    with pytest.raises(Exception, match="until must be at or after since"):
-        run(server.call_tool("graph_diff", {"since": "2021-01-01", "until": "2020-01-01"}))
+    failure = tool_failure(server, "graph_diff", {"since": "2021-01-01", "until": "2020-01-01"})
+    assert (failure["error"], failure["code"]) == ("until must be at or after since", "invalid_argument")
 
 
 def test_proto_keys_are_rejected_by_mcp():

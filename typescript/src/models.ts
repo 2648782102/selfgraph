@@ -464,7 +464,9 @@ export function requireMatchingPrefix(provider: string, model: string, baseUrl: 
   const other = prefix.toLowerCase();
   if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return;
   if ((SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other)) {
-    throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`);
+    throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`, {
+      code: "invalid_setting",
+    });
   }
 }
 
@@ -639,7 +641,7 @@ function unknownKey(schema: z.core.$ZodType, value: unknown, where: string): str
  */
 export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
   const unknown = unknownKey(schema, value, what);
-  if (unknown !== null) throw new ValidationError(unknown);
+  if (unknown !== null) throw new ValidationError(unknown, { code: "unknown_key" });
   const result = schema.safeParse(value);
   if (result.success) return result.data;
   throw new ValidationError(validationMessage(`invalid ${what}`, result.error, value), { cause: result.error });

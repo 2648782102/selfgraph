@@ -180,7 +180,9 @@ def check_options(method: str, given: Iterable[str], allowed: Iterable[str]) -> 
     accepted = list(allowed)
     unknown = sorted(str(k) for k in given if k not in accepted)
     if unknown:
-        raise ValidationError(f"unknown option {unknown[0]!r} for {method}{key_hint(unknown[0], accepted, 'options')}")
+        raise ValidationError(
+            f"unknown option {unknown[0]!r} for {method}{key_hint(unknown[0], accepted, 'options')}", code="unknown_key"
+        )
 
 
 def _nested_input(annotation: Any) -> "tuple[type[InputModel] | None, bool]":
@@ -259,7 +261,7 @@ class InputModel(BaseModel):
     def _reject_unknown_keys(cls, data: Any) -> Any:
         found = _unknown_key(cls, data, cls.input_label)
         if found:
-            raise ValidationError(found)
+            raise ValidationError(found, code="unknown_key")
         return data
 
 
@@ -785,7 +787,9 @@ class LLMConfig(TopInputModel):
         own, other = self.provider.lower(), prefix.lower()
         known = sep and not self.base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
         if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other):
-            raise ValidationError(f"provider {self.provider!r} conflicts with model prefix {prefix!r}")
+            raise ValidationError(
+                f"provider {self.provider!r} conflicts with model prefix {prefix!r}", code="invalid_setting"
+            )
         return self
 
 

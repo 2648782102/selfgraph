@@ -164,7 +164,8 @@ export function requireSchemaMode(mode: unknown): void {
  * @param schema (unknown): the schema, a schema source, or null.
  */
 export function requireSchemaForMode(mode: unknown, schema: unknown): void {
-  if (mode === "strict" && schema == null) throw new ValidationError("schema_mode 'strict' needs a schema");
+  if (mode === "strict" && schema == null)
+    throw new ValidationError("schema_mode 'strict' needs a schema", { code: "schema_required" });
 }
 
 /**
@@ -728,7 +729,8 @@ export async function enforceSchema(
     const known = new Set((await check(before)).map((w) => JSON.stringify([w.code, w.message])));
     warnings = warnings.filter((w) => !known.has(JSON.stringify([w.code, w.message])));
   }
-  if (mode === "strict" && warnings.length) throw new ValidationError(warnings.map((w) => w.message).join("; "));
+  if (mode === "strict" && warnings.length)
+    throw new ValidationError(warnings.map((w) => w.message).join("; "), { code: "schema_violation" });
   return warnings;
 }
 

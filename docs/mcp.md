@@ -199,16 +199,30 @@ process can exit, and the next call reopens it.
 
 ## Errors
 
-A failing tool returns an MCP error result with the error flag set.
+A failing tool returns an MCP error result with the error flag set. Its
+structured content is the error with its [code](errors.md#codes), and its text
+is the same object as JSON:
 
-| SDK | Content |
-|-----|---------|
-| Python | `ErrorType: message`, such as `NotFoundError: Entity 'person:nobody' does not exist` |
-| TypeScript | `{error, error_type}` |
+```json
+{
+  "error": "Entity 'person:nobody' does not exist",
+  "error_type": "NotFoundError",
+  "code": "not_found",
+  "retryable": false,
+  "docs": "https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md#not_found"
+}
+```
 
-- Arguments that do not match a tool's schema fail the same way, as a
-  `ValidationError` with one `path: message` line per problem
-  (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`).
+An error that is not a SelfGraph error has `error_type` `InternalError` and no
+code.
+
+- Arguments that do not match a tool's schema fail as a `ValidationError` with
+  one `path: message` line per problem
+  (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`). TypeScript
+  returns them as the result above. Python's MCP SDK checks arguments before
+  the tool runs, so it reports them as the text
+  `ValidationError[<code>]: <message>`, with code `invalid_argument`, or
+  `unknown_key` for an unknown argument.
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
 - An unknown tool name fails as a tool error.

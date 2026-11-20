@@ -91,13 +91,22 @@ export function boltFailure(exc: unknown): "auth" | "database" | "unreachable" |
 export function boltError(exc: unknown, uri: string, database: string | null): StoreError | null {
   const failure = boltFailure(exc);
   if (failure === "auth") {
-    return new StoreError(`authentication failed for ${uri}: check the token/password`, { cause: exc });
+    return new StoreError(`authentication failed for ${uri}: check the token/password`, {
+      cause: exc,
+      code: "store_auth_failed",
+    });
   }
   if (failure === "database") {
-    return new StoreError(database ? `database ${pyRepr(database)} not found` : "database not found", { cause: exc });
+    return new StoreError(database ? `database ${pyRepr(database)} not found` : "database not found", {
+      cause: exc,
+      code: "database_not_found",
+    });
   }
   if (failure === "unreachable") {
-    return new StoreError(`could not connect to ${uri}: ${errorReason(exc)}`, { cause: exc });
+    return new StoreError(`could not connect to ${uri}: ${errorReason(exc)}`, {
+      cause: exc,
+      code: "store_unreachable",
+    });
   }
   return null;
 }
@@ -172,7 +181,7 @@ export function parseAuth(auth: unknown, defaultUser = "neo4j"): [string, string
 export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver {
   const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : null;
   if (scheme !== null && !BOLT_SCHEMES.includes(scheme)) {
-    throw new StoreError(`${pyRepr(uri)} is not a Bolt URI; use bolt://host:port`);
+    throw new StoreError(`${pyRepr(uri)} is not a Bolt URI; use bolt://host:port`, { code: "invalid_setting" });
   }
   const pair = isPlainObject(auth) && typeof auth.scheme === "string" ? null : parseAuth(auth);
   const token = pair === null ? (auth as AuthToken | undefined) || undefined : neo4j.auth.basic(pair[0], pair[1]);
@@ -183,7 +192,10 @@ export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver 
       ...config,
     });
   } catch (exc) {
-    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(uri)}: ${errorMessage(exc)}`, { cause: exc });
+    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(uri)}: ${errorMessage(exc)}`, {
+      cause: exc,
+      code: "invalid_setting",
+    });
   }
 }
 

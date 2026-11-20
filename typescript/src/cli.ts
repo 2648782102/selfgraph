@@ -12,7 +12,14 @@ import {
 } from "@commander-js/extra-typings";
 
 import { SelfGraph } from "./client.js";
-import { NotFoundError, PromptTemplateError, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
+import {
+  type ErrorCode,
+  NotFoundError,
+  PromptTemplateError,
+  SelfGraphError,
+  surfaceHint,
+  ValidationError,
+} from "./errors.js";
 import { toOssie } from "./export.js";
 import { setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
@@ -762,7 +769,8 @@ export function buildParser(): Command<[], GlobalOptions> {
     .addOption(new Option("--to <format>", "the target format").choices(["neo4j", "ossie"]).default("neo4j"))
     .action((o, cmd) =>
       emit(cmd, async (g) => {
-        if (g.schema === null) throw new ValidationError(`no schema to export; ${NO_SCHEMA}`);
+        if (g.schema === null)
+          throw new ValidationError(`no schema to export; ${NO_SCHEMA}`, { code: "schema_required" });
         return o.to === "ossie" ? toOssie(g.schema) : toNeo4jOntology(g.schema);
       }),
     );
@@ -933,9 +941,17 @@ export function buildParser(): Command<[], GlobalOptions> {
   return program;
 }
 
-function fail(message: string, code: number): number {
-  process.stderr.write(`error: ${message.trimEnd()}\n`);
-  return code;
+/**
+ * Print an error on stderr, tagged with its code when it is a SelfGraph error.
+ *
+ * @param message (string): the message.
+ * @param status (number): the exit code to return.
+ * @param code (ErrorCode | undefined): the error code.
+ * @return (number): the exit code.
+ */
+function fail(message: string, status: number, code?: ErrorCode): number {
+  process.stderr.write(`${code ? `error[${code}]` : "error"}: ${message.trimEnd()}\n`);
+  return status;
 }
 
 function exitOverride(cmd: Command<unknown[], OptionValues, OptionValues>): void {
@@ -961,8 +977,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     if (exc instanceof CommanderError) {
       return exc.code === "commander.helpDisplayed" || exc.code === "commander.version" || exc.exitCode === 0 ? 0 : 2;
     }
-    if (exc instanceof ValidationError || exc instanceof PromptTemplateError) return fail(surfaceHint(exc.message), 2);
-    if (exc instanceof SelfGraphError) return fail(surfaceHint(exc.message), 1);
+    if (exc instanceof SelfGraphError) {
+      const usage = exc instanceof ValidationError || exc instanceof PromptTemplateError;
+      return fail(surfaceHint(exc.message), usage ? 2 : 1, exc.code);
+    }
     if ((exc as NodeJS.ErrnoException).code === "EPIPE") return 141;
     return fail(exc instanceof Error ? exc.message : String(exc), 1);
   } finally {

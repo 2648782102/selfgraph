@@ -675,30 +675,30 @@ const USES_SPEC = {
 class Opaque {}
 
 /**
- * Run a call that should fail and return its error class and message.
+ * Run a call that should fail and return its error as the wire fields both SDKs report.
  *
  * @param call (() => Promise<unknown>): the call.
- * @return (Promise<string[]>): the error class name and message, or ["accepted"] when the call succeeds.
+ * @return (Promise<object | string>): the error's toJSON() fields, or "accepted" when the call succeeds.
  */
-async function errorOf(call: () => Promise<unknown>): Promise<string[]> {
+async function errorOf(call: () => Promise<unknown>): Promise<object | string> {
   try {
     await call();
   } catch (exc) {
     if (!(exc instanceof SelfGraphError)) throw exc;
-    return [exc.name, exc.message];
+    return exc.toJSON();
   }
-  return ["accepted"];
+  return "accepted";
 }
 
 /**
- * Pass a bad stance, status, or evidence shape to each resource method that takes one.
+ * Pass bad input (a stance, status, evidence shape, key, type, reference, or cursor) to resource methods.
  *
  * An Opaque instance stands in for bad evidence because both SDKs name a class instance by its class.
  *
  * @param graph (SelfGraph): the conformance graph.
- * @return (Promise<Record<string, string[]>>): each case's error class and message.
+ * @return (Promise<Record<string, object | string>>): each case's error fields.
  */
-async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>> {
+async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | string>> {
   const worksAt = ids.relationId("person:jane-doe", "WORKS_AT", "company:acme");
   const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
   const bad = new Opaque() as never;
@@ -771,6 +771,10 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>>
     entity_inf_property: await errorOf(() =>
       graph.entities.create("Inf", "Person", { properties: { d: Number.POSITIVE_INFINITY } }),
     ),
+    facts_unknown_key: await errorOf(() => graph.insert.facts({ entities: [{ nmae: "A", type: "Person" }] } as never)),
+    entity_retype: await errorOf(() => graph.entities.update("person:jane-doe", { type: "Company" } as never)),
+    rel_create_dangling: await errorOf(() => graph.relations.create("person:jane-doe", "KNOWS", "person:ghost")),
+    list_bad_cursor: await errorOf(() => graph.entities.list({ cursor: "nope" })),
   };
 }
 

@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 
+import { DOCS_URL } from "../src/errors.js";
 import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
 import {
   buildServer,
@@ -92,12 +93,18 @@ describe("MCP run_cypher guard", () => {
   it("rejects INSERT, unicode escapes, bare keyword aliases, and chained admin statements", async () => {
     for (const q of BYPASSES) expect(isBlockedQuery(q), q).toBe(true);
     for (const q of READS) expect(isBlockedQuery(q), q).toBe(false);
-    expect((await mcpError("run_cypher", { query: BYPASSES[1] })).error_type).toBe("ValidationError");
+    expect(await mcpError("run_cypher", { query: BYPASSES[1] })).toMatchObject({
+      error_type: "ValidationError",
+      code: "read_only_query",
+    });
     expect(await mcpError("update_relation", { id: "relation:x", properties: {} })).toEqual({
       error:
         "unknown option 'properties' for update_relation; did you mean 'set_properties'? " +
         "(valid options: id, set_properties, remove_properties, event_time, evidence)",
       error_type: "ValidationError",
+      code: "unknown_key",
+      retryable: false,
+      docs: `${DOCS_URL}#unknown_key`,
     });
   });
 });
@@ -330,7 +337,13 @@ describe("MCP tools over Kuzu", () => {
       ] as const) {
         const res = await client.callTool({ name: tool, arguments: args });
         expect(res.isError).toBe(true);
-        expect(res.structuredContent).toEqual({ error: message, error_type: "ValidationError" });
+        expect(res.structuredContent).toEqual({
+          error: message,
+          error_type: "ValidationError",
+          code: "invalid_argument",
+          retryable: false,
+          docs: `${DOCS_URL}#invalid_argument`,
+        });
       }
     } finally {
       await client.close();
@@ -403,7 +416,11 @@ it("rejects proto keys before MCP argument parsing drops them", async () => {
   ] as const) {
     expect(await callTool(name, args)).toEqual({
       isError: true,
-      result: { error: "property and external id keys cannot be '__proto__'", error_type: "ValidationError" },
+      result: expect.objectContaining({
+        error: "property and external id keys cannot be '__proto__'",
+        error_type: "ValidationError",
+        code: "invalid_argument",
+      }),
     });
   }
 });

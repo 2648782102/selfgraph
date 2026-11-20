@@ -1,9 +1,75 @@
 import { pyRepr } from "./internal/py.js";
 
+export type ErrorCode =
+  | "invalid_argument"
+  | "unknown_key"
+  | "invalid_setting"
+  | "llm_required"
+  | "embedder_required"
+  | "schema_required"
+  | "schema_violation"
+  | "immutable_identity"
+  | "unknown_reference"
+  | "relation_certified"
+  | "relation_invalidated"
+  | "merge_reverted"
+  | "invalid_cursor"
+  | "invalid_resolver_decision"
+  | "read_only_query"
+  | "missing_package"
+  | "not_found"
+  | "already_exists"
+  | "extraction_failed"
+  | "llm_auth_failed"
+  | "llm_model_not_found"
+  | "invalid_llm_output"
+  | "invalid_prompt_template"
+  | "query_failed"
+  | "graph_closed"
+  | "store_closed"
+  | "store_unreachable"
+  | "store_locked"
+  | "store_auth_failed"
+  | "database_not_found"
+  | "wrong_engine"
+  | "write_too_large"
+  | "write_conflict"
+  | "store_busy";
+export const DOCS_URL = "https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md";
+
 export class SelfGraphError extends Error {
-  constructor(message?: string, options?: { cause?: unknown }) {
+  static readonly code: ErrorCode = "invalid_argument";
+  readonly code: ErrorCode;
+
+  /**
+   * An SDK error with a stable code that names the failure and its repair.
+   *
+   * @param message (string | undefined): what happened, with the fix when one applies.
+   * @param options ({ cause?: unknown; code?: ErrorCode } | undefined): the cause, and the code when not the class default.
+   */
+  constructor(message?: string, options?: { cause?: unknown; code?: ErrorCode }) {
     super(message, options);
     this.name = new.target.name;
+    this.code = options?.code ?? (new.target as typeof SelfGraphError).code;
+  }
+
+  /** Whether the same call can succeed when run again unchanged: true for a TransientError. */
+  get retryable(): boolean {
+    return this instanceof TransientError;
+  }
+
+  /** The docs section that explains this error's code and its repair. */
+  get docs(): string {
+    return `${DOCS_URL}#${this.code}`;
+  }
+
+  /**
+   * The error as JSON-ready fields, as the MCP server returns it.
+   *
+   * @return ({ error: string; error_type: string; code: ErrorCode; retryable: boolean; docs: string }): the fields.
+   */
+  toJSON(): { error: string; error_type: string; code: ErrorCode; retryable: boolean; docs: string } {
+    return { error: this.message, error_type: this.name, code: this.code, retryable: this.retryable, docs: this.docs };
   }
 }
 
@@ -29,24 +95,36 @@ class ObjectError extends SelfGraphError {
 }
 
 export class NotFoundError extends ObjectError {
+  static override readonly code: ErrorCode = "not_found";
+
   constructor(objectType: string, objectId: string, message?: string) {
     super(objectType, objectId, "does not exist", message);
   }
 }
 
 export class ConflictError extends ObjectError {
+  static override readonly code: ErrorCode = "already_exists";
+
   constructor(objectType: string, objectId: string) {
     super(objectType, objectId, "already exists");
   }
 }
 
-export class ExtractionError extends SelfGraphError {}
+export class ExtractionError extends SelfGraphError {
+  static override readonly code: ErrorCode = "extraction_failed";
+}
 
-export class PromptTemplateError extends SelfGraphError {}
+export class PromptTemplateError extends SelfGraphError {
+  static override readonly code: ErrorCode = "invalid_prompt_template";
+}
 
-export class StoreError extends SelfGraphError {}
+export class StoreError extends SelfGraphError {
+  static override readonly code: ErrorCode = "query_failed";
+}
 
-export class TransientError extends StoreError {}
+export class TransientError extends StoreError {
+  static override readonly code: ErrorCode = "write_conflict";
+}
 
 export const LLM_HINT = "pass llm in the SelfGraph options (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)";
 export const STORE_CLOSED_MESSAGE = "this store is closed; create a new store for each SelfGraph";
@@ -55,6 +133,16 @@ export const STORE_KUZU_HINT = 'pass store: "kuzu" (or SELFGRAPH_STORE=kuzu)';
 export const OTHER_ENGINE_HINT = 'pass store: "neo4j" (or store: "memgraph")';
 export const DECAY_HINT = "run maintenance.decay({ dry_run: false }) first";
 export const KEY_SOURCES = "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)";
+
+/**
+ * The error for a feature that needs an LLM when none is configured.
+ *
+ * @param what (string): the feature, such as "level 'max'".
+ * @return (ValidationError): the error, with code llm_required.
+ */
+export function needsLlm(what: string): ValidationError {
+  return new ValidationError(`${what} needs an LLM: ${LLM_HINT}`, { code: "llm_required" });
+}
 
 /**
  * Name a connect or fromEnv setting with its environment variable, as library messages do.

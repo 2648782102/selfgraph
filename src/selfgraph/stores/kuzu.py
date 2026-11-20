@@ -116,10 +116,12 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     """
     message = f"{prefix}: {exc}"
     if "Could not set lock on file" in str(exc):
-        message += (
-            "; another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time"
+        return StoreError(
+            f"{message}; another process (an MCP server or script) has this Kuzu database open; Kuzu allows one "
+            "process at a time",
+            code="store_locked",
         )
-    elif "Buffer manager exception: Mmap for size" in str(exc):
+    if "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)
 
@@ -231,7 +233,9 @@ class KuzuStore(AutoCommitStore):
         try:
             import kuzu
         except ImportError as exc:  # pragma: no cover
-            raise StoreError("the 'kuzu' package is required for KuzuStore; pip install \"selfgraph[kuzu]\"") from exc
+            raise StoreError(
+                "the 'kuzu' package is required for KuzuStore; pip install \"selfgraph[kuzu]\"", code="missing_package"
+            ) from exc
         max_db_size = db_kwargs.get("max_db_size")
         if max_db_size is not None and (type(max_db_size) is not int or max_db_size < 1):
             raise ValidationError(f"max_db_size must be a positive integer of bytes, got {max_db_size!r}")

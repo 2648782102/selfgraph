@@ -7,7 +7,6 @@ import {
   type LLMClient,
   NotFoundError,
   SelfGraph,
-  StoreError,
   ValidationError,
 } from "../src/index.js";
 import { jsonIso } from "../src/internal/time.js";
@@ -1221,7 +1220,7 @@ function suite(spec: StoreSpec): void {
     await expect(g.retrieve("Ann", { as_of: "yesterday" })).rejects.toThrow(/invalid as_of/);
     await expect(g.retrieve("Ann", { as_of: "2024-01-01T00:00:00Z" })).resolves.toBeTruthy();
     await g.close();
-    await expect(g.retrieve("Ann", { as_of: new Date() })).rejects.toThrow(StoreError);
+    await expect(g.retrieve("Ann", { as_of: new Date() })).rejects.toMatchObject({ code: "graph_closed" });
     await expect(g.retrieve("Ann", { as_of: "nope" })).rejects.toThrow(ValidationError);
   });
 }

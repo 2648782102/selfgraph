@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import errno
 import re
+from typing import Any, Literal
 
 __all__ = [
+    "ErrorCode",
     "SelfGraphError",
     "ValidationError",
     "NotFoundError",
@@ -15,8 +17,86 @@ __all__ = [
 ]
 
 
+ErrorCode = Literal[
+    "invalid_argument",
+    "unknown_key",
+    "invalid_setting",
+    "llm_required",
+    "embedder_required",
+    "schema_required",
+    "schema_violation",
+    "immutable_identity",
+    "unknown_reference",
+    "relation_certified",
+    "relation_invalidated",
+    "merge_reverted",
+    "invalid_cursor",
+    "invalid_resolver_decision",
+    "read_only_query",
+    "missing_package",
+    "not_found",
+    "already_exists",
+    "extraction_failed",
+    "llm_auth_failed",
+    "llm_model_not_found",
+    "invalid_llm_output",
+    "invalid_prompt_template",
+    "query_failed",
+    "graph_closed",
+    "store_closed",
+    "store_unreachable",
+    "store_locked",
+    "store_auth_failed",
+    "database_not_found",
+    "wrong_engine",
+    "write_too_large",
+    "write_conflict",
+    "store_busy",
+]
+DOCS_URL = "https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md"
+
+
 class SelfGraphError(Exception):
-    pass
+    code: ErrorCode = "invalid_argument"
+
+    def __init__(self, message: str = "", *, code: ErrorCode | None = None) -> None:
+        """An SDK error with a stable code that names the failure and its repair.
+
+        @param message (str): what happened, with the fix when one applies.
+        @param code (ErrorCode | None): the code, or None for the class default.
+        """
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+    @property
+    def retryable(self) -> bool:
+        """Whether the same call can succeed when run again unchanged.
+
+        @return (bool): True for a TransientError.
+        """
+        return isinstance(self, TransientError)
+
+    @property
+    def docs(self) -> str:
+        """The docs section that explains this error's code and its repair.
+
+        @return (str): the URL.
+        """
+        return f"{DOCS_URL}#{self.code}"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The error as JSON-ready fields, as the MCP server returns it.
+
+        @return (dict[str, Any]): error, error_type, code, retryable, and docs.
+        """
+        return {
+            "error": str(self),
+            "error_type": type(self).__name__,
+            "code": self.code,
+            "retryable": self.retryable,
+            "docs": self.docs,
+        }
 
 
 class ValidationError(SelfGraphError):
@@ -24,6 +104,8 @@ class ValidationError(SelfGraphError):
 
 
 class NotFoundError(SelfGraphError):
+    code: ErrorCode = "not_found"
+
     def __init__(self, object_type: str, object_id: str, message: str | None = None) -> None:
         self.object_type = object_type
         self.object_id = object_id
@@ -31,6 +113,8 @@ class NotFoundError(SelfGraphError):
 
 
 class ConflictError(SelfGraphError):
+    code: ErrorCode = "already_exists"
+
     def __init__(self, object_type: str, object_id: str) -> None:
         self.object_type = object_type
         self.object_id = object_id
@@ -38,19 +122,19 @@ class ConflictError(SelfGraphError):
 
 
 class ExtractionError(SelfGraphError):
-    pass
+    code: ErrorCode = "extraction_failed"
 
 
 class PromptTemplateError(SelfGraphError):
-    pass
+    code: ErrorCode = "invalid_prompt_template"
 
 
 class StoreError(SelfGraphError):
-    pass
+    code: ErrorCode = "query_failed"
 
 
 class TransientError(StoreError):
-    pass
+    code: ErrorCode = "write_conflict"
 
 
 CLOSED_MESSAGE = "this SelfGraph is closed; create a new SelfGraph to keep using the store"
@@ -61,6 +145,15 @@ STORE_KUZU_HINT = 'pass store="kuzu" (or SELFGRAPH_STORE=kuzu)'
 OTHER_ENGINE_HINT = 'pass store="neo4j" (or store="memgraph")'
 DECAY_HINT = "run maintenance.decay(dry_run=False) first"
 KEY_SOURCES = "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)"
+
+
+def needs_llm(what: str) -> ValidationError:
+    """The error for a feature that needs an LLM when none is configured.
+
+    @param what (str): the feature, such as "level 'max'".
+    @return (ValidationError): the error, with code llm_required.
+    """
+    return ValidationError(f"{what} needs an LLM: {LLM_HINT}", code="llm_required")
 
 
 def setting_hint(key: str) -> str:

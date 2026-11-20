@@ -1411,7 +1411,9 @@ describe("store setup errors", () => {
 
   it("validates addresses, trims syntax errors, and names a missing HydraDB token or another engine", async () => {
     expect(() => SelfGraph.connect({ store: "falkordb", uri: "nonsense:abc" })).toThrow(
-      new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535"),
+      new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535", {
+        code: "invalid_setting",
+      }),
     );
     expect(() => new HydraDBStore("http://127.0.0.1:1")).toThrow(/is not a Bolt URI; use bolt:\/\/host:port$/);
     const tokens = Array.from({ length: 80 }, (_, i) => `'T${i}'`).join(", ");

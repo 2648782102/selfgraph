@@ -643,7 +643,7 @@ export const TOOLS: Tool[] = [
       "literals that differ from a stored entity name only by case or spacing.",
     input: { query: str, params: optObj },
     run: async (g, a) => {
-      if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE);
+      if (isBlockedQuery(a.query)) throw new ValidationError(READ_ONLY_MESSAGE, { code: "read_only_query" });
       return checkedCypher(g, a.query, bindParams(a.query, a.params));
     },
   }),
@@ -763,7 +763,7 @@ export async function close(): Promise<void> {
 }
 
 /**
- * Validate the arguments and run a tool, turning an error into a structured {error, error_type} result flagged as an MCP error.
+ * Validate the arguments and run a tool, turning an error into a structured {error, error_type, code, retryable, docs} result flagged as an MCP error.
  *
  * @param target (Tool | string): the tool, or its name.
  * @param args (Record<string, unknown>): the arguments.
@@ -780,19 +780,12 @@ export async function callTool(
     for (const field of ["properties", "set_properties", "external_ids"]) {
       if (field in t.input) rejectProtoKeys(args[field]);
     }
-  } catch (exc) {
-    return { result: { error: (exc as Error).message, error_type: "ValidationError" }, isError: true };
-  }
-  const parsed = z.object(t.input).safeParse(args);
-  if (!parsed.success) {
-    const error = validationMessage("invalid arguments", parsed.error, args);
-    return { result: { error, error_type: "ValidationError" }, isError: true };
-  }
-  try {
+    const parsed = z.object(t.input).safeParse(args);
+    if (!parsed.success) throw new ValidationError(validationMessage("invalid arguments", parsed.error, args));
     return { result: toJsonable(await t.run(await graph.get(), parsed.data)), isError: false };
   } catch (exc) {
     if (exc instanceof SelfGraphError) {
-      return { result: { error: surfaceHint(exc.message), error_type: exc.name }, isError: true };
+      return { result: { ...exc.toJSON(), error: surfaceHint(exc.message) }, isError: true };
     }
     const name = exc instanceof Error ? exc.name : "Error";
     return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };

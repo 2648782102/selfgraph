@@ -176,6 +176,11 @@ problem, such as `invalid facts: entities[0].name: field required`. See
 
 ## Exit codes
 
+A failed command prints one line on stderr, `error[<code>]: <message>`, with
+the error's [code](errors.md#codes), such as
+`error[not_found]: Relation 'relation:ghost' does not exist`. An error that is
+not a SelfGraph error prints `error: <message>`.
+
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |

@@ -14,7 +14,7 @@ from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import L_TRACE, aware, now
 from .contradiction import judge_contradictions
-from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
+from .errors import CLOSED_MESSAGE, StoreError, TransientError, ValidationError, needs_llm
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
 from .ids import _require_namespace, decision_id, type_name
@@ -133,7 +133,7 @@ class SelfGraph:
         self.namespace = namespace
         self._llm = resolve_llm(llm)
         if level == "max" and max_tier == "max" and self._llm is None:
-            raise ValidationError(f"level 'max' needs an LLM: {LLM_HINT}")
+            raise needs_llm("level 'max'")
         if embedder is not None and not callable(getattr(embedder, "embed", None)):
             raise ValidationError(f"embedder must have an embed method, got {type_name(embedder)}")
         self._level: tiers.Level = level
@@ -147,7 +147,7 @@ class SelfGraph:
             extraction = "llm" if self._llm is not None else preset["extraction"]
         self._extraction = None if extraction is None else tiers.clamp("extraction", extraction, max_tier)
         if self._extraction == "llm" and self._llm is None:
-            raise ValidationError(f"extraction 'llm' needs an LLM: {LLM_HINT}")
+            raise needs_llm("extraction 'llm'")
         if seeds is None:
             seeds = preset["seeds"] if embedder is not None or preset["seeds"] != "embeddings" else "synonyms"
         self._seeds = self._seed_tier(seeds)
@@ -206,7 +206,9 @@ class SelfGraph:
         tiers.require_tier("seeds", seeds)
         tier = tiers.clamp("seeds", str(seeds), self._max_tier)
         if tier == "embeddings" and self._embedder is None:
-            raise ValidationError("seeds 'embeddings' needs an embedder: pass embedder= to SelfGraph")
+            raise ValidationError(
+                "seeds 'embeddings' needs an embedder: pass embedder= to SelfGraph", code="embedder_required"
+            )
         return tier
 
     def _resolver_for(self, resolver: EntityResolver | ResolverMode) -> tuple[str, EntityResolver | None]:
@@ -230,7 +232,7 @@ class SelfGraph:
         require_contradiction_mode(mode)
         tier = tiers.clamp("contradiction", str(mode), self._max_tier)
         if tier == "llm" and self._llm is None:
-            raise ValidationError(f"contradiction 'llm' needs an LLM: {LLM_HINT}")
+            raise needs_llm("contradiction 'llm'")
         return tier  # type: ignore[return-value]
 
     @classmethod
@@ -259,7 +261,7 @@ class SelfGraph:
     async def initialize(self) -> None:
         """Create the store's ID constraints and indexes."""
         if self._closed:
-            raise StoreError(CLOSED_MESSAGE)
+            raise StoreError(CLOSED_MESSAGE, code="graph_closed")
         await self.store.initialize()
         self._ready = True
 
@@ -269,7 +271,7 @@ class SelfGraph:
         @return (None): nothing.
         """
         if self._closed:
-            raise StoreError(CLOSED_MESSAGE)
+            raise StoreError(CLOSED_MESSAGE, code="graph_closed")
         if not self._ready:
             await self.initialize()
 
@@ -487,7 +489,8 @@ class SelfGraph:
                 if attempt == _MAX_TX_RETRIES - 1:
                     raise TransientError(
                         f"write contention: could not commit after {_MAX_TX_RETRIES} retries; "
-                        "retry the write or serialize concurrent writers to this edge"
+                        "retry the write or serialize concurrent writers to this edge",
+                        code=exc.code,
                     ) from exc
                 backoff = min(_TX_RETRY_BASE_DELAY * 2**attempt, _TX_RETRY_MAX_DELAY)
                 await asyncio.sleep(random.uniform(0, backoff))

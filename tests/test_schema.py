@@ -763,7 +763,7 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
         with pytest.raises(ValidationError, match="^schema_mode 'strict' needs a schema$"):
             call()
     assert kuzu_main(tmp_path, "--schema-mode", "strict", "entity", "list") == 2
-    assert capsys.readouterr().err == "error: schema_mode 'strict' needs a schema\n"
+    assert capsys.readouterr().err == "error[schema_required]: schema_mode 'strict' needs a schema\n"
 
 
 @pytest.mark.parametrize(

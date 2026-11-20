@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { LLM_HINT, NotFoundError, ValidationError } from "./errors.js";
+import { NotFoundError, needsLlm, ValidationError } from "./errors.js";
 import { FALLBACK_TYPE } from "./extraction/extractor.js";
 import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
@@ -411,7 +411,10 @@ export class LLMResolver implements EntityResolver {
   constructor(llm: LLMArg, options: LLMResolverOptions = {}) {
     checkOptions("LLMResolver", options, ["band", "max_questions"]);
     const client = resolveLlm(llm);
-    if (client === null) throw new ValidationError("LLMResolver needs an LLM; pass an LLMConfig or an LLMClient");
+    if (client === null)
+      throw new ValidationError("LLMResolver needs an LLM; pass an LLMConfig or an LLMClient", {
+        code: "llm_required",
+      });
     const band = options.band ?? DEFAULT_BAND;
     if (!Array.isArray(band) || band.length !== 2) {
       throw new ValidationError(`band must be a (low, high) pair, got ${pyRepr(band)}`);
@@ -489,7 +492,7 @@ export function asResolver(value: EntityResolver | ResolverMode, llm: LLMClient 
   if (value === "fuzzy") return new DefaultResolver({ fuzzy: true });
   if (value === "llm") {
     if (llm === null) {
-      throw new ValidationError(`resolver 'llm' needs an LLM: ${LLM_HINT}`);
+      throw needsLlm("resolver 'llm'");
     }
     return new LLMResolver(llm);
   }
@@ -816,7 +819,9 @@ export async function planResolution(
       decision === null ||
       (decision.target_id != null && typeof decision.target_id !== "string")
     ) {
-      throw new ValidationError(`a resolver must return a ResolutionDecision, got ${typeName(decision)}`);
+      throw new ValidationError(`a resolver must return a ResolutionDecision, got ${typeName(decision)}`, {
+        code: "invalid_resolver_decision",
+      });
     }
     if (decision.target_id == null) {
       batch.set(eid, viewOf(ent, eid, etype, ename, createdAt));
@@ -830,6 +835,7 @@ export async function planResolution(
         throw new ValidationError(
           `resolver decision merging ${pyRepr(eid)} into ${pyRepr(decision.target_id)} is missing ${name}; ` +
             "a decision with a target_id needs confidence and reason",
+          { code: "invalid_resolver_decision" },
         );
       }
       if (typeof decision[name] !== kind) {
@@ -841,6 +847,7 @@ export async function planResolution(
       throw new ValidationError(
         `resolver chose ${pyRepr(decision.target_id)} for ${pyRepr(eid)}, ` +
           "which is not one of the compatible entities it was offered",
+        { code: "invalid_resolver_decision" },
       );
     }
     mapping.set(eid, target.id);
@@ -1345,7 +1352,9 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   const entries = (await loadEntries(runner, ns, [props])).get(mergeId) ?? [];
   const rec = decodeMerge(props, entries);
   if (rec.reverted_at !== null) {
-    throw new ValidationError(`merge ${pyRepr(mergeId)} was already reverted at ${jsonIso(rec.reverted_at)}`);
+    throw new ValidationError(`merge ${pyRepr(mergeId)} was already reverted at ${jsonIso(rec.reverted_at)}`, {
+      code: "merge_reverted",
+    });
   }
   const history = new Map<string, Relation[]>();
   for (const rw of rec.rewrites) {
@@ -1353,7 +1362,9 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     const versions = await ops.listRelationVersions(runner, ns, rw.id, true);
     history.set(rw.id, versions);
     if (versions[0]?.is_current && versions[0].certified_at !== null) {
-      throw new ValidationError(`relation ${rw.id} is certified; uncertify it before unmerging ${pyRepr(mergeId)}`);
+      throw new ValidationError(`relation ${rw.id} is certified; uncertify it before unmerging ${pyRepr(mergeId)}`, {
+        code: "relation_certified",
+      });
     }
   }
   const at = new Date();

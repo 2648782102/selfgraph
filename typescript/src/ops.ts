@@ -711,6 +711,7 @@ async function requireEndpoints(
   if (missing.length) {
     throw new ValidationError(
       `relation endpoint${missing.length > 1 ? "s" : ""} not found (${missing.join(", ")}); ${hint}`,
+      { code: "unknown_reference" },
     );
   }
 }
@@ -724,7 +725,7 @@ async function requireEntity(
 ): Promise<void> {
   if (eid == null) return;
   if (!(await entityKnown(runner, ns, eid, known))) {
-    throw new ValidationError(`${context} references unknown entity ${pyRepr(eid)}`);
+    throw new ValidationError(`${context} references unknown entity ${pyRepr(eid)}`, { code: "unknown_reference" });
   }
 }
 
@@ -842,7 +843,9 @@ export async function validateFacts(
     requireStr("preference key", pref.key);
     validateStrength(pref.strength);
     if (!(await entityKnown(runner, ns, pref.subject_entity, entities))) {
-      throw new ValidationError(`preference references unknown subject entity ${pyRepr(pref.subject_entity)}`);
+      throw new ValidationError(`preference references unknown subject entity ${pyRepr(pref.subject_entity)}`, {
+        code: "unknown_reference",
+      });
     }
     await requirePreferenceRefs(runner, ns, pref, entities);
   }
@@ -858,7 +861,9 @@ export async function validateFacts(
     requireList("decision alternative_entities", dec.alternative_entities);
     for (const relId of dec.steps) {
       if (!relations.has(relId) && !(await relationExists(runner, ns, relId))) {
-        throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`);
+        throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`, {
+          code: "unknown_reference",
+        });
       }
     }
     await requireTraceRefs(runner, ns, dec, entities);
@@ -1083,7 +1088,9 @@ export async function updateEntity(
   if (existing === null) throw new TransientError(`entity ${pyRepr(eid)} was changed concurrently; retry`);
   let type = fields.type !== undefined ? cleanText(fields.type) : existing.type;
   if (ids.slug(type) !== ids.slug(ids.normalizeText(existing.type))) {
-    throw new ValidationError(`type is part of the id ${pyRepr(eid)}; create a new entity to change its type`);
+    throw new ValidationError(`type is part of the id ${pyRepr(eid)}; create a new entity to change its type`, {
+      code: "immutable_identity",
+    });
   }
   if (!schemaTypes.has(type)) type = existing.type;
   const name = fields.name !== undefined ? cleanText(fields.name) : existing.name;
@@ -1577,6 +1584,7 @@ async function writeRelationVersion(
     await requireEndpoints(runner, ns, ends.from_entity, ends.to_entity, hint);
     throw new ValidationError(
       `relation endpoints not found (from=${pyRepr(ends.from_entity)}, to=${pyRepr(ends.to_entity)}); ${hint}`,
+      { code: "unknown_reference" },
     );
   }
   return decodeRelation(props, ends);
@@ -1623,6 +1631,7 @@ function requireSameEnds(
     throw new ValidationError(
       `relation ${pyRepr(rid)} already exists with different endpoints/type; ` +
         "endpoints and type are immutable; create a new relation to change them",
+      { code: "immutable_identity" },
     );
   }
 }
@@ -1993,6 +2002,7 @@ export class Contradictions {
           `relation ${rid} would exceed max_count ${limit} for ${canonical} at ${side} entity ${endpoint} ` +
             `(current: ${others}); schema_mode 'strict' rejects it; use contradiction='supersede' to ` +
             "retire the older relation instead",
+          { code: "schema_violation" },
         );
       }
       warnings.push(
@@ -2801,7 +2811,9 @@ async function lockCurrent<T>(
     if (latest === null) throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id);
     const ended = latest as Partial<Relation>;
     if (ended.invalidated_at != null) {
-      throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`);
+      throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`, {
+        code: "relation_invalidated",
+      });
     }
     throw new TransientError(`${kind} ${pyRepr(id)} has no current version right now (concurrent write); retry`);
   }
@@ -3189,7 +3201,9 @@ export async function certifyRelation(
   if (edge === null || !isRelationType(edge.type)) {
     const newest = await newestRelation(runner, ns, rid);
     if (newest === null) throw new NotFoundError("Relation", rid);
-    throw new ValidationError(`${invalidatedNote(newest)}; only a current relation can be certified`);
+    throw new ValidationError(`${invalidatedNote(newest)}; only a current relation can be certified`, {
+      code: "relation_invalidated",
+    });
   }
   const current = relationOf(edge);
   const held = current.certifications.find((c) => c.until === null) ?? null;
@@ -3358,7 +3372,9 @@ async function ensureProfile(runner: Runner, ns: string, subjectId: string, crea
   const pid = ids.profileId(subjectId);
   if (await runner.nodeExists(ns, L_PROFILE, pid)) return pid;
   if (!(await runner.nodeExists(ns, L_ENTITY, subjectId))) {
-    throw new ValidationError(`preference references unknown subject entity ${pyRepr(subjectId)}`);
+    throw new ValidationError(`preference references unknown subject entity ${pyRepr(subjectId)}`, {
+      code: "unknown_reference",
+    });
   }
   await runner.upsertNode(ns, L_PROFILE, pid, { id: pid, ns, subject_entity: subjectId, created_at: toIso(createdAt) });
   await runner.createEdge(ns, R_HAS_PROFILE, L_ENTITY, subjectId, L_PROFILE, pid, {
@@ -3437,6 +3453,7 @@ function requireSamePreference(pid: string, stored: string, given: string): void
     throw new ValidationError(
       `preference ${pyRepr(pid)} already exists with different subject/stance/key/value; ` +
         "these identify the preference and are immutable; create a new preference to change them",
+      { code: "immutable_identity" },
     );
   }
 }
@@ -3774,7 +3791,10 @@ async function resolveSteps(runner: Runner, ns: string, stepRelIds: readonly str
   for (const [order, relId] of stepRelIds.entries()) {
     const found = newest.get(relId);
     const rel = versions === null ? await newestRelation(runner, ns, relId) : found ? relationOf(found) : null;
-    if (rel === null) throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`);
+    if (rel === null)
+      throw new ValidationError(`decision step references unknown relation ${pyRepr(relId)}`, {
+        code: "unknown_reference",
+      });
     steps.push({ order, relation_id: relId, from_entity: rel.from_entity, to_entity: rel.to_entity });
   }
   return steps;

@@ -97,7 +97,7 @@ describe("built CLI against Kuzu", () => {
       [
         ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
         {},
-        "error: provider 'anthropic' conflicts with model prefix 'gemini'\n",
+        "error[invalid_setting]: provider 'anthropic' conflicts with model prefix 'gemini'\n",
       ],
       [["--llm-provider", "nonesuch", "--llm-model", "m"], {}, "unknown LLM provider 'nonesuch'"],
       [["--llm-provider", "nonesuch"], {}, "an LLM needs a model"],
@@ -109,7 +109,11 @@ describe("built CLI against Kuzu", () => {
       [["--prompts", "/nonexistent/prompts.json"], {}, "cannot read '/nonexistent/prompts.json'"],
       [["--prompts", prompts("x", "1")], {}, "{text}"],
       [["--prompts", prompts("{text} {bogus}", "1")], {}, "unknown variable {bogus}"],
-      [[], { SELFGRAPH_PROMPTS: prompts("{text}") }, "error: invalid prompts: entities.version: field required\n"],
+      [
+        [],
+        { SELFGRAPH_PROMPTS: prompts("{text}") },
+        "error[invalid_argument]: invalid prompts: entities.version: field required\n",
+      ],
       [["--instructions", "{nope"], {}, "invalid JSON in the inline instructions"],
       [["--instructions", join(dir, "nofile.json")], {}, "cannot read"],
       [["--uri", "graph.kuzu"], {}, "this looks like a Kuzu path; pass --store kuzu (or SELFGRAPH_STORE=kuzu)"],
@@ -202,7 +206,7 @@ describe("built CLI against Kuzu", () => {
       input: JSON.stringify({ entities: [{ type: "P" }, { name: 3, type: "P" }] }),
     });
     expect(bad.err).toBe(
-      "error: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n",
+      "error[invalid_argument]: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n",
     );
   });
 
@@ -414,7 +418,7 @@ describe("built CLI against Kuzu", () => {
     expect(res.err).toContain(`relation ${acme!.id} was invalidated by ${acme!.invalidated_by} at `);
     expect(res.err).toContain("; use relation versions or relation list --include-invalidated");
     const none = cli([...g, "relation", "versions", "relation:ghost"]);
-    expect([none.code, none.err]).toEqual([1, "error: Relation 'relation:ghost' does not exist\n"]);
+    expect([none.code, none.err]).toEqual([1, "error[not_found]: Relation 'relation:ghost' does not exist\n"]);
   });
 
   it("takes connection flags after the subcommand and parses time flags", () => {

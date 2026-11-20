@@ -92,20 +92,29 @@ def _fatal(exc: BaseException, config: LLMConfig, model: str) -> ExtractionError
         if _MISSING_KEY.search(text):
             var = _KEY_ENV.get(provider.lower()) or (found.group(0) if (found := _KEY_VAR.search(text)) else None)
             own = f"the provider's {var} variable" if var else "the provider's own key variable"
-            return ExtractionError(f"no API key for LLM provider {provider}: pass {KEY_SOURCES}, or set {own}")
+            return ExtractionError(
+                f"no API key for LLM provider {provider}: pass {KEY_SOURCES}, or set {own}", code="llm_auth_failed"
+            )
         if name == "AuthenticationError" or status == 401 or _BAD_KEY.search(text):
-            return ExtractionError(f"LLM authentication failed for provider {provider}: {_KEY_HINT}")
+            return ExtractionError(
+                f"LLM authentication failed for provider {provider}: {_KEY_HINT}", code="llm_auth_failed"
+            )
         if name == "PermissionDeniedError" or status == 403:
-            return ExtractionError(f"LLM access denied for provider {provider} and model {config.model!r}: {_KEY_HINT}")
+            return ExtractionError(
+                f"LLM access denied for provider {provider} and model {config.model!r}: {_KEY_HINT}",
+                code="llm_auth_failed",
+            )
         if name == "NotFoundError" or status == 404 or "LLM Provider NOT provided" in text:
             where = f" at {config.base_url}" if config.base_url else ""
             return ExtractionError(
                 f"LLM model {config.model!r} was not found for provider {provider}{where}: "
-                f"check {setting_hint('llm_model')} and the provider"
+                f"check {setting_hint('llm_model')} and the provider",
+                code="llm_model_not_found",
             )
         if "MALFORMED_FUNCTION_CALL" in text or "No tool calls or function call found" in text:
             return ExtractionError(
-                f"LLM model {model!r} did not return structured output; try another model for extraction"
+                f"LLM model {model!r} did not return structured output; try another model for extraction",
+                code="invalid_llm_output",
             )
     return None
 
@@ -123,7 +132,8 @@ def _require_provider(provider: str, known: list[str]) -> None:
     hint = did_you_mean(suggest_key(name, sorted(known), 1 if len(name) < 5 else 2))
     raise ValidationError(
         f"unknown LLM provider {provider!r}: use a litellm provider such as anthropic, openai, gemini, or ollama, "
-        f"or openai with base_url for an OpenAI-compatible endpoint{hint}"
+        f"or openai with base_url for an OpenAI-compatible endpoint{hint}",
+        code="invalid_setting",
     )
 
 
@@ -150,7 +160,8 @@ class _UnifiedLLMClient:
             from litellm import acompletion
         except ImportError as exc:  # pragma: no cover
             raise ExtractionError(
-                "an LLM needs the 'instructor' and 'litellm' packages; pip install \"selfgraph[llm]\""
+                "an LLM needs the 'instructor' and 'litellm' packages; pip install \"selfgraph[llm]\"",
+                code="missing_package",
             ) from exc
         check_llm_config(config)
         litellm.suppress_debug_info = True

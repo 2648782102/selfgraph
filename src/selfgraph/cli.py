@@ -267,7 +267,7 @@ async def _schema_import(graph, args):
 
 async def _schema_export(graph, args):
     if graph.schema is None:
-        raise ValidationError(f"no schema to export; {_NO_SCHEMA}")
+        raise ValidationError(f"no schema to export; {_NO_SCHEMA}", code="schema_required")
     return graph.schema.to_ossie() if args.target == "ossie" else graph.schema.to_neo4j_ontology()
 
 
@@ -926,7 +926,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except (SelfGraphError, FileNotFoundError, RuntimeError) as exc:
-        print(f"error: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
+        label = f"error[{exc.code}]" if isinstance(exc, SelfGraphError) else "error"
+        print(f"{label}: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
         return 2 if isinstance(exc, _USAGE_ERRORS) else 1
 
 
