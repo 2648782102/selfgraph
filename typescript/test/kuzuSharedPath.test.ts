@@ -40,6 +40,29 @@ async function twoClients(path: string): Promise<number> {
   return current.length;
 }
 
+it("keeps relation update history within the Kuzu buffer pool", async () => {
+  const graph = new SelfGraph(new KuzuStore(tempKuzu("selfgraph-update-"), { buffer_pool_size: 64 * 1024 ** 2 }));
+  try {
+    await graph.insert.facts({
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+      ],
+    });
+    const relation = await graph.relations.create("person:ann", "WORKS_AT", "company:acme");
+    for (let step = 1; step <= 512; step++) {
+      await graph.relations.update(relation.id, { set_properties: { step } });
+    }
+    const history = await graph.relations.versions(relation.id, { newest_first: false });
+    expect(history.map((version) => version.properties.step ?? 0)).toEqual(
+      Array.from({ length: 513 }, (_, step) => step),
+    );
+    expect(history.filter((version) => version.is_current).map((version) => version.revision)).toEqual([513]);
+  } finally {
+    await graph.close();
+  }
+});
+
 describe("two KuzuStore instances over one database", () => {
   afterEach(async () => {
     await Promise.all(opened.splice(0).map((s) => s.close().catch(() => undefined)));

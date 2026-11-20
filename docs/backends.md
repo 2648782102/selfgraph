@@ -62,6 +62,12 @@ cluster-only option that a standalone server rejects.
   A store that passes different database options (such as `max_db_size` or
   `buffer_pool_size`) than the database already open on that path raises
   `ValidationError`; omitted options join the open database.
+- For a file-backed database with an explicit `buffer_pool_size`, SelfGraph
+  lowers Kuzu's automatic write-ahead log checkpoint threshold to at most
+  one 1,024th of the pool. This frees committed write buffers sooner during
+  repeated updates without dropping historical versions. In-memory databases
+  cannot reclaim those buffers through disk checkpoints. The Python store
+  honors an explicit `checkpoint_threshold` or `auto_checkpoint` override.
 - Each open Kuzu database reserves 8 TB of virtual memory by default, so a
   process holding many can run out of address space. Pass `max_db_size` (a
   positive integer of bytes), as in `KuzuStore("graph.kuzu", max_db_size=1 << 30)`,

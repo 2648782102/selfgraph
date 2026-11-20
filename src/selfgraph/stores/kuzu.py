@@ -103,6 +103,8 @@ _WRITE_LOCKS: dict[object, _PathLock] = {}
 _OPEN_STORES: dict[object, int] = {}
 _MAX_SKIP = 10_000_000
 _RECONNECT_EVERY = 500
+_DEFAULT_CHECKPOINT_THRESHOLD = 16 * 1024**2
+_CHECKPOINT_POOL_DIVISOR = 1024
 _NOW = "RETURN current_timestamp()"
 _CLOCK_TICK = 0.02
 
@@ -248,11 +250,18 @@ class KuzuStore(AutoCommitStore):
             db = _DATABASES.get(key)
             if db is None:
                 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                options = dict(db_kwargs)
+                pool_size = options.get("buffer_pool_size", 0)
+                if path not in ("", ":memory:") and type(pool_size) is int and pool_size > 0:
+                    options.setdefault(
+                        "checkpoint_threshold",
+                        min(_DEFAULT_CHECKPOINT_THRESHOLD, max(1, pool_size // _CHECKPOINT_POOL_DIVISOR)),
+                    )
                 try:
-                    db = _DATABASES[key] = kuzu.Database(path, **db_kwargs)
+                    db = _DATABASES[key] = kuzu.Database(path, **options)
                 except Exception as exc:  # noqa: BLE001
                     raise _kuzu_error(exc, f"could not open Kuzu database {path!r}") from exc
-                _DATABASE_OPTIONS[key] = _db_options(kuzu, db_kwargs)
+                _DATABASE_OPTIONS[key] = _db_options(kuzu, options)
             else:
                 open_options = _DATABASE_OPTIONS[key]
                 diffs = ", ".join(
@@ -505,10 +514,13 @@ class KuzuStore(AutoCommitStore):
         merged = await merged_current_edge(self, ns, id, props)
         if merged is None:
             return
-        await self._run(
-            f"{_BY_SID} AND r.is_current = true SET r.doc = $doc, r.is_current = $isc, r.revision = $rev",
-            {"ns": ns, "sid": id, "doc": _jv(merged), "isc": merged.get("is_current"), "rev": merged.get("revision")},
-        )
+        assignments = ["r.doc = $doc"]
+        params: dict[str, Any] = {"ns": ns, "sid": id, "doc": _jv(merged)}
+        for field in ("is_current", "revision"):
+            if field in props:
+                assignments.append(f"r.{field} = ${field}")
+                params[field] = merged.get(field)
+        await self._run(f"{_BY_SID} AND r.is_current = true SET {', '.join(assignments)}", params)
 
     async def count_edges(self, ns: str, id: str) -> int:
         res = await self._run(f"{_BY_SID} RETURN count(*) AS n", {"ns": ns, "sid": id})
