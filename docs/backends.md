@@ -215,7 +215,7 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 | Kuzu cannot reserve memory for another database | the Kuzu mmap error, ending `pass a smaller max_db_size` |
 | A second `KuzuStore` on an open path with other options | `KuzuStore('<path>') is already open with different options: <option> <open> vs <new>` (`ValidationError`) |
 | A HydraDB row over the write cap | `HydraDB rejects this write at <n> bytes; ...` |
-| A store URI whose user or password has an unencoded `/`, `?`, `#` or `@` | `the store URI has an unencoded character in its user or password; percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)` (`ValidationError`, raised before any driver reads the URI) |
+| A store URI whose user or password has an unencoded `/`, `?`, `#`, `@`, `[` or `]` (brackets around an IPv6 host are fine), or whose user, password or host has a lookalike such as fullwidth `＠` that NFKC turns into one of `/ ? # @ : [ ]` | `the store URI has an unencoded character in its user or password; percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)` (`ValidationError`, raised before any driver reads the URI) |
 
 A URI in these messages, and in the address errors raised before connecting, shows `***` in place of its user and password, as in `redis://***@host:6379`.
 

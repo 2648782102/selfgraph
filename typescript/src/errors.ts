@@ -105,22 +105,39 @@ const AT_SIGNS = ["@", "\uff20", "\ufe6b"];
 
 export const UNENCODED_USERINFO =
   "the store URI has an unencoded character in its user or password; " +
-  "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)";
+  "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)";
 
 /**
- * Reject a URI whose user or password holds an unencoded /, ?, # or @, before any driver reads it.
+ * Whether an authority holds non-ASCII text that NFKC turns into a /, ?, #, @, :, [ or ].
+ *
+ * Python's urlsplit refuses a netloc whose text NFKC turns into a /, ?, #, @ or : with a ValueError that quotes it,
+ * and other parsers read such a character as part of the host, so a fullwidth ＠ sends the password to the DNS resolver.
+ *
+ * @param authority (string): the URI text between the scheme's :// and the first /, ? or #.
+ * @return (boolean): true when one of its characters is non-ASCII and NFKC-normalizes to text holding a separator.
+ */
+export function nfkcSeparator(authority: string): boolean {
+  return Array.from(authority).some(
+    (char) => char.codePointAt(0)! >= 0x80 && /[/?#@:[\]]/.test(char.normalize("NFKC")),
+  );
+}
+
+/**
+ * Reject a URI whose user or password holds an unencoded /, ?, #, @, [ or ], before any driver reads it.
  *
  * Drivers read such a URI as another host, port, path, or query and repeat pieces of the password in their errors,
- * so the message names the problem without quoting the URI.
+ * so the message names the problem without quoting the URI. Brackets around an IPv6 host stay valid.
  *
  * @param uri (string): the store URI, with or without a scheme.
- * @return (void): nothing; throws ValidationError when the text between the scheme and the last @ holds a /, ? or #,
- *   or the authority holds more than one @.
+ * @return (void): nothing; throws ValidationError when the text between the scheme and the last @ (counting the
+ *   fullwidth ＠ and small ﹫) holds a /, ?, #, [ or ], the authority holds more than one @, or the authority holds a
+ *   character that NFKC turns into one of / ? # @ : [ ].
  */
 export function requireEncodedUserinfo(uri: string): void {
   const rest = splitScheme(uri)[1];
   const authority = rest.split(/[/?#]/, 1)[0] ?? "";
-  if (/[/?#]/.test(rest.slice(0, Math.max(rest.lastIndexOf("@"), 0))) || authority.split("@").length > 2) {
+  const userinfo = rest.slice(0, Math.max(...AT_SIGNS.map((at) => rest.lastIndexOf(at)), 0));
+  if (/[/?#[\]]/.test(userinfo) || authority.split("@").length > 2 || nfkcSeparator(authority)) {
     throw new ValidationError(UNENCODED_USERINFO);
   }
 }

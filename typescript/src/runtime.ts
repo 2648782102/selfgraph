@@ -7,6 +7,7 @@ import {
   LLM_HINT,
   maskUri,
   NotFoundError,
+  nfkcSeparator,
   requireEncodedUserinfo,
   STORE_KUZU_HINT,
   StoreError,
@@ -500,19 +501,15 @@ export function ignoredSettings(settings: GraphSettings): Array<"auth" | "databa
 }
 
 /**
- * Whether Python's urlsplit refuses a URI's netloc, so both SDKs reject the same FalkorDB addresses: an unbalanced
- * [ or ], or non-ASCII text that NFKC turns into a /, ?, #, @ or :.
+ * Whether a FalkorDB netloc is refused, so both SDKs reject the same addresses: an unbalanced [ or ], which Python's
+ * urlsplit refuses, or a character nfkcSeparator flags, which requireEncodedUserinfo rejects first.
  *
  * @param rest (string): the URI after its scheme and ://, or the whole URI when it has no scheme.
- * @return (boolean): true when urlsplit would raise ValueError for it.
+ * @return (boolean): true when the netloc is refused.
  */
 function pyRefusesNetloc(rest: string): boolean {
-  const netloc = rest.replace(/[\t\r\n]/g, "").split(/[/?#]/, 1)[0] ?? "";
-  if (netloc.includes("[") !== netloc.includes("]")) return true;
-  if (Array.from(netloc).every((char) => char.charCodeAt(0) < 0x80)) return false;
-  const stripped = netloc.replace(/[@:#?]/g, "");
-  const normalized = stripped.normalize("NFKC");
-  return normalized !== stripped && /[/?#@:]/.test(normalized);
+  const netloc = rest.split(/[/?#]/, 1)[0] ?? "";
+  return netloc.includes("[") !== netloc.includes("]") || nfkcSeparator(netloc);
 }
 
 /**

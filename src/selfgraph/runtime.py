@@ -423,9 +423,8 @@ def _require_server_uri(kind: str, uri: str) -> None:
 def _falkor_address(uri: str) -> tuple[Any, int | None, bool]:
     """Parse a FalkorDB address: host:port, or a redis://, rediss://, falkor://, or falkors:// URL.
 
-    urlparse refuses some netlocs (an unbalanced [ or ], or text that NFKC turns into a /, ?, #, @ or :) with a
-    ValueError that quotes the netloc, password included, so that error is turned into the masked address error after
-    its except block, leaving it out of the traceback.
+    urlparse refuses some netlocs (such as an unbalanced [ or ] in the host) with a ValueError that quotes the netloc,
+    so that error is turned into the masked address error after its except block, leaving it out of the traceback.
 
     @param uri (str): the address.
     @return (tuple[Any, int | None, bool]): the parsed URL, its port (None when absent), and whether it asks for

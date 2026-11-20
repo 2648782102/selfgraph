@@ -1435,9 +1435,6 @@ describe("store setup errors", () => {
       expect(redactUri(`netloc ${pyRepr(netloc)} is invalid`, `bolt://${netloc}`)).toBe(
         `netloc '***${at}127.0.0.1:7687' is invalid`,
       );
-      expect(() => openDriver(`redis://admin:s3cr3tPW${at}127.0.0.1:6379`, null, {})).toThrow(
-        new StoreError(`'redis://***${at}127.0.0.1:6379' is not a Bolt URI; use bolt://host:port`),
-      );
     }
     expect(redactUri("x u:pw$'@h y", "bolt://u:pw$'@h")).toBe("x ***@h y");
     const leaks = ["hun", "ter2"];
@@ -1480,10 +1477,10 @@ describe("store setup errors", () => {
     expect(message).not.toContain("hunter2");
   });
 
-  it("rejects a store URI whose user or password has an unencoded /, ?, # or @", () => {
+  it("rejects a store URI whose user or password has an unencoded /, ?, #, @, [ or ], or an NFKC lookalike", async () => {
     const unencoded =
       "the store URI has an unencoded character in its user or password; " +
-      "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)";
+      "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)";
     const rejection = (open: () => unknown): Error => {
       try {
         open();
@@ -1492,7 +1489,21 @@ describe("store setup errors", () => {
       }
       throw new Error("expected a rejection");
     };
-    for (const sep of ["/", "?", "#", "@"]) {
+    for (const sep of [
+      "/",
+      "?",
+      "#",
+      "@",
+      "[",
+      "]",
+      "\uff20",
+      "\ufe6b",
+      "\uff0f",
+      "\uff1f",
+      "\uff03",
+      "\uff1a",
+      "\uff3b",
+    ]) {
       for (const [store, uri] of [
         ["falkordb", `redis://u:pa${sep}s3cr3tPW@127.0.0.1:6379`],
         ["falkordb", `u:pa${sep}s3cr3tPW@127.0.0.1:6379`],
@@ -1516,8 +1527,30 @@ describe("store setup errors", () => {
       }
     }
     const inPassword = "admin:s3cr3tPW://x@127.0.0.1:6379";
-    for (const store of ["falkordb", "neo4j", "hydradb", "memgraph", "cypher"] as const) {
-      const exc = rejection(() => SelfGraph.connect({ store, uri: inPassword }));
+    const lookalikeAt = ["", "bolt://", "redis://"].flatMap((scheme) =>
+      ["\uff20", "\ufe6b"].flatMap((at) =>
+        ["S3cr3tTOKEN", "admin:s3cr3tPW"].map((who) => `${scheme}${who}${at}127.0.0.1:7687`),
+      ),
+    );
+    const misplaced = [
+      "redis://u:p[s3cr3t]@[::1]:6379",
+      "bolt://S3cr3tTOKEN\uff3b@[::1]:7687",
+      "bolt://admin:S3cr3t/PW\uff20127.0.0.1:7687",
+      "bolt://admin:S3cr3t?PW\uff20127.0.0.1:7687",
+      "bolt://S3cr3tTOK/EN\ufe6b127.0.0.1:7687",
+      "redis://admin:S3cr3t/PW\uff20127.0.0.1:6379",
+      "bolt://u:s3cr3t@h\uff0fx:7687",
+      "bolt://u:s3cr3t@[::1\uff3d:7687",
+      "bolt://h:7687/db\uff20s3cr3t",
+    ];
+    for (const uri of [inPassword, ...lookalikeAt, ...misplaced]) {
+      for (const store of ["falkordb", "neo4j", "hydradb", "memgraph", "cypher"] as const) {
+        const exc = rejection(() => SelfGraph.connect({ store, uri }));
+        expect(exc).toBeInstanceOf(ValidationError);
+        expect(exc.message).toBe(unencoded);
+        expect(exc.stack ?? "").not.toContain("cr3t");
+      }
+      const exc = rejection(() => openDriver(uri, null, {}));
       expect(exc).toBeInstanceOf(ValidationError);
       expect(exc.message).toBe(unencoded);
       expect(exc.stack ?? "").not.toContain("cr3t");
@@ -1536,20 +1569,29 @@ describe("store setup errors", () => {
       "redis://u:pw@host:6379/0",
       "host:6379",
       "/tmp/graph.kuzu",
+      "bolt://[::1]:7687",
+      "bolt://u:pw@[::1]:7687",
+      "redis://u:p%5Bw%5D@[fe80::1]:6379",
+      "neo4j://h:7687/db?x=[1]",
+      "bolt://us\u00e9r:p\u00e4ss@h\u00f4st:7687",
     ]) {
       expect(() => requireEncodedUserinfo(uri)).not.toThrow();
     }
+    for (const [store, uri] of [
+      ["neo4j", "bolt://[::1]:7687"],
+      ["falkordb", "redis://u:p%5Bw%5D@[::1]:6379"],
+      ["falkordb", "redis://us\u00e9r:p\u00e4ss@h:6379"],
+    ] as const) {
+      await SelfGraph.connect({ store, uri }).close();
+    }
+    await openDriver("bolt://[::1]:7687", null, {}).close();
   });
 
   it("masks FalkorDB addresses whose netloc Python's urlsplit refuses, as Python does", () => {
     for (const [uri, masked] of [
-      ["redis://u:pa\uff03s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
-      ["redis://u:pa\uff0fs3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
-      ["redis://u:pa\uff20s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
-      ["u:pa\uff03s3cr3tPW@127.0.0.1:6379", "***@127.0.0.1:6379"],
-      ["redis://u:pa[s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"],
-      ["admin:s3cr3tPW\uff20127.0.0.1:6379", "***\uff20127.0.0.1:6379"],
-      ["redis://admin:s3cr3tPW\ufe6b127.0.0.1:6379", "redis://***\ufe6b127.0.0.1:6379"],
+      ["redis://u:s3cr3tPW@127.0.0.1[:6379", "redis://***@127.0.0.1[:6379"],
+      ["redis://u:s3cr3tPW@[::1:6379", "redis://***@[::1:6379"],
+      ["u:s3cr3tPW@::1]:6379", "***@::1]:6379"],
     ] as const) {
       let exc: Error | undefined;
       try {

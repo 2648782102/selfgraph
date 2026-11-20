@@ -291,12 +291,6 @@ def test_store_errors_hide_uri_credentials():
             redact_uri(f"netloc {netloc!r} is invalid", f"bolt://{netloc}")
             == f"netloc '***{at}127.0.0.1:7687' is invalid"
         )
-        with pytest.raises(StoreError) as caught:
-            bolt_driver(f"bolt://{netloc}", None)
-        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), at
-        with pytest.raises(StoreError) as caught:
-            bolt_driver(f"redis://admin:s3cr3tPW{at}127.0.0.1:6379", None)
-        assert str(caught.value) == f"'redis://***{at}127.0.0.1:6379' is not a Bolt URI; use bolt://host:port", at
     assert redact_uri("x u:pw$'@h y", "bolt://u:pw$'@h") == "x ***@h y"
     leaks = ("hun", "ter2")
     for store, uri in (
@@ -337,9 +331,9 @@ def test_store_errors_hide_uri_credentials():
 def test_store_uris_with_unencoded_userinfo_are_rejected():
     unencoded = (
         "the store URI has an unencoded character in its user or password; "
-        "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)"
+        "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)"
     )
-    for sep in "/?#@":
+    for sep in ("/", "?", "#", "@", "[", "]", "\uff20", "\ufe6b", "\uff0f", "\uff1f", "\uff03", "\uff1a", "\uff3b"):
         for store, uri in (
             ("falkordb", f"redis://u:pa{sep}s3cr3tPW@127.0.0.1:6379"),
             ("falkordb", f"u:pa{sep}s3cr3tPW@127.0.0.1:6379"),
@@ -359,11 +353,33 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
             assert str(caught.value) == unencoded, uri
             assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
     in_password = "admin:s3cr3tPW://x@127.0.0.1:6379"
-    for store in ("falkordb", "neo4j", "hydradb", "memgraph", "cypher"):
+    lookalike_at = [
+        f"{scheme}{who}{at}127.0.0.1:7687"
+        for scheme in ("", "bolt://", "redis://")
+        for at in "\uff20\ufe6b"
+        for who in ("S3cr3tTOKEN", "admin:s3cr3tPW")
+    ]
+    misplaced = (
+        "redis://u:p[s3cr3t]@[::1]:6379",
+        "bolt://S3cr3tTOKEN\uff3b@[::1]:7687",
+        "bolt://admin:S3cr3t/PW\uff20127.0.0.1:7687",
+        "bolt://admin:S3cr3t?PW\uff20127.0.0.1:7687",
+        "bolt://S3cr3tTOK/EN\ufe6b127.0.0.1:7687",
+        "redis://admin:S3cr3t/PW\uff20127.0.0.1:6379",
+        "bolt://u:s3cr3t@h\uff0fx:7687",
+        "bolt://u:s3cr3t@[::1\uff3d:7687",
+        "bolt://h:7687/db\uff20s3cr3t",
+    )
+    for uri in (in_password, *lookalike_at, *misplaced):
+        for store in ("falkordb", "neo4j", "hydradb", "memgraph", "cypher"):
+            with pytest.raises(ValidationError) as caught:
+                build_graph(GraphSettings(store=store, uri=uri))
+            assert str(caught.value) == unencoded, (store, uri)
+            assert "cr3t" not in "".join(traceback.format_exception(caught.value)), (store, uri)
         with pytest.raises(ValidationError) as caught:
-            build_graph(GraphSettings(store=store, uri=in_password))
-        assert str(caught.value) == unencoded, store
-        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), store
+            bolt_driver(uri, None)
+        assert str(caught.value) == unencoded, uri
+        assert "cr3t" not in "".join(traceback.format_exception(caught.value)), uri
     for uri in ("bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1", in_password):
         with pytest.raises(ValidationError, match=r"^the store URI has an unencoded character"):
             bolt_driver(uri, None)
@@ -377,19 +393,27 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
         "redis://u:pw@host:6379/0",
         "host:6379",
         "/tmp/graph.kuzu",
+        "bolt://[::1]:7687",
+        "bolt://u:pw@[::1]:7687",
+        "redis://u:p%5Bw%5D@[fe80::1]:6379",
+        "neo4j://h:7687/db?x=[1]",
+        "bolt://us\u00e9r:p\u00e4ss@h\u00f4st:7687",
     ):
         require_encoded_userinfo(uri)
+    for store, uri in (
+        ("neo4j", "bolt://[::1]:7687"),
+        ("falkordb", "redis://u:p%5Bw%5D@[::1]:6379"),
+        ("falkordb", "redis://us\u00e9r:p\u00e4ss@h:6379"),
+    ):
+        check_settings(GraphSettings(store=store, uri=uri))
+    run(bolt_driver("bolt://[::1]:7687", None).close())
 
 
 def test_falkordb_addresses_urlparse_refuses_are_masked():
     for uri, masked in (
-        ("redis://u:pa\uff03s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
-        ("redis://u:pa\uff0fs3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
-        ("redis://u:pa\uff20s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
-        ("u:pa\uff03s3cr3tPW@127.0.0.1:6379", "***@127.0.0.1:6379"),
-        ("redis://u:pa[s3cr3tPW@127.0.0.1:6379", "redis://***@127.0.0.1:6379"),
-        ("admin:s3cr3tPW\uff20127.0.0.1:6379", "***\uff20127.0.0.1:6379"),
-        ("redis://admin:s3cr3tPW\ufe6b127.0.0.1:6379", "redis://***\ufe6b127.0.0.1:6379"),
+        ("redis://u:s3cr3tPW@127.0.0.1[:6379", "redis://***@127.0.0.1[:6379"),
+        ("redis://u:s3cr3tPW@[::1:6379", "redis://***@[::1:6379"),
+        ("u:s3cr3tPW@::1]:6379", "***@::1]:6379"),
     ):
         with pytest.raises(ValidationError) as caught:
             build_graph(GraphSettings(store="falkordb", uri=uri))

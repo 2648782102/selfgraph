@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import re
+import unicodedata
 
 __all__ = [
     "SelfGraphError",
@@ -127,22 +128,37 @@ def split_scheme(uri: str) -> tuple[str, str]:
 
 UNENCODED_USERINFO = (
     "the store URI has an unencoded character in its user or password; "
-    "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)"
+    "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)"
 )
 
 
+def _nfkc_separator(authority: str) -> bool:
+    """Whether an authority holds non-ASCII text that NFKC turns into a /, ?, #, @, :, [ or ].
+
+    urlsplit refuses a netloc whose text NFKC turns into a /, ?, #, @ or : with a ValueError that quotes it, and other
+    parsers read such a character as part of the host, so a fullwidth ＠ sends the password to the DNS resolver.
+
+    @param authority (str): the URI text between the scheme's :// and the first /, ? or #.
+    @return (bool): true when one of its characters is non-ASCII and NFKC-normalizes to text holding a separator.
+    """
+    return any(not c.isascii() and re.search(r"[/?#@:\[\]]", unicodedata.normalize("NFKC", c)) for c in authority)
+
+
 def require_encoded_userinfo(uri: str) -> None:
-    """Reject a URI whose user or password holds an unencoded /, ?, # or @, before any driver reads it.
+    """Reject a URI whose user or password holds an unencoded /, ?, #, @, [ or ], before any driver reads it.
 
     Drivers read such a URI as another host, port, path, or query and repeat pieces of the password in their errors,
-    so the message names the problem without quoting the URI.
+    so the message names the problem without quoting the URI. Brackets around an IPv6 host stay valid.
 
     @param uri (str): the store URI, with or without a scheme.
-    @return (None): nothing; raises ValidationError when the text between the scheme and the last @ holds a /, ? or
-        #, or the authority holds more than one @.
+    @return (None): nothing; raises ValidationError when the text between the scheme and the last @ (counting the
+        fullwidth ＠ and small ﹫) holds a /, ?, #, [ or ], the authority holds more than one @, or the authority holds
+        a character that NFKC turns into one of / ? # @ : [ ].
     """
     rest = split_scheme(uri)[1]
-    if re.search(r"[/?#]", rest.rpartition("@")[0]) or re.split(r"[/?#]", rest, maxsplit=1)[0].count("@") > 1:
+    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    userinfo = rest[: max(max(rest.rfind(at) for at in _AT_SIGNS), 0)]
+    if re.search(r"[/?#\[\]]", userinfo) or authority.count("@") > 1 or _nfkc_separator(authority):
         raise ValidationError(UNENCODED_USERINFO)
 
 
