@@ -89,6 +89,11 @@ class _Parser(argparse.ArgumentParser):
     """
 
     def error(self, message: str) -> NoReturn:
+        """Raise a coded error for an invalid flag value instead of printing usage.
+
+        @param message (str): argparse's description of the bad value.
+        @return (NoReturn): never returns; raises ValidationError.
+        """
         match = _ARGUMENT_ERROR.search(message)
         flag = match.group(1) if match else None
         if match and "invalid int value" in message:
