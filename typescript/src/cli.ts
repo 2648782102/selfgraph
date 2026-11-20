@@ -15,7 +15,6 @@ import { SelfGraph } from "./client.js";
 import {
   internalError,
   NotFoundError,
-  PromptTemplateError,
   SelfGraphError,
   surfaceHint,
   ValidationError,
@@ -67,6 +66,24 @@ import { parseTime } from "./validate.js";
 const JSON_VALUE = "; KEY=VALUE, VALUE parsed as JSON when valid (so 12345 is a number), else kept as text";
 const ISO = "ISO 8601; no offset means UTC";
 const NO_SCHEMA = "no schema set; pass --schema FILE or SELFGRAPH_SCHEMA";
+const USAGE_CODES: ReadonlySet<string> = new Set([
+  "invalid_argument",
+  "unknown_key",
+  "invalid_setting",
+  "llm_required",
+  "embedder_required",
+  "schema_required",
+  "schema_violation",
+  "immutable_identity",
+  "unknown_reference",
+  "relation_certified",
+  "relation_invalidated",
+  "merge_reverted",
+  "invalid_cursor",
+  "invalid_resolver_decision",
+  "read_only_query",
+  "invalid_prompt_template",
+]);
 const NEO4J_KEYS = ["node_types", "relationship_types", "patterns", "constraints", "nodeTypes", "relationshipTypes"];
 const LOGGED_WARNINGS = ["basic_extraction", "ner_extraction"];
 const QUERY_EXAMPLES = `
@@ -1060,9 +1077,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return exc.code === "commander.helpDisplayed" || exc.code === "commander.version" || exc.exitCode === 0 ? 0 : 2;
     }
     if (exc instanceof SelfGraphError) {
-      const usage = exc instanceof ValidationError || exc instanceof PromptTemplateError;
       process.stderr.write(`${errorText(exc, words.join(" "))}\n`);
-      return usage ? 2 : 1;
+      return exitCodeFor(exc);
     }
     if ((exc as NodeJS.ErrnoException).code === "EPIPE") return 141;
     const settings = lastSettings ?? settingsFromEnv();
@@ -1072,6 +1088,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   } finally {
     setLogger(previous);
   }
+}
+
+/**
+ * The exit code a SelfGraph error gives, decided by its code rather than its class.
+ *
+ * @param exc (SelfGraphError): the error that ended the command.
+ * @return (number): 2 for invalid input or settings, 1 for a runtime failure.
+ */
+export function exitCodeFor(exc: SelfGraphError): number {
+  return USAGE_CODES.has(exc.code) ? 2 : 1;
 }
 
 function invokedDirectly(): boolean {
