@@ -99,9 +99,10 @@ logged at INFO on the `selfgraph` logger.
 
 An applied prune checks its plan again in each write transaction, under the
 entities' locks. An item that a concurrent write changed so it no longer
-matches, or that was certified since the scan, is kept and listed in
-`certified`. The applied result lists what was actually removed, including a
-relation created since the scan that went with a pruned endpoint.
+matches is kept and left out of the result. An item certified since the scan is
+kept and listed in `certified`. The applied result lists what was actually
+removed, including a relation created since the scan that went with a pruned
+endpoint, and the merge records the removed entities took with them.
 
 With `min_relevance` and nothing scored yet, the plan is empty and its `note`
 says `no items have a relevance score yet; run maintenance.decay(dry_run=False) first`.
