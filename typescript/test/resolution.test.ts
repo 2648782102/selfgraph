@@ -657,7 +657,11 @@ function suite(spec: StoreSpec) {
   });
   const seedRobert = (g: SelfGraph) =>
     seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] }, { type: "Person", name: "Xena" });
-  const mergeBob = async (g: SelfGraph, sourceId: string, relations = [knows(BOB)]) =>
+  const mergeBob = async (
+    g: SelfGraph,
+    sourceId: string,
+    relations: NonNullable<Extraction["relations"]> = [knows(BOB)],
+  ) =>
     (await g.insert.facts({ entities: [{ type: "Person", name: "Bob" }], relations }, { source_id: sourceId }))
       .merges[0]!;
   /** A relation's stored evidence as [source, quote] pairs and its source count, or null once it is gone. */
@@ -764,6 +768,73 @@ function suite(spec: StoreSpec) {
     expect(left).toEqual([[BOB, rob]]);
     expect(await stored(g, relationId(BOB, "KNOWS", rob))).toEqual([[["s1", null]], 1]);
   });
+
+  it("restores a relation inserted with an explicit id", async () => {
+    const g = open({ resolver: "default" });
+    await seedRobert(g);
+    const merge = await mergeBob(g, "s1", [{ id: "relation:custom", ...knows(BOB) }]);
+    expect((await g.relations.get("relation:custom"))!.from_entity).toBe(ROBERT);
+    await g.entities.unmerge(merge.id);
+    const restored = (await g.relations.get("relation:custom"))!;
+    expect([restored.from_entity, restored.to_entity]).toEqual([BOB, XENA]);
+    expect(await stored(g, "relation:custom")).toEqual([[["s1", null]], 1]);
+    expect((await g.relations.list()).items.map((r) => r.id)).toEqual(["relation:custom"]);
+  });
+
+  const orders = (items: string[]): string[][] =>
+    items.length <= 1
+      ? [items]
+      : items.flatMap((x, i) => orders(items.filter((_, j) => j !== i)).map((o) => [x, ...o]));
+
+  it.each(orders(["bob", "rob", "robby"]))(
+    "keeps each original a repeated merge redirected onto one relation (%s, %s, %s)",
+    async (...order) => {
+      const g = open({ resolver: "default" });
+      const rob = entityId("Person", "Rob");
+      const robby = entityId("Person", "Robby");
+      await seed(
+        g,
+        { type: "Person", name: "Robert", aliases: ["Bob"] },
+        { type: "Person", name: "Rhonda", aliases: ["Rob", "Robby"] },
+      );
+      const names = new Map([
+        [BOB, "bob"],
+        [rob, "rob"],
+        [robby, "robby"],
+      ]);
+      const merges = new Map<string, string>();
+      for (const [name, eid, sourceId] of [
+        ["Rob", rob, "s1"],
+        ["Robby", robby, "s2"],
+      ] as const) {
+        const rel = {
+          from_entity: BOB,
+          type: "KNOWS",
+          to_entity: eid,
+          evidence: [{ source_id: sourceId, quote: name }],
+        };
+        const res = await g.insert.facts(
+          {
+            entities: [
+              { type: "Person", name: "Bob" },
+              { type: "Person", name },
+            ],
+            relations: [rel],
+          },
+          { source_id: sourceId },
+        );
+        for (const m of res.merges) merges.set(names.get(m.absorbed_id)!, m.id);
+      }
+      for (const name of order) await g.entities.unmerge(merges.get(name)!);
+      const left = (await g.relations.list()).items.map((r) => [r.from_entity, r.to_entity]).sort();
+      expect(left).toEqual([
+        [BOB, rob],
+        [BOB, robby],
+      ]);
+      expect(await stored(g, relationId(BOB, "KNOWS", rob))).toEqual([[["s1", "Rob"]], 1]);
+      expect(await stored(g, relationId(BOB, "KNOWS", robby))).toEqual([[["s2", "Robby"]], 1]);
+    },
+  );
 
   it.each([
     ["updateCurrentEdge", (args: unknown[]) => "source_count" in (args[2] as object)],

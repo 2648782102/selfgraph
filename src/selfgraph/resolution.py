@@ -1028,15 +1028,23 @@ async def _write_merges(
 
 
 def _rewrite_key(rw: MergeRewrite) -> tuple[Any, ...]:
-    """Keep distinct originals of dropped self-loops without duplicating a repeated original.
+    """Key a rewrite by what it points at and by its original, so a repeated merge keeps each distinct original.
+
+    Two statements a merge redirects onto one object each need undoing to their own endpoints, while a repeat of
+    the same statement is the same rewrite.
 
     @param rw (MergeRewrite): the recorded rewrite.
     @return (tuple[Any, ...]): its deduplication key.
     """
-    key = (rw.kind, rw.id)
-    if rw.kind == "relation" and rw.dropped:
-        return (*key, *(rw.original.get(name) for name in ("from_entity", "type", "to_entity")))
-    return key
+    if rw.kind == "relation":
+        original: str = _rid_of(RelationInput.model_validate(rw.original))
+    elif rw.kind == "preference":
+        pref = PreferenceInput.model_validate(rw.original)
+        original = pref.id or _ids.preference_id(pref.subject_entity, pref.stance, pref.key, pref.value_entity)
+    else:
+        dec = DecisionTraceInput.model_validate(rw.original)
+        original = dec.id or _ids.decision_id(dec.actor_entity, dec.title)
+    return (rw.kind, rw.id, original)
 
 
 async def save_merges(
@@ -1145,14 +1153,30 @@ class _Split:
     sources: set[str] = field(default_factory=set)
 
 
-def _split_evidence(rows: list[dict[str, Any]], merge_id: str) -> _Split:
-    """Split a relation's evidence between the statements one merge carried onto it and the ones that stay.
+def _statement_of(rw: MergeRewrite, merge_id: str) -> str:
+    """The via entry of the statement one rewrite redirected: this merge and each other merge still redirecting it.
 
-    Each row lists the statements that wrote it (see _ops.evidence_via). A statement the merge rewrote moves with the
+    An endpoint whose rewritten id differs from its original is still redirected by the merge of that original into
+    that survivor, so a statement two merges redirect is told apart from one only this merge redirects.
+
+    @param rw (MergeRewrite): a relation rewrite of the merge being reverted, as forwarded so far.
+    @param merge_id (str): the merge being reverted.
+    @return (str): the entry, as _ops.via_of gives it.
+    """
+    ends = [(rw.original.get(k), rw.rewritten.get(k)) for k in ("from_entity", "to_entity")]
+    return _ops.via_of([merge_id, *(_ids.entity_merge_id(new, old) for old, new in ends if old != new)])
+
+
+def _split_evidence(rows: list[dict[str, Any]], statement: str, merge_id: str) -> _Split:
+    """Split a relation's evidence between the statement one rewrite carried onto it and the ones that stay.
+
+    Each row lists the statements that wrote it (see _ops.evidence_via). The rewrite's statement moves with the
     merge, minus that merge's id, so a row another merge also carried keeps that merge on its new relation. Every
-    other statement, stated directly or by another merge alone, stays, so a row both kinds wrote is on both relations.
+    other statement, stated directly, by another merge, or by another rewrite of this one, stays, so a row both kinds
+    wrote is on both relations.
 
     @param rows (list[dict[str, Any]]): the relation's stored evidence rows.
+    @param statement (str): the rewrite's statement, from _statement_of.
     @param merge_id (str): the merge being reverted.
     @return (_Split): the evidence to carry, each with its statements there; each row that stays with fewer
         statements; the rows no statement backs any more; and the distinct sources of the rows that stay.
@@ -1160,11 +1184,9 @@ def _split_evidence(rows: list[dict[str, Any]], merge_id: str) -> _Split:
     out = _Split()
     for row in rows:
         statements = _ops.evidence_via(row)
-        mine = [s for s in statements if merge_id in s.split()]
-        rest = [s for s in statements if s not in mine]
-        if mine:
-            moved = [_ops.via_of(m for m in s.split() if m != merge_id) for s in mine]
-            out.carried.append((decode_evidence(row), list(dict.fromkeys(moved))))
+        rest = [s for s in statements if s != statement]
+        if len(rest) < len(statements):
+            out.carried.append((decode_evidence(row), [_ops.via_of(m for m in statement.split() if m != merge_id)]))
             if rest:
                 out.changed.append((row, rest))
             else:
@@ -1347,6 +1369,13 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         raise ValidationError(
             f"merge {merge_id!r} was already reverted at {json_iso(rec.reverted_at)}", code="merge_reverted"
         )
+    # A repeat of this merge found what its earlier rewrite created, which is still this merge's to undo.
+    created = {(rw.kind, rw.id) for rw in rec.rewrites if not (rw.existed or rw.dropped)}
+    rewrites = [
+        rw.model_copy(update={"existed": False}) if rw.existed and (rw.kind, rw.id) in created else rw
+        for rw in rec.rewrites
+    ]
+    rec = rec.model_copy(update={"rewrites": rewrites})
     history: dict[str, list[Relation]] = {}
     for rw in rec.rewrites:
         if rw.kind == "relation" and not rw.existed and not rw.dropped:
@@ -1395,16 +1424,15 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         original, rewritten = RelationInput.model_validate(rw.original), RelationInput.model_validate(rw.rewritten)
         source = await end(original.from_entity, rewritten.from_entity)
         target = await end(original.to_entity, rewritten.to_entity)
-        versions = history.pop(rw.id, [])
+        versions = history.get(rw.id, [])
         if not (await exists(source) and await exists(target)):
             continue
         properties, event_time = dict(original.properties), original.event_time
         if versions:
             properties, event_time = versions[0].properties, versions[0].event_time
-        split = _split_evidence(await _evidence_rows(runner, ns, rw.id), rec.id)
-        kept = rw.existed or bool(split.sources) or _backed_elsewhere(rw, rec, siblings)
-        if kept and not rw.existed:
-            handed.add((rw.kind, rw.id))
+        rows = await _evidence_rows(runner, ns, rw.id)
+        statement = _statement_of(rw, rec.id)
+        split = _split_evidence(rows, statement, rec.id)
         back = RelationInput(
             id=original.id,
             from_entity=source,
@@ -1413,9 +1441,28 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             properties=properties,
             event_time=event_time,
         )
-        existed = await _ops.relation_exists(
-            runner, ns, back.id or _ids.relation_id(back.from_entity, back.type, back.to_entity)
-        )
+        back_id = back.id or _ids.relation_id(back.from_entity, back.type, back.to_entity)
+        touching: set[str] = set()
+        reused = back_id == rw.id
+        kept = not reused and (rw.existed or bool(split.sources) or _backed_elsewhere(rw, rec, siblings))
+        if kept and not rw.existed:
+            handed.add((rw.kind, rw.id))
+        if reused:
+            # An explicit relation id names one statement, so the redirected edge and all its evidence move to the
+            # restored endpoints, and the edge is deleted before its id is written again.
+            stripped = _ops.via_of(m for m in statement.split() if m != rec.id)
+            split.carried = [
+                (
+                    decode_evidence(r),
+                    list(dict.fromkeys(stripped if s == statement else s for s in _ops.evidence_via(r))),
+                )
+                for r in rows
+            ]
+            touching = await _ops._traces_touching_relations(runner, ns, [rw.id])
+            await runner.delete_edges(ns, rw.id)
+            await _ops._delete_evidence(runner, ns, rw.id)
+            deleted[rw.id] = rw.id
+        existed = await _ops.relation_exists(runner, ns, back_id)
         [rel] = await _ops.upsert_relations(
             runner,
             ns,
@@ -1425,10 +1472,10 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             contradiction="off",
             via=[[statements for _, statements in split.carried]],
         )
-        touching: set[str] = set()
         if kept:
             await _leave_evidence(runner, ns, rw.id, split)
-        elif versions:
+        elif versions and not reused:
+            handed.discard((rw.kind, rw.id))
             touching = await _ops._traces_touching_relations(runner, ns, [rw.id])
             await runner.delete_edges(ns, rw.id)
             await _ops._delete_evidence(runner, ns, rw.id)

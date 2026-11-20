@@ -1310,6 +1310,44 @@ def test_unmerging_both_endpoints_of_one_relation_removes_the_survivors_relation
     assert _stored(g, relation_id(BOB_ID, "KNOWS", rob)) == ([("s1", None)], 1)
 
 
+def test_unmerge_restores_a_relation_inserted_with_an_explicit_id():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, XENA)
+    rel = {"id": "relation:custom", **_knows(BOB_ID)}
+    [merge] = run(g.insert.facts({"entities": [BOB], "relations": [rel]}, source_id="s1")).merges
+    assert (run(g.relations.get("relation:custom")).from_entity, _stored(g, "relation:custom")) == (
+        ROBERT_ID,
+        ([("s1", None)], 1),
+    )
+
+    run(g.entities.unmerge(merge.id))
+    restored = run(g.relations.get("relation:custom"))
+    assert (restored.from_entity, restored.to_entity) == (BOB_ID, XENA_ID)
+    assert _stored(g, "relation:custom") == ([("s1", None)], 1)
+    assert [r.id for r in run(g.relations.list()).items] == ["relation:custom"]
+
+
+@pytest.mark.parametrize("order", list(__import__("itertools").permutations(["bob", "rob", "robby"])))
+def test_a_repeated_merge_keeps_each_original_it_redirected_onto_one_relation(order):
+    g = fresh_graph("res", resolver="default")
+    rob, robby = entity_id("Person", "Rob"), entity_id("Person", "Robby")
+    _seed(g, ROBERT, {"type": "Person", "name": "Rhonda", "aliases": ["Rob", "Robby"]})
+    merges = {}
+    for name, eid, source in (("Rob", rob, "s1"), ("Robby", robby, "s2")):
+        rel = {"from_entity": BOB_ID, "type": "KNOWS", "to_entity": eid}
+        rel["evidence"] = [{"source_id": source, "quote": name}]
+        facts = {"entities": [BOB, {"type": "Person", "name": name}], "relations": [rel]}
+        for m in run(g.insert.facts(facts, source_id=source)).merges:
+            merges[{BOB_ID: "bob", rob: "rob", robby: "robby"}[m.absorbed_id]] = m
+
+    for name in order:
+        run(g.entities.unmerge(merges[name].id))
+    left = sorted((r.from_entity, r.to_entity) for r in run(g.relations.list()).items)
+    assert left == [(BOB_ID, rob), (BOB_ID, robby)]
+    assert _stored(g, relation_id(BOB_ID, "KNOWS", rob)) == ([("s1", "Rob")], 1)
+    assert _stored(g, relation_id(BOB_ID, "KNOWS", robby)) == ([("s2", "Robby")], 1)
+
+
 class _FailOnce:
     """A transaction that raises from one write the first time it matches, and passes everything else through."""
 
