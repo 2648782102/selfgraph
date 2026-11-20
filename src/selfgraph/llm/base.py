@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterator, Mapping
 from typing import TypeVar
 
-from ..errors import _DANGLING, KEY_SOURCES, ExtractionError, ValidationError, error_reason, setting_hint
+from ..errors import _DANGLING, KEY_SOURCES, ExtractionError, ValidationError, error_reason, mask_uri, setting_hint
 from ..ids import type_name
 from ..models import LLMConfig, as_input, did_you_mean, suggest_key
 from ..protocols import LLMClient
@@ -105,7 +105,7 @@ def _fatal(exc: BaseException, config: LLMConfig, model: str) -> ExtractionError
                 code="llm_auth_failed",
             )
         if name == "NotFoundError" or status == 404 or "LLM Provider NOT provided" in text:
-            where = f" at {config.base_url}" if config.base_url else ""
+            where = f" at {mask_uri(config.base_url)}" if config.base_url else ""
             return ExtractionError(
                 f"LLM model {config.model!r} was not found for provider {provider}{where}: "
                 f"check {setting_hint('llm_model')} and the provider",

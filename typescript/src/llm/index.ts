@@ -5,6 +5,8 @@ import {
   ExtractionError,
   errorReason,
   KEY_SOURCES,
+  maskUri,
+  redactUri,
   settingHint,
   ValidationError,
 } from "../errors.js";
@@ -173,7 +175,7 @@ function fatalError(exc: unknown, config: ErrorContext): ExtractionError | null 
     );
   }
   if (["AI_NoSuchModelError", "GatewayModelNotFoundError", "GatewayNotFoundError"].includes(name) || status === 404) {
-    const where = config.base_url ? ` at ${config.base_url}` : "";
+    const where = config.base_url ? ` at ${maskUri(config.base_url)}` : "";
     return new ExtractionError(
       `LLM model ${JSON.stringify(config.model)} was not found for provider ${provider}${where}: ` +
         `check ${settingHint("llm_model")} and the provider`,
@@ -344,7 +346,15 @@ class AISDKClient implements LLMClient {
       } catch (exc) {
         if (attempt < this.maxRetries && isOutputError(exc)) continue;
         const cause = this.rootCause(exc);
-        throw fatalError(cause, config) ?? cause;
+        const mapped = fatalError(cause, config);
+        if (mapped) throw mapped;
+        // A rejected fetch can quote the configured URL, credentials included.
+        const baseUrl = "config" in this.source ? this.source.config.base_url : null;
+        if (baseUrl && cause instanceof Error) {
+          const message = redactUri(cause.message, baseUrl);
+          if (message !== cause.message) throw new Error(message, { cause });
+        }
+        throw cause;
       }
     }
   }

@@ -72,6 +72,15 @@ def test_non_retryable_errors_map_to_one_clear_message():
     assert _fatal(RuntimeError("rate limited"), config, "gemini/x") is None
 
 
+def test_llm_model_not_found_masks_base_url_credentials():
+    config = LLMConfig(provider="openai", model="gpt-x", base_url="https://proxyuser:hunter2@llm.example/v1")
+    error = _fatal(InstructorRetryException(NotFoundError("404")), config, "openai/gpt-x")
+    message = str(error)
+    assert "https://***@llm.example/v1" in message
+    assert "proxyuser" not in message
+    assert "hunter2" not in message
+
+
 def test_errors_are_summarized_to_one_capped_line_and_gemini_gets_no_temperature():
     wrapped = InstructorRetryException(ValueError("\x1b[1mNo tool calls\x1b[0m\nModelResponse(...)"))
     assert summarize_error(wrapped) == "ValueError: No tool calls"

@@ -651,4 +651,25 @@ describe("LLM extraction through the AI SDK", () => {
     expect(paths).toEqual(["/v1/chat/completions"]);
     expect(summarizeError(await call({ timeout: 0.5 }))).toBe(`connection refused 127.0.0.1:${port}`);
   });
+
+  it("masks base_url credentials in the model-not-found error", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(404, { "content-type": "application/json" }).end('{"error":{"message":"Not Found"}}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    const base = `http://proxyuser:hunter2@127.0.0.1:${port}/v1`;
+    try {
+      const message = String(
+        await buildLlmClient({ provider: "openai", model: "m", api_key: "k", base_url: base, max_retries: 0 })
+          .generate({ system: "", user: "hi", output: z.object({}) })
+          .catch((error: unknown) => error),
+      );
+      expect(message).toContain(`http://***@127.0.0.1:${port}/v1`);
+      expect(message).not.toContain("proxyuser");
+      expect(message).not.toContain("hunter2");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });
