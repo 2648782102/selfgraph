@@ -470,6 +470,17 @@ UNENCODED_USERINFO = (
 )
 
 
+def _uri_authority(uri: str) -> tuple[str, str]:
+    """Split off a URI's scheme and find its authority.
+
+    @param uri (str): the URI, with or without a scheme.
+    @return (tuple[str, str]): the text after the scheme's :// (the whole URI when it has no scheme), and the authority
+        at its start, which runs to the first /, ? or #.
+    """
+    rest = split_scheme(uri)[1]
+    return rest, re.split(r"[/?#]", rest, maxsplit=1)[0]
+
+
 def _nfkc_separator(authority: str) -> bool:
     """Whether an authority holds non-ASCII text that NFKC turns into a /, ?, #, @, :, [ or ].
 
@@ -493,8 +504,7 @@ def require_encoded_userinfo(uri: str) -> None:
         fullwidth ＠ and small ﹫) holds a /, ?, #, [ or ], the authority holds more than one @, or the authority holds
         a character that NFKC turns into one of / ? # @ : [ ].
     """
-    rest = split_scheme(uri)[1]
-    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    rest, authority = _uri_authority(uri)
     userinfo = rest[: max(max(rest.rfind(at) for at in _AT_SIGNS), 0)]
     if re.search(r"[/?#\[\]]", userinfo) or authority.count("@") > 1 or _nfkc_separator(authority):
         raise ValidationError(UNENCODED_USERINFO, code="invalid_setting", field="uri")
@@ -508,8 +518,7 @@ def _uri_userinfo(uri: str) -> tuple[int, str]:
         the first /, ? or # after any scheme, counting the fullwidth ＠ and small ﹫ that NFKC turns into @ (parsers
         that normalize read them as the separator); the userinfo is empty when the authority has none.
     """
-    rest = split_scheme(uri)[1]
-    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    rest, authority = _uri_authority(uri)
     end = max(authority.rfind(at) for at in _AT_SIGNS)
     return len(uri) - len(rest), authority[: max(end, 0)]
 

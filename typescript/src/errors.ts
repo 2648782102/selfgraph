@@ -330,6 +330,18 @@ export const UNENCODED_USERINFO =
   "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)";
 
 /**
+ * Split off a URI's scheme and find its authority.
+ *
+ * @param uri (string): the URI, with or without a scheme.
+ * @return ([string, string]): the text after the scheme's :// (the whole URI when it has no scheme), and the authority
+ *   at its start, which runs to the first /, ? or #.
+ */
+function uriAuthority(uri: string): [string, string] {
+  const rest = splitScheme(uri)[1];
+  return [rest, rest.split(/[/?#]/, 1)[0] ?? ""];
+}
+
+/**
  * Whether an authority holds non-ASCII text that NFKC turns into a /, ?, #, @, :, [ or ].
  *
  * Python's urlsplit refuses a netloc whose text NFKC turns into a /, ?, #, @ or : with a ValueError that quotes it,
@@ -338,7 +350,7 @@ export const UNENCODED_USERINFO =
  * @param authority (string): the URI text between the scheme's :// and the first /, ? or #.
  * @return (boolean): true when one of its characters is non-ASCII and NFKC-normalizes to text holding a separator.
  */
-export function nfkcSeparator(authority: string): boolean {
+function nfkcSeparator(authority: string): boolean {
   return Array.from(authority).some(
     (char) => char.codePointAt(0)! >= 0x80 && /[/?#@:[\]]/.test(char.normalize("NFKC")),
   );
@@ -356,8 +368,7 @@ export function nfkcSeparator(authority: string): boolean {
  *   character that NFKC turns into one of / ? # @ : [ ].
  */
 export function requireEncodedUserinfo(uri: string): void {
-  const rest = splitScheme(uri)[1];
-  const authority = rest.split(/[/?#]/, 1)[0] ?? "";
+  const [rest, authority] = uriAuthority(uri);
   const userinfo = rest.slice(0, Math.max(...AT_SIGNS.map((at) => rest.lastIndexOf(at)), 0));
   if (/[/?#[\]]/.test(userinfo) || authority.split("@").length > 2 || nfkcSeparator(authority)) {
     throw new ValidationError(UNENCODED_USERINFO, { code: "invalid_setting", field: "uri" });
@@ -373,8 +384,7 @@ export function requireEncodedUserinfo(uri: string): void {
  *   normalize read them as the separator); the userinfo is empty when the authority has none.
  */
 function uriUserinfo(uri: string): [number, string] {
-  const rest = splitScheme(uri)[1];
-  const authority = rest.split(/[/?#]/, 1)[0] ?? "";
+  const [rest, authority] = uriAuthority(uri);
   const end = Math.max(...AT_SIGNS.map((at) => authority.lastIndexOf(at)));
   return [uri.length - rest.length, authority.slice(0, Math.max(end, 0))];
 }
