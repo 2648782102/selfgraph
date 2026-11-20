@@ -210,7 +210,9 @@ def test_invalid_neo4j_ontology_and_schema_objects_raise():
 
 def test_constraint_property_names_must_be_a_list():
     for bad, name in ((1, "number"), (True, "boolean"), (1.5, "number"), ("age", "string")):
-        with pytest.raises(ValidationError, match=rf"constraints\[0\]\.property_names must be a list, got {name}") as exc:
+        with pytest.raises(
+            ValidationError, match=rf"constraints\[0\]\.property_names must be a list, got {name}"
+        ) as exc:
             Schema.from_neo4j_ontology(
                 {
                     "node_types": ["Person"],
