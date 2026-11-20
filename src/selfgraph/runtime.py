@@ -24,6 +24,7 @@ from .errors import (
     StoreError,
     ValidationError,
     mask_uri,
+    require_encoded_userinfo,
     setting_hint,
     surface_hint,
 )
@@ -405,12 +406,13 @@ def ignored_settings(settings: GraphSettings) -> list[str]:
 
 
 def _require_server_uri(kind: str, uri: str) -> None:
-    """Reject a scheme-less URI that looks like a file path for a server store, which is a Kuzu path by mistake.
+    """Reject a server store URI with an unencoded user or password, or a scheme-less one that is a Kuzu path.
 
     @param kind (str): the resolved store name.
     @param uri (str): the configured URI.
-    @return (None): nothing; raises ValidationError on a path.
+    @return (None): nothing; raises ValidationError on a path or on an unencoded user or password.
     """
+    require_encoded_userinfo(uri)
     if "://" not in uri and (uri.endswith(".kuzu") or "/" in uri or os.sep in uri):
         raise ValidationError(
             f"{mask_uri(uri)!r} is not a URI for the {kind!r} store; this looks like a Kuzu path; {STORE_KUZU_HINT}"

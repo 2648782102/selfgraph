@@ -90,21 +90,39 @@ export function surfaceHint(message: string): string {
   return SURFACE_HINTS.reduce((text, [library, surface]) => text.replaceAll(library, surface), message);
 }
 
+export const UNENCODED_USERINFO =
+  "the store URI has an unencoded character in its user or password; " +
+  "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40)";
+
 /**
- * Locate the user and password of a URI, erring toward hiding too much.
+ * Reject a URI whose user or password holds an unencoded /, ?, # or @, before any driver reads it.
+ *
+ * Drivers read such a URI as another host, port, path, or query and repeat pieces of the password in their errors,
+ * so the message names the problem without quoting the URI.
+ *
+ * @param uri (string): the store URI, with or without a scheme.
+ * @return (void): nothing; throws ValidationError when the text between the scheme and the last @ holds a /, ? or #,
+ *   or the authority holds more than one @.
+ */
+export function requireEncodedUserinfo(uri: string): void {
+  const rest = uri.includes("://") ? uri.slice(uri.indexOf("://") + 3) : uri;
+  const authority = rest.split(/[/?#]/, 1)[0] ?? "";
+  if (/[/?#]/.test(rest.slice(0, Math.max(rest.lastIndexOf("@"), 0))) || authority.split("@").length > 2) {
+    throw new ValidationError(UNENCODED_USERINFO);
+  }
+}
+
+/**
+ * Locate the user and password of a URI inside its authority.
  *
  * @param uri (string): the URI, with or without a scheme.
- * @return ([number, string]): the offset where the userinfo starts and the userinfo. It runs to the last @ of the
- *   authority (up to the first /, ? or # after any scheme); when the authority has no @, it runs to the last @
- *   anywhere after the scheme, so a password with an unencoded /, ? or # is still hidden. It is empty when the URI
- *   has no @.
+ * @return ([number, string]): the offset where the userinfo starts and the userinfo, which runs to the last @ before
+ *   the first /, ? or # after any scheme; the userinfo is empty when the authority has no @.
  */
 function uriUserinfo(uri: string): [number, string] {
   const start = uri.includes("://") ? uri.indexOf("://") + 3 : 0;
-  const rest = uri.slice(start);
-  const authority = rest.split(/[/?#]/, 1)[0] ?? "";
-  const scope = authority.includes("@") ? authority : rest;
-  return [start, scope.slice(0, Math.max(scope.lastIndexOf("@"), 0))];
+  const authority = uri.slice(start).split(/[/?#]/, 1)[0] ?? "";
+  return [start, authority.slice(0, Math.max(authority.lastIndexOf("@"), 0))];
 }
 
 /**
@@ -119,63 +137,24 @@ export function maskUri(uri: string): string {
 }
 
 /**
- * The ways a message can show a piece of a URI: raw, as inside a Python repr, and as inside a JSON string.
- *
- * @param part (string): the piece of the URI.
- * @return (string[]): the raw, repr, and JSON renderings, without their quotes.
- */
-function escapedForms(part: string): string[] {
-  return [part, pyRepr(part).slice(1, -1), JSON.stringify(part).slice(1, -1)];
-}
-
-/**
- * The pieces of a URI's userinfo that a driver may show before an @, longest first.
- *
- * Drivers that misread a password with an unencoded /, ?, #, & or = echo only the part after it, so each piece is the
- * userinfo or the text after any of those characters up to one of its @. Each piece also comes without tabs and
- * newlines, which URL parsers strip, and with + read as a space, as query parsers do.
- *
- * @param userinfo (string): the user and password of a URI.
- * @return (string[]): the distinct non-empty pieces, longest first.
- */
-function echoedPieces(userinfo: string): string[] {
-  const chunks = userinfo.split("@");
-  const pieces = [userinfo];
-  chunks.forEach((_, i) => {
-    const prefix = chunks.slice(0, i + 1).join("@");
-    for (let j = 0; j < prefix.length; j++) {
-      if ("/?#&=".includes(prefix.charAt(j))) pieces.push(prefix.slice(j + 1));
-    }
-  });
-  const variants = pieces.flatMap((p) => [p, p.replace(/[\t\r\n]/g, ""), p.replaceAll("+", " ")]);
-  return [...new Set(variants)].filter(Boolean).sort((a, b) => Array.from(b).length - Array.from(a).length);
-}
-
-/**
  * Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
  *
  * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
  * @param uri (string | null | undefined): the configured URI.
  * @return (string): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same
- *   rendering of the masked URI; then each such rendering of a piece of the userinfo that precedes an @ replaced by
- *   ***; then, when the userinfo runs past the authority, the authority itself when it holds a :, since a driver may
- *   take that part of the password for a host:port.
+ *   rendering of the masked URI, then each such rendering of the userinfo alone replaced by ***.
  */
 export function redactUri(text: string, uri: string | null | undefined): string {
   if (!uri) return text;
-  const [start, userinfo] = uriUserinfo(uri);
+  const userinfo = uriUserinfo(uri)[1];
   if (!userinfo) return text;
   const masked = maskUri(uri);
   const renders = [pyRepr, JSON.stringify, String] as ((value: string) => string)[];
-  let out = renders.reduce((acc, render) => acc.replaceAll(render(uri), () => render(masked)), text);
-  out = echoedPieces(userinfo)
-    .flatMap(escapedForms)
-    .reduce((acc, form) => acc.replaceAll(`${form}@`, () => "***@"), out);
-  const authority = uri.slice(start).split(/[/?#]/, 1)[0] ?? "";
-  if (!authority.includes("@") && authority.includes(":")) {
-    out = escapedForms(authority).reduce((acc, form) => acc.replaceAll(form, () => "***"), out);
-  }
-  return out;
+  const whole = renders.reduce((out, render) => out.replaceAll(render(uri), () => render(masked)), text);
+  return [userinfo, pyRepr(userinfo).slice(1, -1), JSON.stringify(userinfo).slice(1, -1)].reduce(
+    (out, form) => out.replaceAll(`${form}@`, () => "***@"),
+    whole,
+  );
 }
 
 /**

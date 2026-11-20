@@ -7,6 +7,7 @@ import {
   LLM_HINT,
   maskUri,
   NotFoundError,
+  requireEncodedUserinfo,
   STORE_KUZU_HINT,
   StoreError,
   settingHint,
@@ -497,7 +498,8 @@ export function ignoredSettings(settings: GraphSettings): Array<"auth" | "databa
 }
 
 /**
- * Require a server store's address: present, not a Kuzu path, and for FalkorDB a host:port or redis:// style URL.
+ * Require a server store's address: present, with its user and password encoded, not a Kuzu path, and for FalkorDB a
+ * host:port or redis:// style URL.
  *
  * @param kind (string): the resolved server store name.
  * @param uri (string | null): the configured URI.
@@ -508,6 +510,7 @@ function requireStoreUri(kind: string, uri: string | null): void {
       `the ${pyRepr(kind)} store needs ${SERVER_STORES[kind]!.address}; pass ${settingHint("uri")}`,
     );
   }
+  requireEncodedUserinfo(uri);
   if (!uri.includes("://") && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
     throw new ValidationError(
       `${pyRepr(maskUri(uri))} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,

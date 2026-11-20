@@ -22,6 +22,7 @@ import {
   errorReason,
   maskUri,
   redactUri,
+  requireEncodedUserinfo,
   StoreError,
   TransientError,
   ValidationError,
@@ -170,7 +171,9 @@ export function parseAuth(auth: unknown, defaultUser = "neo4j"): [string, string
 }
 
 /**
- * Open a Bolt driver with bounded connect timeouts, turning a malformed URI or driver config into a StoreError.
+ * Open a Bolt driver with bounded connect timeouts.
+ *
+ * Throws ValidationError on an unencoded user or password and StoreError on a malformed URI or driver config.
  *
  * @param uri (string): the Bolt URI.
  * @param auth (BoltAuth): "user:password", a bare token (user neo4j), a [user, password] pair, a driver token, or null.
@@ -178,6 +181,7 @@ export function parseAuth(auth: unknown, defaultUser = "neo4j"): [string, string
  * @return (Driver): the driver.
  */
 export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver {
+  requireEncodedUserinfo(uri);
   const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : null;
   if (scheme !== null && !BOLT_SCHEMES.includes(scheme)) {
     throw new StoreError(`${pyRepr(maskUri(uri))} is not a Bolt URI; use bolt://host:port`);

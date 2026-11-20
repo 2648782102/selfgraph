@@ -16,6 +16,7 @@ from ..errors import (
     error_reason,
     mask_uri,
     redact_uri,
+    require_encoded_userinfo,
 )
 from ..ids import quote_label, quote_reltype, require_identifier
 from ..models import CypherResult, JsonValue
@@ -72,7 +73,9 @@ def bolt_auth(auth: Any) -> Any:
 
 
 def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
-    """Open an async Bolt driver with bounded connect timeouts, raising StoreError on a bad URI or driver config.
+    """Open an async Bolt driver with bounded connect timeouts.
+
+    Raises ValidationError on an unencoded user or password and StoreError on a bad URI or driver config.
 
     @param uri (str): the Bolt URI.
     @param auth (Any): the auth, as bolt_auth takes it.
@@ -84,6 +87,7 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
         from neo4j import AsyncGraphDatabase
     except ImportError as exc:  # pragma: no cover
         raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j") from exc
+    require_encoded_userinfo(uri)
     scheme, sep, _ = uri.partition("://")
     if sep and scheme.lower() not in _BOLT_SCHEMES:
         raise StoreError(f"{mask_uri(uri)!r} is not a Bolt URI; use bolt://host:port")
