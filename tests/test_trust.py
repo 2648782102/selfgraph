@@ -692,6 +692,20 @@ def _before_apply(monkeypatch, g, write):
     monkeypatch.setattr(g, "_write", wrapped)
 
 
+def test_prune_lists_a_merge_made_after_its_plan(monkeypatch):
+    g = fresh_graph("prune-race-merge")
+    run(g.insert.facts({"entities": [{"type": "Thing", "name": "acme", "aliases": ["acmecorp"]}]}))
+    made = []
+
+    async def merge():
+        made.extend((await g.insert.facts({"entities": [{"type": "Thing", "name": "acmecorp"}]})).merges)
+
+    _before_apply(monkeypatch, g, merge)
+    done = run(g.maintenance.prune(older_than=datetime.now(timezone.utc) + timedelta(seconds=30), dry_run=False))
+    assert len(made) == 1 and (done.entity_ids, done.merge_ids) == (["thing:acme"], [made[0].id])
+    assert run(g.store.match_nodes(g.namespace, "EntityMerge")) == []
+
+
 @pytest.mark.parametrize("change", ["revision", "conflict"])
 def test_dedupe_reports_what_it_merged_after_a_duplicate_changes_since_its_plan(monkeypatch, change):
     g = fresh_graph("dedupe-race-applied")

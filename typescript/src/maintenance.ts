@@ -297,6 +297,7 @@ export interface PruneBatch {
   entity_ids: string[];
   relation_ids: string[];
   certified: string[];
+  merge_ids: string[];
 }
 
 /**
@@ -325,7 +326,7 @@ async function currentTouching(
 /**
  * Delete the entities a prune planned, after checking the plan again under their locks.
  *
- * Each entity is read again with the current relations that touch it, and those relations' source entities are locked too, so a concurrent certify or edit either lands before the check or waits for the delete. An entity that no longer matches, or that a certified relation now connects (unless includeCertified), is kept. The relations listed are the current ones the deleted entities took with them, including any created since the scan.
+ * Each entity is read again with the current relations that touch it, and those relations' source entities are locked too, so a concurrent certify or edit either lands before the check or waits for the delete. An entity that no longer matches, or that a certified relation now connects (unless includeCertified), is kept. The relations listed are the current ones the deleted entities took with them, including any created since the scan, and the merges listed are the live merge records they took with them, including any made since the scan.
  *
  * @param runner (GraphPrimitives): the graph runner.
  * @param ns (string): the namespace.
@@ -333,7 +334,7 @@ async function currentTouching(
  * @param stillMatches ((e: Entity) => boolean): the prune criteria, applied to the entity as stored now.
  * @param includeCertified (boolean): also delete entities a certified relation connects.
  * @param caps (ReadonlyMap<string, ops.RelationCap>): the schema's max_count limits, to settle endpoints after deletes.
- * @return (PruneBatch): the delete counts, the entities and relations deleted, and the certified relations kept.
+ * @return (PruneBatch): the delete counts, the entities, relations, and live merge records deleted, and the certified relations kept.
  */
 export async function pruneEntities(
   runner: GraphPrimitives,
@@ -362,8 +363,20 @@ export async function pruneEntities(
     .filter((r) => gone.has(r.from_entity) || gone.has(r.to_entity))
     .map((r) => r.id)
     .sort(comparePy);
+  const merges = new Set<string>();
+  for (const side of ["survivor_id", "absorbed_id"]) {
+    for (const row of await ops.nodesWhere(runner, ns, L_MERGE, side, doomed)) {
+      if (row.reverted_at == null) merges.add(row.id as string);
+    }
+  }
   const counts = await ops.deleteEntities(runner, ns, doomed, caps);
-  return { counts, entity_ids: doomed, relation_ids: taken, certified: certified.map((r) => r.id).sort(comparePy) };
+  return {
+    counts,
+    entity_ids: doomed,
+    relation_ids: taken,
+    certified: certified.map((r) => r.id).sort(comparePy),
+    merge_ids: [...merges].sort(comparePy),
+  };
 }
 
 /**
@@ -399,7 +412,7 @@ export async function pruneRelations(
     else doomed.push(rid);
   }
   const counts = await ops.deleteRelations(runner, ns, doomed, caps);
-  return { counts, entity_ids: [], relation_ids: doomed, certified };
+  return { counts, entity_ids: [], relation_ids: doomed, certified, merge_ids: [] };
 }
 
 /**

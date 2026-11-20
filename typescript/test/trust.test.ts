@@ -552,6 +552,18 @@ function suite(spec: StoreSpec): void {
     },
   );
 
+  it("lists a merge made after the prune plan", async () => {
+    const g = open();
+    await g.insert.facts({ entities: [{ type: "Thing", name: "acme", aliases: ["acmecorp"] }] });
+    const made: string[] = [];
+    beforeApply(g, async () => {
+      made.push(...(await g.insert.facts({ entities: [{ type: "Thing", name: "acmecorp" }] })).merges.map((m) => m.id));
+    });
+    const done = await g.maintenance.prune({ older_than: new Date(Date.now() + 30_000), dry_run: false });
+    expect([made.length, done.entity_ids, done.merge_ids]).toEqual([1, ["thing:acme"], made]);
+    expect(await g.store.matchNodes(g.namespace, "EntityMerge")).toEqual([]);
+  });
+
   it.each(["revision", "conflict"])(
     "reports what dedupe merged after a duplicate changes since the plan (%s)",
     async (change) => {

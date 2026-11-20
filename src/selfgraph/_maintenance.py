@@ -171,6 +171,7 @@ class PruneBatch(NamedTuple):
     entity_ids: list[str]
     relation_ids: list[str]
     certified: list[str]
+    merge_ids: list[str]
 
 
 async def _current_touching(runner: Any, ns: str, eids: list[str]) -> dict[str, Relation]:
@@ -202,7 +203,8 @@ async def prune_entities(
     Each entity is read again with the current relations that touch it, and those relations' source entities are
     locked too, so a concurrent certify or edit either lands before the check or waits for the delete. An entity
     that no longer matches, or that a certified relation now connects (unless include_certified), is kept. The
-    relations listed are the current ones the deleted entities took with them, including any created since the scan.
+    relations listed are the current ones the deleted entities took with them, including any created since the scan,
+    and the merges listed are the live merge records they took with them, including any made since the scan.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -210,7 +212,8 @@ async def prune_entities(
     @param still_matches (Callable[[Entity], bool]): the prune criteria, applied to the entity as stored now.
     @param include_certified (bool): also delete entities a certified relation connects.
     @param caps (Mapping[str, RelationCap]): the schema's max_count limits, to settle endpoints after deletes.
-    @return (PruneBatch): the delete counts, the entities and relations deleted, and the certified relations kept.
+    @return (PruneBatch): the delete counts, the entities, relations, and live merge records deleted, and the
+        certified relations kept.
     """
     for eid in eids:
         await runner.lock_node(ns, L_ENTITY, eid)
@@ -225,8 +228,14 @@ async def prune_entities(
     doomed = sorted(eid for eid in live if eid not in held)
     gone = set(doomed)
     taken = sorted(rid for rid, r in touching.items() if r.from_entity in gone or r.to_entity in gone)
+    merges = {
+        row["id"]
+        for side in ("survivor_id", "absorbed_id")
+        for row in await _ops._nodes_where(runner, ns, L_MERGE, side, doomed)
+        if row.get("reverted_at") is None
+    }
     counts = await _ops.delete_entities(runner, ns, doomed, caps)
-    return PruneBatch(counts, doomed, taken, sorted(r.id for r in certified))
+    return PruneBatch(counts, doomed, taken, sorted(r.id for r in certified), sorted(merges))
 
 
 async def prune_relations(
@@ -265,7 +274,7 @@ async def prune_relations(
             continue
         doomed.append(rid)
     counts = await _ops.delete_relations(runner, ns, doomed, caps)
-    return PruneBatch(counts, [], doomed, certified)
+    return PruneBatch(counts, [], doomed, certified, [])
 
 
 def add_counts(total: dict[str, int], counts: dict[str, int]) -> None:

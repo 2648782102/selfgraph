@@ -203,10 +203,6 @@ export class Maintenance extends Resource {
       .filter((r) => hitRels.has(r.id) || hit.has(r.from_entity) || hit.has(r.to_entity))
       .map((r) => r.id)
       .sort(comparePy);
-    const mergesOf = (removed: ReadonlySet<string>) =>
-      merges
-        .filter((row) => removed.has(row.survivor_id as string) || removed.has(row.absorbed_id as string))
-        .map((row) => row.id as string);
     const note =
       minRelevance !== null && [...entities, ...relations].every((item) => item.relevance === null) ? UNSCORED : null;
     const plan = {
@@ -214,12 +210,15 @@ export class Maintenance extends Resource {
       entity_ids: doomed,
       relation_ids: relationIds,
       certified,
-      merge_ids: mergesOf(gone),
+      merge_ids: merges
+        .filter((row) => gone.has(row.survivor_id as string) || gone.has(row.absorbed_id as string))
+        .map((row) => row.id as string),
     };
     if (dryRun) return { ...plan, note };
     const deleted = { ...ops.NO_DELETES };
     const removed: string[] = [];
     const taken = new Set<string>();
+    const merged = new Set<string>();
     const keptNow = new Set(certified);
     for (const batch of ops.batches(doomed)) {
       const done = await this.graph.write((tx, n) =>
@@ -228,6 +227,7 @@ export class Maintenance extends Resource {
       ops.addCounts(deleted, done.counts);
       removed.push(...done.entity_ids);
       for (const rid of done.relation_ids) taken.add(rid);
+      for (const mid of done.merge_ids) merged.add(mid);
       for (const rid of done.certified) keptNow.add(rid);
     }
     for (const batch of ops.batches(direct)) {
@@ -243,7 +243,7 @@ export class Maintenance extends Resource {
       entity_ids: removed.sort(comparePy),
       relation_ids: [...taken].sort(comparePy),
       certified: [...keptNow].sort(comparePy),
-      merge_ids: mergesOf(new Set(removed)),
+      merge_ids: [...merged].sort(comparePy),
     };
     log(
       `pruned ${result.entity_ids.length} entities and ${result.relation_ids.length} relations in namespace '${ns}'`,

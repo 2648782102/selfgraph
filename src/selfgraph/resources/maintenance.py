@@ -192,6 +192,7 @@ class Maintenance(Resource):
         counts = dict(_ops._NO_DELETES)
         removed: list[str] = []
         taken: set[str] = set()
+        merged: set[str] = set()
         kept_now = set(result.certified)
         for op, ids, still in (
             (_m.prune_entities, doomed, entity_matches),
@@ -202,12 +203,12 @@ class Maintenance(Resource):
                 _m.add_counts(counts, done.counts)
                 removed += done.entity_ids
                 taken.update(done.relation_ids)
+                merged.update(done.merge_ids)
                 kept_now.update(done.certified)
-        gone = set(removed)
         result.entity_ids = sorted(removed)
         result.relation_ids = sorted(taken)
         result.certified = sorted(kept_now)
-        result.merge_ids = [m["id"] for m in merges if gone & {m["survivor_id"], m["absorbed_id"]}]
+        result.merge_ids = sorted(merged)
         result.deleted = DeleteResult(**counts)
         _log.info(
             "pruned %d entities and %d relations in namespace %r (min_relevance=%s, older_than=%s, types=%s, "
