@@ -126,6 +126,46 @@ def _non_empty_statements(query: str) -> int:
     return sum(1 for part in blank_lexical_tokens(query).split(";") if part.replace("\x00", "").split())
 
 
+def _require_typed_params(params: Mapping[str, Any] | None) -> None:
+    """Reject empty lists and maps in Kuzu parameters, which it cannot give a type.
+
+    @param params (Mapping[str, Any] | None): the query parameters.
+    @return (None): nothing; raises ValidationError naming the parameter.
+    """
+    for name, value in (params or {}).items():
+        found = _empty_container(value, name)
+        if found is not None:
+            kind, path = found
+            raise ValidationError(
+                f"parameter {path!r} is an empty {kind}, which Kuzu cannot type; pass a non-empty {kind}",
+                field=name,
+            )
+
+
+def _empty_container(value: Any, path: str) -> tuple[str, str] | None:
+    """Find the first empty list or map in a parameter value, depth first.
+
+    @param value (Any): the parameter value or a nested value.
+    @param path (str): where the value sits in the parameter.
+    @return (tuple[str, str] | None): the kind, "list" or "map", and its path, or None when every container has a value.
+    """
+    if isinstance(value, list | tuple):
+        if not value:
+            return "list", path
+        for i, item in enumerate(value):
+            found = _empty_container(item, f"{path}[{i}]")
+            if found is not None:
+                return found
+    elif isinstance(value, Mapping):
+        if not value:
+            return "map", path
+        for key, item in value.items():
+            found = _empty_container(item, f"{path}.{key}")
+            if found is not None:
+                return found
+    return None
+
+
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     """Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
 
@@ -451,6 +491,7 @@ class KuzuStore(AutoCommitStore):
     async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
         if _non_empty_statements(query) > 1:
             raise StoreError(_MULTI_STATEMENT)
+        _require_typed_params(params)
         return await self._run(query, params, raw=True)
 
     async def initialize(self) -> None:
