@@ -1302,9 +1302,9 @@ export function answerability(
 ): AnswerabilityReport {
   const found = schemaForms(schema);
   const definitionEntries = new Map<string, Array<readonly [string, string]>>();
-  const definitionCertified = new Map<string, boolean>();
+  const nameCertified = new Map<string, boolean>();
   for (const [owner, name, defForms, certified] of definitionForms(schema).values()) {
-    definitionCertified.set(JSON.stringify([owner, name]), certified);
+    nameCertified.set(name, (nameCertified.get(name) ?? true) && certified);
     for (const form of defForms) {
       const entries = definitionEntries.get(form) ?? [];
       entries.push([owner, name]);
@@ -1366,7 +1366,7 @@ export function answerability(
           for (const [form] of named) {
             if (!words.length || !covers(words, form)) continue;
             for (const [owner, name] of definitionEntries.get(form) ?? []) {
-              if (held.type.has(owner)) live.push([name, definitionCertified.get(JSON.stringify([owner, name]))!]);
+              if (held.type.has(owner)) live.push([name, nameCertified.get(name)!]);
             }
           }
         } else {
@@ -1375,7 +1375,7 @@ export function answerability(
         if (live.length) {
           status = kind;
           matched = live.map(([t]) => t);
-          certified = live.every(([, c]) => c);
+          certified = live.some(([, c]) => c);
           break;
         }
         if (!declared.length) declared = hits;
@@ -1383,7 +1383,7 @@ export function answerability(
       if (status === "missing" && declared.length) {
         status = "schema_only";
         matched = declared.map(([t]) => t);
-        certified = declared.every(([, c]) => c);
+        certified = declared.some(([, c]) => c);
       }
     }
     coverage.push({ term, status, matches: [...new Set(matched)].sort(comparePy).slice(0, MAX_MATCHES), certified });

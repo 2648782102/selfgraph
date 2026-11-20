@@ -171,7 +171,66 @@ function suite(spec: StoreSpec): void {
     ]);
     const report = answerability("state", ["state"], [entity("person:alice", "Alice", "Person")], [], [], schema, 3);
     expect(report.terms.map((term) => [term.status, term.matches, term.certified])).toEqual([
-      ["schema_only", ["phase", "status"], false],
+      ["schema_only", ["phase", "status"], true],
+    ]);
+  });
+
+  it.each([false, true])(
+    "certifies a shared definition name only when every declaring type does (beta certified=%s)",
+    (betaCertified) => {
+      const schema = asSchema({
+        entities: [
+          { name: "Alpha", definitions: [{ name: "phase", expression: "a", synonyms: ["grade"], certified: true }] },
+          {
+            name: "Beta",
+            definitions: [{ name: "phase", expression: "b", synonyms: ["grade"], certified: betaCertified }],
+          },
+        ],
+      });
+      const report = answerability("grade", null, [entity("alpha:alice", "Alice", "Alpha")], [], [], schema, 3);
+      expect(report.terms.map((term) => [term.status, term.matches, term.certified])).toEqual([
+        ["definition", ["phase"], betaCertified],
+      ]);
+    },
+  );
+
+  it("certifies distinct matches of any kind when any one is certified", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "Invoice", certified: true },
+        { name: "InvoiceLine" },
+        {
+          name: "Account",
+          definitions: [
+            { name: "status", expression: "a", certified: true },
+            { name: "statusCode", expression: "b" },
+          ],
+        },
+      ],
+      relations: [{ type: "PAID", certified: true }, { type: "PAID_BY" }],
+    });
+    const entities = [
+      entity("invoice:i1", "I1", "Invoice"),
+      entity("invoiceline:l1", "L1", "InvoiceLine"),
+      entity("account:a1", "A1", "Account"),
+    ];
+    const relations = ["PAID", "PAID_BY"].map((type) => ({
+      ...relation(`relation:${type}`, "account:a1", "invoice:i1"),
+      type,
+    }));
+    const report = answerability(
+      "invoice paid status",
+      ["invoice", "paid", "status"],
+      entities,
+      relations,
+      [],
+      schema,
+      3,
+    );
+    expect(report.terms.map((term) => [term.term, term.status, term.certified])).toEqual([
+      ["invoice", "type", true],
+      ["paid", "relation", true],
+      ["status", "definition", true],
     ]);
   });
 

@@ -179,22 +179,18 @@ def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -
     if schema is None:
         return tokens
     index = _entity_index(schema)
-    definitions = _definition_forms(schema)
     stems = {stem(t) for t in tokens}
     out = set(tokens)
-    forms = schema_forms(schema)
-    for form, named in forms["type"].items():
+    named: dict[str, set[str]] = {}
+    for form, terms in schema_forms(schema)["type"].items():
+        named.setdefault(form, set()).update(term for term, _ in terms)
+    for (owner, _), (forms, _) in _definition_forms(schema).items():
+        for form in forms:
+            named.setdefault(form, set()).add(owner)
+    for form, types in named.items():
         words = {stem(t) for t in tokenize(form)}
         if words and words <= stems:
-            for term, _ in named:
-                for entity in schema.entities:
-                    if any(t.name == term for t in _lineage(entity, index)):
-                        out |= tokenize(entity.name)
-    for (owner, _), (forms, _) in definitions.items():
-        for form in forms:
-            words = {stem(t) for t in tokenize(form)}
-            if words and words <= stems:
-                for entity in schema.entities:
-                    if any(t.name == owner for t in _lineage(entity, index)):
-                        out |= tokenize(entity.name)
+            for entity in schema.entities:
+                if any(t.name in types for t in _lineage(entity, index)):
+                    out |= tokenize(entity.name)
     return out

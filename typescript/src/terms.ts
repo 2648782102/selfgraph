@@ -190,28 +190,17 @@ export function expandTokens(
   const out = new Set(tokens);
   if (schema === null) return out;
   const index = entityIndex(schema);
-  const definitions = definitionForms(schema);
   const stems = new Set([...tokens].map(stem));
-  const found = schemaForms(schema);
-  for (const [form, named] of found.type) {
+  const named = new Map<string, Set<string>>();
+  const add = (form: string, type: string) => named.set(form, (named.get(form) ?? new Set<string>()).add(type));
+  for (const [form, terms] of schemaForms(schema).type) for (const [term] of terms) add(form, term);
+  for (const [owner, , defForms] of definitionForms(schema).values()) for (const form of defForms) add(form, owner);
+  for (const [form, types] of named) {
     const words = [...tokenize(form)].map(stem);
     if (!words.length || !words.every((w) => stems.has(w))) continue;
-    for (const [term] of named) {
-      for (const entity of schema.entities) {
-        if ([...lineage(entity, index)].some((t) => t.name === term)) {
-          for (const token of tokenize(entity.name)) out.add(token);
-        }
-      }
-    }
-  }
-  for (const [owner, , defForms] of definitions.values()) {
-    for (const form of defForms) {
-      const words = [...tokenize(form)].map(stem);
-      if (!words.length || !words.every((w) => stems.has(w))) continue;
-      for (const entity of schema.entities) {
-        if ([...lineage(entity, index)].some((t) => t.name === owner)) {
-          for (const token of tokenize(entity.name)) out.add(token);
-        }
+    for (const entity of schema.entities) {
+      if ([...lineage(entity, index)].some((t) => types.has(t.name))) {
+        for (const token of tokenize(entity.name)) out.add(token);
       }
     }
   }
