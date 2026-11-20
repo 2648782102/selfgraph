@@ -108,6 +108,37 @@ function suite(spec: StoreSpec) {
 
 await forEachStore("HydraDB write queue", suite);
 
+it("filters version read edge properties without index seeks", async () => {
+  const store = new HydraDBStore("bolt://127.0.0.1:1", { auth: ["neo4j", "unused"] });
+  const queries: string[] = [];
+  const driver = store as unknown as { exec: (query: string) => Promise<{ rows: unknown[] }> };
+  driver.exec = async (query) => {
+    queries.push(query);
+    return { rows: [] };
+  };
+  try {
+    await store.matchEdges("versions", { from_label: "Entity", to_label: "Entity", type: "KNOWS", current_only: true });
+    await store.matchEdges("versions", { from_label: "Entity", to_label: "Entity", from_in: ["person:a"] });
+    await store.getCurrentEdge("versions", "relation:a");
+    await store.listEdgeVersions("versions", "relation:a");
+    expect(await store.edgeVersions("versions", "Entity", "Entity", ["relation:b", "relation:a"])).toEqual([]);
+  } finally {
+    await store.close();
+  }
+  expect(queries).toHaveLength(5);
+  const [current, history, byId, versions, batch] = queries;
+  expect(current).toContain("(a:Entity {ns: $ns})");
+  expect(current).toContain("NOT r.`ns` <> $eq0");
+  expect(current).toContain("NOT r.`etype` <> $eq1");
+  expect(current).toContain("NOT r.is_current <> true");
+  expect(history).toContain("a.id IN $fiids_in");
+  expect(history).toContain("NOT r.`ns` <> $eq0");
+  expect(history).not.toContain("r.is_current");
+  expect(byId).toContain("NOT r.`sid` <> $sid");
+  expect(versions).toContain("NOT r.`sid` <> $sid");
+  expect(batch).toContain("NOT (NOT r.sid IN $sids)");
+});
+
 describe("HydraDB write queue failure", () => {
   it("rejects the transaction without an unhandled rejection when a queued write fails", async () => {
     const store = new HydraDBStore("bolt://127.0.0.1:1", { auth: ["neo4j", "unused"] });

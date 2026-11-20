@@ -192,6 +192,8 @@ const same = (alias: string, key: string, param: string): string =>
   `NOT ${alias}.\`${requireIdentifier(key)}\` <> $${param}`;
 
 const BY_SID = `MATCH ()-[r:${EDGE} {sid: $sid}]->() WHERE ${same("r", "ns", "ns")}`;
+const READ_EDGES = `MATCH (a {ns: $ns})-[r:${EDGE}]->() WHERE ${same("r", "ns", "ns")}`;
+const READ_BY_SID = `${READ_EDGES} AND ${same("r", "sid", "sid")}`;
 
 /**
  * A node pattern carrying the equality filters in its property map, so the engine seeks on them.
@@ -971,7 +973,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
-      `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`,
+      `${READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`,
       { ns, sid: id },
       [sidKey(ns, id)],
     );
@@ -981,7 +983,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]> {
     const res = await this._run(
-      `${BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
+      `${READ_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
       { ns, sid: id },
       [sidKey(ns, id)],
     );
@@ -989,7 +991,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   }
 
   /**
-   * Read every version of some edges by edge id, a point seek per id, run concurrently, when there are few. More than SEEK_BATCH ids cost more seeks than reading them by endpoint, so the caller reads them that way.
+   * Read every version of a bounded set of edge ids in one namespace scan.
    *
    * @param ns (string): the namespace.
    * @param fromLabel (string | null): the source node label the edges must have, or null for any.
@@ -1004,21 +1006,27 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     ids: readonly string[],
   ): Promise<EdgeRow[] | null> {
     if (ids.length > SEEK_BATCH) return null;
+    if (ids.length === 0) return [];
     const labels: Props = {};
     if (fromLabel !== null) labels.fl = fromLabel;
     if (toLabel !== null) labels.tl = toLabel;
     const where = Object.keys(labels)
       .map((k) => ` AND ${same("r", k, k)}`)
       .join("");
-    const query = `${BY_SID}${where} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`;
-    const out: EdgeRow[] = [];
-    for (const batch of batches(ids, PARALLEL)) {
-      const results = await Promise.all(
-        batch.map((sid) => this._run(query, { ns, sid, ...labels }, [sidKey(ns, sid)])),
-      );
-      for (const res of results) out.push(...res.rows.map(edgeRow));
+    const res = await this._run(
+      `${READ_EDGES} AND NOT (NOT r.sid IN $sids)${where} ` +
+        "RETURN r.sid AS sid, r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
+      { ns, sids: ids, ...labels },
+      ids.map((sid) => sidKey(ns, sid)),
+    );
+    const byId = new Map<string, EdgeRow[]>();
+    for (const row of res.rows) {
+      const sid = row.sid as string;
+      const versions = byId.get(sid);
+      if (versions) versions.push(edgeRow(row));
+      else byId.set(sid, [edgeRow(row)]);
     }
-    return out;
+    return ids.flatMap((sid) => byId.get(sid) ?? []);
   }
 
   async updateCurrentEdge(ns: string, id: string, props: Props): Promise<void> {
@@ -1038,7 +1046,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   }
 
   private async countEdges(ns: string, id: string): Promise<number> {
-    const res = await this._run(`${BY_SID} RETURN count(*) AS n`, { ns, sid: id });
+    const res = await this._run(`${READ_BY_SID} RETURN count(*) AS n`, { ns, sid: id });
     return toCount(res.rows);
   }
 
@@ -1085,7 +1093,6 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     }
     const fromAnchored = from_id != null || from_in != null;
     const toAnchored = to_id != null || to_in != null;
-    const anchored = fromAnchored || toAnchored;
     const filters: Array<[string, unknown]> = [
       ["ns", ns],
       ...(type != null ? ([["etype", type]] as Array<[string, unknown]>) : []),
@@ -1097,12 +1104,14 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     } else if (toAnchored && !fromAnchored) {
       apat = "";
       filters.push(["fl", from_label]);
+    } else if (!fromAnchored && !toAnchored) {
+      apat += " {ns: $ns}";
     }
     filters.forEach(([key, value], i) => {
-      where.push(anchored ? same("r", key, `eq${i}`) : `r.\`${requireIdentifier(key)}\` = $eq${i}`);
+      where.push(same("r", key, `eq${i}`));
       params[`eq${i}`] = value;
     });
-    if (current_only) where.push(anchored ? "NOT r.is_current <> true" : "r.is_current = true");
+    if (current_only) where.push("NOT r.is_current <> true");
     whereAfter("r.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
