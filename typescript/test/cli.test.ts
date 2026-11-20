@@ -102,6 +102,17 @@ describe("built CLI against Kuzu", () => {
       `error[invalid_argument]: cannot write the vault to ${pyRepr(target)}: not a directory`,
     );
     expect(result.err).toContain("field: directory");
+  });
+
+  it("reports a non-UTF-8 input file with a coded error", () => {
+    const bad = join(dir, "bad-schema.json");
+    writeFileSync(bad, Buffer.from([0xff, 0xfe, 0x7b]));
+
+    const result = cli(["--schema", bad, ...kuzu, "entity", "list"]);
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("error[invalid_argument]: cannot read");
+    expect(result.err).toContain("not valid UTF-8");
     expect(result.err).not.toContain("stack");
   });
 

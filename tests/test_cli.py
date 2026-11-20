@@ -468,6 +468,18 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
     assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
 
 
+def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
+    bad = tmp_path / "schema.json"
+    bad.write_bytes(b"\xff\xfe{")
+
+    assert main(["--schema", str(bad), "entity", "list"]) == 2
+    err = capsys.readouterr().err
+    assert "error[invalid_argument]: cannot read" in err
+    assert "not valid UTF-8" in err
+    assert "save the file as UTF-8" in err
+    assert "Traceback" not in err
+
+
 def test_version_and_help_text(capsys):
     for flag in ("--version", "-V"):
         with pytest.raises(SystemExit) as exc:
