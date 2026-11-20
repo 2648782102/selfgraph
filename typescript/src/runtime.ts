@@ -4,9 +4,9 @@ import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
 import {
-  LLM_HINT,
   maskUri,
   NotFoundError,
+  needsLlm,
   nfkcSeparator,
   requireEncodedUserinfo,
   STORE_KUZU_HINT,
@@ -392,7 +392,10 @@ export async function checkedCypher(
   } catch (exc) {
     if (!(exc instanceof StoreError)) throw exc;
     const notes = await cypherNotes(graph, query);
-    if (notes.length) throw new StoreError(`${exc.message}; ${notes.join("; ")}`, { cause: exc });
+    if (notes.length) {
+      const Same = exc.constructor as typeof StoreError;
+      throw new Same(`${exc.message}; ${notes.join("; ")}`, { cause: exc, code: exc.code });
+    }
     throw exc;
   }
   if (!result.rows.length) result.warnings = await cypherNotes(graph, query);
@@ -431,6 +434,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   if (scheme && !FALKOR_SCHEMES.includes(scheme)) {
     throw new ValidationError(
       `invalid FalkorDB address ${pyRepr(maskUri(uri))}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
+      { code: "invalid_setting", field: "uri" },
     );
   }
   let url: URL | null;
@@ -442,6 +446,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   if (url === null || url.port === "0") {
     throw new ValidationError(
       `invalid FalkorDB address ${pyRepr(maskUri(uri))}: expected host:port with a port from 1 to 65535`,
+      { code: "invalid_setting", field: "uri" },
     );
   }
   return { url, tls: scheme === "rediss" || scheme === "falkors" };
@@ -523,12 +528,14 @@ function requireStoreUri(kind: string, uri: string | null): void {
   if (!uri) {
     throw new ValidationError(
       `the ${pyRepr(kind)} store needs ${SERVER_STORES[kind]!.address}; pass ${settingHint("uri")}`,
+      { code: "invalid_setting", field: "uri" },
     );
   }
   requireEncodedUserinfo(uri);
   if (!splitScheme(uri)[0] && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
     throw new ValidationError(
       `${pyRepr(maskUri(uri))} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
+      { code: "invalid_setting", field: "uri" },
     );
   }
   if (kind === "falkordb") falkorAddress(uri);
@@ -562,7 +569,10 @@ export function llmTimeout(value: number | string | null): number {
   if (value === null || value === "") return LLM_DEFAULTS.timeout;
   const seconds = typeof value === "number" ? value : pyStrip(value) ? Number(pyStrip(value)) : Number.NaN;
   if (!(seconds > 0) || !Number.isFinite(seconds)) {
-    throw new ValidationError(`llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`);
+    throw new ValidationError(`llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`, {
+      code: "invalid_setting",
+      field: "llm_timeout",
+    });
   }
   return seconds;
 }
@@ -578,7 +588,10 @@ export function llmConcurrency(value: number | string | null): number {
   const text = typeof value === "string" ? pyStrip(value) : value;
   const n = typeof text === "string" && /^\+?\d+$/.test(text) ? Number(text) : text;
   if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1) {
-    throw new ValidationError(`llm_concurrency must be a positive integer, got ${pyRepr(value)}`);
+    throw new ValidationError(`llm_concurrency must be a positive integer, got ${pyRepr(value)}`, {
+      code: "invalid_setting",
+      field: "llm_concurrency",
+    });
   }
   return n;
 }
@@ -594,12 +607,16 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
   const provider =
     settings.llm_provider || (settings.llm_model?.includes("/") ? settings.llm_model.split("/")[0] : null);
   if (!settings.llm_model) {
-    throw new ValidationError(`an LLM needs a model; pass ${settingHint("llm_model")}, e.g. gpt-4o-mini`);
+    throw new ValidationError(`an LLM needs a model; pass ${settingHint("llm_model")}, e.g. gpt-4o-mini`, {
+      code: "invalid_setting",
+      field: "llm_model",
+    });
   }
   if (!provider) {
     throw new ValidationError(
       `an LLM needs a provider; pass ${settingHint("llm_provider")}, or a provider-prefixed ` +
         "model such as openai/gpt-4o-mini",
+      { code: "invalid_setting", field: "llm_provider" },
     );
   }
   requireMatchingPrefix(provider, settings.llm_model, settings.llm_base_url);
@@ -614,7 +631,10 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
 }
 
 const unknownStore = (settings: GraphSettings) =>
-  new ValidationError(`unknown store ${pyRepr(settings.store)}; choose one of ${STORES.join(", ")}`);
+  new ValidationError(`unknown store ${pyRepr(settings.store)}; choose one of ${STORES.join(", ")}`, {
+    code: "invalid_setting",
+    field: "store",
+  });
 
 /**
  * Validate every setting without a store or LLM call, so a bad one fails before any command runs. The schema, instructions, and prompts are read (inline JSON, a file, or "-" for stdin) and validated here, prompt placeholders included, so the returned settings carry them parsed and nothing reads them twice.
@@ -625,7 +645,10 @@ const unknownStore = (settings: GraphSettings) =>
 export function checkSettings(settings: GraphSettings): GraphSettings {
   requireNamespace(settings.namespace ?? DEFAULT_SETTINGS.namespace);
   if (settings.uri != null && !pyStrip(settings.uri)) {
-    throw new ValidationError(`uri cannot be empty; omit ${settingHint("uri")} to use the default store`);
+    throw new ValidationError(`uri cannot be empty; omit ${settingHint("uri")} to use the default store`, {
+      code: "invalid_setting",
+      field: "uri",
+    });
   }
   const kind = storeKind(settings);
   if (!STORES.includes(kind)) throw unknownStore(settings);
@@ -642,13 +665,13 @@ export function checkSettings(settings: GraphSettings): GraphSettings {
   else {
     const level = (settings.level || "balanced") as Level;
     const cap = (settings.max_tier || "max") as Level;
-    if (level === "max" && cap === "max") throw new ValidationError(`level 'max' needs an LLM: ${LLM_HINT}`);
+    if (level === "max" && cap === "max") throw needsLlm("level 'max'");
     const preset = PRESETS[level];
     if (clamp("resolution", settings.resolver || preset.resolution, cap) === "llm") {
-      throw new ValidationError(`resolver 'llm' needs an LLM: ${LLM_HINT}`);
+      throw needsLlm("resolver 'llm'");
     }
     if (clamp("contradiction", settings.contradiction || preset.contradiction, cap) === "llm") {
-      throw new ValidationError(`contradiction 'llm' needs an LLM: ${LLM_HINT}`);
+      throw needsLlm("contradiction 'llm'");
     }
   }
   const schema = asSchema(jsonSetting<Schema | ParsedSchema>(settings.schema, "schema"));

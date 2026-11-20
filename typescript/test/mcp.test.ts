@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 
+import { HINTS, WARNING_HINTS } from "../src/errors.js";
 import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
 import {
   buildServer,
@@ -10,7 +11,7 @@ import {
   runStdio,
   TOOLS,
 } from "../src/mcp.js";
-import { A_KNOWS_B, ANN_AT_ACME, SINGLE_EMPLOYER, tempKuzu } from "./helpers.js";
+import { A_KNOWS_B, ANN_AT_ACME, errorLinks, SINGLE_EMPLOYER, tempKuzu } from "./helpers.js";
 
 const BYPASSES = [
   "WITH 1 AS x insert (m:X) RETURN 1",
@@ -92,12 +93,20 @@ describe("MCP run_cypher guard", () => {
   it("rejects INSERT, unicode escapes, bare keyword aliases, and chained admin statements", async () => {
     for (const q of BYPASSES) expect(isBlockedQuery(q), q).toBe(true);
     for (const q of READS) expect(isBlockedQuery(q), q).toBe(false);
-    expect((await mcpError("run_cypher", { query: BYPASSES[1] })).error_type).toBe("ValidationError");
+    expect(await mcpError("run_cypher", { query: BYPASSES[1] })).toMatchObject({
+      error_type: "ValidationError",
+      code: "read_only_query",
+    });
     expect(await mcpError("update_relation", { id: "relation:x", properties: {} })).toEqual({
       error:
         "unknown option 'properties' for update_relation; did you mean 'set_properties'? " +
         "(valid options: id, set_properties, remove_properties, event_time, evidence)",
       error_type: "ValidationError",
+      code: "unknown_key",
+      field: "properties",
+      retryable: false,
+      ...errorLinks("unknown_key"),
+      tool: "update_relation",
     });
   });
 });
@@ -114,6 +123,49 @@ async function invalid(name: string, args: Record<string, unknown>): Promise<str
   expect(error_type, name).toBe("ValidationError");
   return error;
 }
+
+describe("MCP hints per session", () => {
+  it("sends each code's hint once and the hint of each new warning code", async () => {
+    await configure({ namespace: "hints" });
+    const session = new Set<string>();
+    const call = async (name: string, args: Record<string, unknown>, hinted = session) =>
+      (await callTool(name, args, hinted)).result as Record<string, unknown>;
+    const schema = { entities: [{ name: "Person" }] };
+    const first = await call("insert_facts", { facts: { entities: [{ name: "B", type: "Company" }] }, schema });
+    const again = await call("insert_facts", { facts: { entities: [{ name: "C", type: "Company" }] }, schema });
+    expect(first.warning_hints).toEqual({ unknown_entity_type: WARNING_HINTS.unknown_entity_type });
+    expect(again).not.toHaveProperty("warning_hints");
+    const missing = await call("delete_entity", { id: "company:bb" });
+    expect(missing.error).toMatch(/; did you mean 'company:b'\?$/);
+    expect([missing.tool, missing.hint]).toEqual(["delete_entity", HINTS.not_found]);
+    expect(await call("delete_entity", { id: "company:bb" })).not.toHaveProperty("hint");
+    expect(await call("list_entities", { limit: "x" })).toHaveProperty("hint", HINTS.invalid_argument);
+    expect(await call("list_entities", { limit: "x" })).not.toHaveProperty("hint");
+    const other = new Set<string>();
+    expect(await call("delete_entity", { id: "company:bb" }, other)).toHaveProperty("hint", HINTS.not_found);
+    expect(await call("list_entities", { limit: "x" }, other)).toHaveProperty("hint", HINTS.invalid_argument);
+  });
+
+  it("keeps a separate session for each built server", async () => {
+    await configure({ namespace: "hints" });
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const hints: unknown[] = [];
+    for (const server of [await buildServer(), await buildServer()]) {
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "hints", version: "0" });
+      await server.connect(serverSide);
+      await client.connect(clientSide);
+      for (let i = 0; i < 2; i++) {
+        const res = await client.callTool({ name: "list_entities", arguments: { limit: "x" } });
+        hints.push((res.structuredContent as { hint?: string }).hint);
+      }
+      await client.close();
+      await server.close();
+    }
+    expect(hints).toEqual([HINTS.invalid_argument, undefined, HINTS.invalid_argument, undefined]);
+  });
+});
 
 describe("MCP tools over Kuzu", () => {
   it("maps event_time on every write tool, dates facts inserts, and clears decision and preference fields", async () => {
@@ -323,14 +375,28 @@ describe("MCP tools over Kuzu", () => {
       expect(hints.check_answerable).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
       expect(hints.insert_facts).toMatchObject({ idempotentHint: true });
-      for (const [tool, args, message] of [
-        ["get_schema", { format: "bogus" }, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"],
-        ["create_entity", { name: "a" }, "invalid arguments: type: field required"],
-        ["list_entitys", {}, "unknown tool 'list_entitys'"],
+      for (const [tool, args, message, field, links] of [
+        [
+          "get_schema",
+          { format: "bogus" },
+          "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'",
+          { field: "format" },
+          errorLinks("invalid_argument"),
+        ],
+        ["create_entity", { name: "a" }, "invalid arguments: type: field required", { field: "type" }, {}],
+        ["list_entitys", {}, "unknown tool 'list_entitys'", {}, {}],
       ] as const) {
         const res = await client.callTool({ name: tool, arguments: args });
         expect(res.isError).toBe(true);
-        expect(res.structuredContent).toEqual({ error: message, error_type: "ValidationError" });
+        expect(res.structuredContent).toEqual({
+          error: message,
+          error_type: "ValidationError",
+          code: "invalid_argument",
+          ...field,
+          retryable: false,
+          ...links,
+          tool,
+        });
       }
     } finally {
       await client.close();
@@ -403,7 +469,11 @@ it("rejects proto keys before MCP argument parsing drops them", async () => {
   ] as const) {
     expect(await callTool(name, args)).toEqual({
       isError: true,
-      result: { error: "property and external id keys cannot be '__proto__'", error_type: "ValidationError" },
+      result: expect.objectContaining({
+        error: "property and external id keys cannot be '__proto__'",
+        error_type: "ValidationError",
+        code: "invalid_argument",
+      }),
     });
   }
 });

@@ -293,6 +293,28 @@ def test_known_at_keeps_passages_through_reinserts_and_replacement_history():
     assert quoted(instant()) == ["Ann works at Acme in Berlin."]
 
 
+def test_a_restored_source_version_stays_replaced_before_its_restore():
+    g = graph()
+    run(g.insert.text("Ann works at Acme in Berlin.", source_id="note", event_time=utc(2020)))
+    run(g.insert.text("Ann works at Acme in Paris.", source_id="note", event_time=utc(2021), replace_source=True))
+    before = instant()
+    run(g.insert.text("Ann works at Acme in Berlin.", source_id="note", replace_source=True))
+
+    def quoted(**at):
+        context = run(g.retrieve("Ann Acme Berlin Paris", **at)).context.splitlines()
+        return [
+            line
+            for line in ("Ann works at Acme in Berlin.", "Ann works at Acme in Paris.")
+            if "SOURCE | " + line in context
+        ]
+
+    assert quoted(as_of=utc(2020, 6)) == ["Ann works at Acme in Berlin."]
+    assert quoted(as_of=utc(2022)) == ["Ann works at Acme in Paris."]
+    assert quoted(as_of=utc(2022), known_at=before) == ["Ann works at Acme in Paris."]
+    assert quoted(as_of=utc(2022), known_at=instant()) == ["Ann works at Acme in Paris."]
+    assert quoted(as_of=utc(2099)) == ["Ann works at Acme in Berlin."]
+
+
 def test_known_at_shows_the_certification_in_force_then():
     g = graph()
     rel = run(g.relations.create("person:ann", "WORKS_AT", "company:acme"))

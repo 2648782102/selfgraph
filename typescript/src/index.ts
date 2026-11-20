@@ -10,6 +10,7 @@ export {
 export { buildGraph, type CheckAnswerableOptions, SelfGraph, type SelfGraphOptions } from "./client.js";
 export {
   ConflictError,
+  type ErrorCode,
   ExtractionError,
   NotFoundError,
   PromptTemplateError,

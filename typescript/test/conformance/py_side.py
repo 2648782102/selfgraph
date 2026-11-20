@@ -2,20 +2,21 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
 from pydantic import ValidationError as PydanticValidationError
 from pydantic import validate_call
 
-from selfgraph import EvidenceInput, Extraction, KuzuStore, Schema, SelfGraph, ValidationError, _serde, ids
+from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, SelfGraph, ValidationError, _serde, ids
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _kv
 from selfgraph.errors import SelfGraphError
 from selfgraph.extraction.extractor import _lenient_event_time
 from selfgraph.mcp import server as mcp_server
-from selfgraph.models import validation_message
+from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
 from selfgraph.runtime import parse_json, to_jsonable
 from selfgraph.schema import validate_against_schema
@@ -590,7 +591,7 @@ async def mcp_argument_errors():
 
     The tools are validated directly, so the check runs without the mcp package.
 
-    @return (list[str]): the error text each call reports.
+    @return (list[dict | str]): the error text, code, and field each call reports, or "accepted".
     """
     errors = []
     for name, args in MCP_ARGUMENT_CASES:
@@ -598,7 +599,8 @@ async def mcp_argument_errors():
             await validate_call(getattr(mcp_server, name))(**args)
             errors.append("accepted")
         except PydanticValidationError as exc:
-            errors.append(validation_message("invalid arguments", exc))
+            fields = validation_error("invalid arguments", exc).to_dict()
+            errors.append({key: fields[key] for key in ("error", "code", "field") if key in fields})
     return errors
 
 
@@ -667,25 +669,31 @@ class Opaque:
 
 
 async def error_of(call):
-    """Await a call that should fail and return its error class and message.
+    """Await a call that should fail and return its error as the wire fields both SDKs report.
 
     @param call (Awaitable): the pending call.
-    @return (list): the error class name and message, or ["accepted"] when the call succeeds.
+    @return (dict | str): the error's to_dict() fields, with the namespace and links reduced to what both SDKs share,
+        or "accepted" when the call succeeds.
     """
     try:
         await call
     except SelfGraphError as exc:
-        return [type(exc).__name__, str(exc)]
-    return ["accepted"]
+        return {
+            **exc.to_dict(),
+            "error": re.sub(r"in namespace '[^']*'", "in namespace '<ns>'", str(exc)),
+            "docs": exc.docs.partition("#")[2],
+            "agent_guide": exc.agent_guide.partition("#")[2],
+        }
+    return "accepted"
 
 
 async def choice_errors(graph):
-    """Pass a bad stance, status, or evidence shape to each resource method that takes one.
+    """Pass bad input (a stance, status, evidence shape, key, type, reference, or cursor) to resource methods.
 
     An Opaque instance stands in for bad evidence because both SDKs name a class instance by its class.
 
     @param graph (SelfGraph): the conformance graph.
-    @return (dict): each case's error class and message.
+    @return (dict): each case's error fields.
     """
     works_at = ids.relation_id("person:jane-doe", "WORKS_AT", "company:acme")
     dec = ids.decision_id("person:jane-doe", "Pick HydraDB")
@@ -748,6 +756,14 @@ async def choice_errors(graph):
         ),
         "dec_create_steps_text": await error_of(graph.decisions.create("Bad steps", steps="step")),
         "entity_inf_property": await error_of(graph.entities.create("Inf", "Person", properties={"d": float("inf")})),
+        "facts_unknown_key": await error_of(graph.insert.facts({"entities": [{"nmae": "A", "type": "Person"}]})),
+        "entity_retype": await error_of(graph.entities.update("person:jane-doe", type="Company")),
+        "rel_create_dangling": await error_of(graph.relations.create("person:jane-doe", "KNOWS", "person:ghost")),
+        "list_bad_cursor": await error_of(graph.entities.list(cursor="nope")),
+        "store_refused": await error_of(SelfGraph(store=Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
+        "list_limit_zero": await error_of(graph.entities.list(limit=0)),
+        "list_limit_text": await error_of(graph.entities.list(limit="5")),
+        "entity_missing_near": await error_of(graph.entities.delete("person:jane-do")),
     }
 
 
@@ -1165,18 +1181,23 @@ async def write(graph):
     await replaced_src.relations.certify(rv1.relations[1].id, by="hr")
     rv2 = await replaced_src.insert.text("Bob works at Globex.", source_id="hr", replace_source=True)
     await replaced_src.insert.facts({"entities": [{"type": "Thing", "name": "Initech"}]})
-    await replaced_src.relations.create(
+    manual = await replaced_src.relations.create(
         "thing:bob", "RELATED_TO", "thing:initech", evidence=[{"source_id": "hr", "quote": "hand"}]
     )
     rv3 = await replaced_src.insert.text(
         "Alice works at Acme. Bob works at Globex. Bob works at Initech.", source_id="hr", replace_source=True
     )
+    rv4 = await replaced_src.insert.text("Alice works at Acme.", source_id="hr", replace_source=True)
+    kept_manual = await replaced_src.relations.get(manual.id)
+    assert kept_manual is not None and manual.id not in rv4.source_diff.retired, "manual evidence was retired"
     out["replace_source_steps"] = to_jsonable(
         {
             "v2_diff": rv2.source_diff,
             "v2_warnings": [w.code for w in rv2.warnings],
             "v3_diff": rv3.source_diff,
             "v3_warnings": [w.code for w in rv3.warnings],
+            "v4_diff": rv4.source_diff,
+            "v4_manual_current": kept_manual.is_current,
         }
     )
     stored_src = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_replace_stored", extraction="regex")
@@ -1191,6 +1212,25 @@ async def write(graph):
         [v.revision, _serde.json_iso(v.invalidated_at) if v.invalidated_at else None]
         for v in await stored_src.relations.versions(stored_first.relations[0].id)
     ]
+    restored_src = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_restore_src", extraction="regex")
+    berlin, paris = "Ann works at Acme in Berlin.", "Ann works at Acme in Paris."
+    await restored_src.insert.text(berlin, source_id="note", event_time="2020-01-01T00:00:00Z")
+    await restored_src.insert.text(paris, source_id="note", event_time="2021-01-01T00:00:00Z", replace_source=True)
+    before_restore = datetime.now(timezone.utc)
+    await restored_src.insert.text(berlin, source_id="note", replace_source=True)
+
+    async def quoted(**at):
+        lines = (await restored_src.retrieve("Ann Acme Berlin Paris", **at)).context.splitlines()
+        return [text for text in (berlin, paris) if f"SOURCE | {text}" in lines]
+
+    out["restore_source"] = [
+        await quoted(as_of="2020-06-01T00:00:00Z"),
+        await quoted(as_of="2022-01-01T00:00:00Z"),
+        await quoted(as_of="2022-01-01T00:00:00Z", known_at=before_restore),
+        await quoted(as_of="2022-01-01T00:00:00Z", known_at=datetime.now(timezone.utc)),
+        await quoted(as_of="2099-01-01T00:00:00Z"),
+    ]
+    assert out["restore_source"] == [[berlin], [paris], [paris], [paris], [berlin]], out["restore_source"]
     await graph.insert.facts(
         {"entities": [{"type": "Database", "name": "HydraDB"}, {"type": "Company", "name": "Acme, Inc."}]},
         source_id="follow-up",

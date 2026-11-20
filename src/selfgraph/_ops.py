@@ -69,6 +69,7 @@ from .models import (
     Status,
     as_input,
     check_options,
+    suggest_key,
 )
 
 _RESERVED_LABELS = frozenset(t.lower() for t in LABELS)
@@ -198,7 +199,7 @@ def _require_int(field: str, value: Any) -> None:
     @return (None): nothing; raises ValidationError when not a non-bool integer.
     """
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValidationError(f"{field} must be an integer, got {type_name(value)}")
+        raise ValidationError(f"{field} must be an integer, got {type_name(value)}", field=field)
 
 
 def _require_bool(name: str, value: object) -> None:
@@ -754,11 +755,10 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
     )
     if not rows and skip == 0:
         if kind == "entity":
-            exists = await runner.node_exists(ns, L_ENTITY, target_id)
-        else:
-            exists = await relation_exists(runner, ns, target_id)
-        if not exists:
-            raise NotFoundError("Entity" if kind == "entity" else "Relation", target_id)
+            if not await runner.node_exists(ns, L_ENTITY, target_id):
+                raise await missing_entity(runner, ns, target_id)
+        elif not await relation_exists(runner, ns, target_id):
+            raise NotFoundError("Relation", target_id, namespace=ns)
     return [decode_evidence(r) for r in rows]
 
 
@@ -794,7 +794,8 @@ async def _require_endpoints(
     ]
     if missing:
         raise ValidationError(
-            f"relation endpoint{'s' if len(missing) > 1 else ''} not found ({', '.join(missing)}); {hint}"
+            f"relation endpoint{'s' if len(missing) > 1 else ''} not found ({', '.join(missing)}); {hint}",
+            code="unknown_reference",
         )
 
 
@@ -802,7 +803,7 @@ async def _require_entity(
     runner: Any, ns: str, eid: str | None, context: str, known: set[str] | frozenset[str] = frozenset()
 ) -> None:
     if eid is not None and not await _entity_known(runner, ns, eid, known):
-        raise ValidationError(f"{context} references unknown entity {eid!r}")
+        raise ValidationError(f"{context} references unknown entity {eid!r}", code="unknown_reference")
 
 
 async def _require_preference_refs(
@@ -938,7 +939,9 @@ async def validate_facts(
         _require_text("preference key", pref.key)
         _validate_strength(pref.strength)
         if not await _entity_known(runner, ns, pref.subject_entity, entities):
-            raise ValidationError(f"preference references unknown subject entity {pref.subject_entity!r}")
+            raise ValidationError(
+                f"preference references unknown subject entity {pref.subject_entity!r}", code="unknown_reference"
+            )
         await _require_preference_refs(runner, ns, pref.value_entity, pref.about_entity, entities)
 
     for dec in facts.decisions:
@@ -953,9 +956,29 @@ async def validate_facts(
         _require_list("decision alternative_entities", dec.alternative_entities)
         for rel_id in dec.steps:
             if rel_id not in relations and not await relation_exists(runner, ns, rel_id):
-                raise ValidationError(f"decision step references unknown relation {rel_id!r}")
+                raise ValidationError(f"decision step references unknown relation {rel_id!r}", code="unknown_reference")
         await _require_trace_refs(runner, ns, dec.actor_entity, dec.outcome_entity, dec.alternative_entities, entities)
     return facts
+
+
+_SUGGEST_SCAN = 500
+
+
+async def missing_entity(runner: Any, ns: str, eid: str) -> NotFoundError:
+    """The error for an entity id that does not exist, suggesting the closest existing id of the same type.
+
+    @param runner (Any): the store.
+    @param ns (str): namespace.
+    @param eid (str): the missing entity id.
+    @return (NotFoundError): the error, naming the namespace, and the suggestion when an id is close.
+    """
+    kind, _, name = eid.partition(":")
+    ids: dict[str, None] = {}
+    for stem in dict.fromkeys(f"{kind}:{part}" for part in (name[:-2], name[:1], "")):
+        rows = await runner.match_nodes(ns, L_ENTITY, order_by="id", id_gt=stem, limit=_SUGGEST_SCAN)
+        ids.update(dict.fromkeys(r["id"] for r in rows if r["id"].startswith(stem)))
+    suggestion = suggest_key(eid, list(ids))
+    return NotFoundError("Entity", eid, namespace=ns, suggestion=suggestion)
 
 
 async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
@@ -1163,7 +1186,7 @@ async def update_entity(
     eid = _ids.canonical_entity_id(eid)
     existing = await get_entity(runner, ns, eid)
     if existing is None:
-        raise NotFoundError("Entity", eid)
+        raise await missing_entity(runner, ns, eid)
     for key in ("aliases", "remove_aliases", "remove_properties"):
         if key in fields:
             _require_list(key, fields[key])
@@ -1181,7 +1204,9 @@ async def update_entity(
         raise TransientError(f"entity {eid!r} was changed concurrently; retry")
     new_type = _clean_text(fields["type"]) if "type" in fields else existing.type
     if _ids.slug(new_type) != _ids.slug(_ids.normalize_text(existing.type)):
-        raise ValidationError(f"type is part of the id {eid!r}; create a new entity to change its type")
+        raise ValidationError(
+            f"type is part of the id {eid!r}; create a new entity to change its type", code="immutable_identity"
+        )
     if new_type not in schema_types:
         new_type = existing.type
     new_name = _clean_text(fields["name"]) if "name" in fields else existing.name
@@ -1349,7 +1374,7 @@ async def delete_entity(
     """
     eid = _ids.canonical_entity_id(eid)
     if not await runner.node_exists(ns, L_ENTITY, eid):
-        raise NotFoundError("Entity", eid)
+        raise await missing_entity(runner, ns, eid)
     return await delete_entities(runner, ns, [eid], caps)
 
 
@@ -1605,7 +1630,9 @@ async def _write_relation_version(
     if not await runner.create_edge(ns, rtype, L_ENTITY, from_id, L_ENTITY, to_id, props):
         hint = "create the entities first, then reference them by id ('type:name')"
         await _require_endpoints(runner, ns, from_id, to_id, hint)
-        raise ValidationError(f"relation endpoints not found (from={from_id!r}, to={to_id!r}); {hint}")
+        raise ValidationError(
+            f"relation endpoints not found (from={from_id!r}, to={to_id!r}); {hint}", code="unknown_reference"
+        )
     return decode_relation(props, from_entity=from_id, to_entity=to_id, type=rtype)
 
 
@@ -1657,7 +1684,8 @@ def _require_same_ends(rid: str, stored: tuple[str, str, str], given: tuple[str,
     if stored != given:
         raise ValidationError(
             f"relation {rid!r} already exists with different endpoints/type; "
-            "endpoints and type are immutable; create a new relation to change them"
+            "endpoints and type are immutable; create a new relation to change them",
+            code="immutable_identity",
         )
 
 
@@ -1683,9 +1711,11 @@ async def _lock_current(
     if before is None:
         latest = await _newest_edge(runner, ns, oid, keep)
         if latest is None:
-            raise NotFoundError(kind.capitalize(), oid)
+            raise NotFoundError(kind.capitalize(), oid, namespace=ns)
         if latest["props"].get("invalidated_at"):
-            raise ValidationError(f"{invalidated_note(_relation_of(latest))}; create it again to reassert it")
+            raise ValidationError(
+                f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
+            )
         raise TransientError(f"{kind} {oid!r} has no current version right now (concurrent write); retry")
     await runner.lock_node(ns, *lock_on(before))
     current = await get(runner, ns, oid)
@@ -1975,7 +2005,8 @@ class Contradictions:
                 raise ValidationError(
                     f"relation {rid} would exceed max_count {limit} for {canonical} at {side} entity {endpoint} "
                     f"(current: {', '.join(group)}); schema_mode 'strict' rejects it; use "
-                    "contradiction='supersede' to retire the older relation instead"
+                    "contradiction='supersede' to retire the older relation instead",
+                    code="schema_violation",
                 )
             warnings.append(
                 InsertWarning(
@@ -2975,7 +3006,7 @@ async def delete_relation(
     _ids._require_str("relation id", rid)
     newest = await _newest_edge(runner, ns, rid, _is_relation_type)
     if newest is None:
-        raise NotFoundError("Relation", rid)
+        raise NotFoundError("Relation", rid, namespace=ns)
     trace_ids = await _traces_touching_relations(runner, ns, [rid])
     n = await runner.delete_edges(ns, rid)
     await _delete_evidence(runner, ns, rid)
@@ -3014,8 +3045,11 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
     if edge is None or not _is_relation_type(edge["type"]):
         newest = await _newest_edge(runner, ns, rid, _is_relation_type)
         if newest is None:
-            raise NotFoundError("Relation", rid)
-        raise ValidationError(f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified")
+            raise NotFoundError("Relation", rid, namespace=ns)
+        raise ValidationError(
+            f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified",
+            code="relation_invalidated",
+        )
     current = _relation_of(edge)
     held = next((c for c in current.certifications if c.until is None), None)
     if (held.by if held else None) == by:
@@ -3085,6 +3119,8 @@ async def replace_source(
     }
 
     def active(r: dict) -> bool:
+        if r["source_version"] == f"{r['source_id']}:manual":
+            return True
         return r["source_version"] == version if r["source_id"] == source_id else r["source_version"] not in replaced
 
     retired: list[str] = []
@@ -3111,6 +3147,7 @@ async def replace_source(
         history = _loads(row.get("replacements_json"), [])
         if row["id"] == version and row.get("replaced_by") is not None:
             history[-1]["until"] = known_at
+            history[-1]["valid_until"] = to_iso(at)
             marks.append(
                 (row["id"], {**row, "replaced_at": None, "replaced_by": None, "replacements_json": _dumps(history)})
             )
@@ -3128,7 +3165,7 @@ async def _ensure_profile(runner: Any, ns: str, subject_id: str, created_at: dat
     if await runner.node_exists(ns, L_PROFILE, pid):
         return pid
     if not await runner.node_exists(ns, L_ENTITY, subject_id):
-        raise ValidationError(f"preference references unknown subject entity {subject_id!r}")
+        raise ValidationError(f"preference references unknown subject entity {subject_id!r}", code="unknown_reference")
     await runner.upsert_node(
         ns,
         L_PROFILE,
@@ -3215,7 +3252,8 @@ def _require_same_preference(pid: str, stored: tuple[str, ...], given: tuple[str
     if stored != given:
         raise ValidationError(
             f"preference {pid!r} already exists with different subject/stance/key/value; "
-            "these identify the preference and are immutable; create a new preference to change them"
+            "these identify the preference and are immutable; create a new preference to change them",
+            code="immutable_identity",
         )
 
 
@@ -3506,7 +3544,7 @@ async def delete_preference(runner: Any, ns: str, pid: str) -> dict[str, int]:
     """
     _ids._require_str("preference id", pid)
     if not await preference_exists(runner, ns, pid):
-        raise NotFoundError("Preference", pid)
+        raise NotFoundError("Preference", pid, namespace=ns)
     return {**_NO_DELETES, "deleted_preference_versions": await runner.delete_edges(ns, pid)}
 
 
@@ -3582,7 +3620,7 @@ async def _resolve_steps(runner: Any, ns: str, step_rel_ids: list[str]) -> list[
     for order, rel_id in enumerate(step_rel_ids):
         edge = newest.get(rel_id) if versions is not None else await _newest_edge(runner, ns, rel_id, _is_relation_type)
         if edge is None:
-            raise ValidationError(f"decision step references unknown relation {rel_id!r}")
+            raise ValidationError(f"decision step references unknown relation {rel_id!r}", code="unknown_reference")
         steps.append(
             DecisionStep(order=order, relation_id=rel_id, from_entity=edge["from_id"], to_entity=edge["to_id"])
         )
@@ -3815,7 +3853,7 @@ async def update_trace(runner: Any, ns: str, tid: str, *, clear: Iterable[str] =
     await runner.lock_node(ns, L_TRACE, tid)
     existing = await get_trace(runner, ns, tid)
     if existing is None:
-        raise NotFoundError("DecisionTrace", tid)
+        raise NotFoundError("DecisionTrace", tid, namespace=ns)
     return await upsert_trace(
         runner,
         ns,
@@ -3876,5 +3914,5 @@ async def delete_trace(runner: Any, ns: str, tid: str) -> dict[str, int]:
     """
     _ids._require_str("decision id", tid)
     if not await _delete_trace_quietly(runner, ns, tid):
-        raise NotFoundError("DecisionTrace", tid)
+        raise NotFoundError("DecisionTrace", tid, namespace=ns)
     return {**_NO_DELETES, "deleted_decisions": 1}

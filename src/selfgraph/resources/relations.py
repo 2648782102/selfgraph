@@ -184,7 +184,7 @@ class Relations(Resource):
         reader = await self._c._reader()
         versions = await _ops.list_relation_versions(reader, self._c.namespace, id, newest_first=newest_first)
         if not versions:
-            raise NotFoundError("Relation", id)
+            raise NotFoundError("Relation", id, namespace=self._c.namespace)
         return versions
 
     async def certify(self, id: str, *, by: str) -> Relation:

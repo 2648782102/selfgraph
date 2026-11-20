@@ -252,6 +252,7 @@ export function checkOptions(method: string, options: unknown, allowed: readonly
   if (!unknown.length) return;
   throw new ValidationError(
     `unknown option ${pyRepr(unknown[0])} for ${method}${keyHint(unknown[0]!, allowed, "options")}`,
+    { code: "unknown_key", field: unknown[0]! },
   );
 }
 
@@ -273,7 +274,7 @@ export function requireBool(name: string, value: unknown): asserts value is bool
  */
 export function requireInt(field: string, value: unknown): asserts value is number {
   if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new ValidationError(`${field} must be an integer, got ${typeName(value)}`);
+    throw new ValidationError(`${field} must be an integer, got ${typeName(value)}`, { field });
   }
 }
 

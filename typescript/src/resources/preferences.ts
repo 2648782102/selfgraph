@@ -156,7 +156,7 @@ export class Preferences extends Resource {
     const versions = await this.graph.read((store, ns) =>
       ops.listPreferenceVersions(store, ns, id, options.newest_first ?? true),
     );
-    if (!versions.length) throw new NotFoundError("Preference", id);
+    if (!versions.length) throw new NotFoundError("Preference", id, undefined, { namespace: this.graph.namespace });
     return versions;
   }
 

@@ -128,8 +128,7 @@ Python:
   client keyword through.
 - `runCypher` returns an integer beyond `Number.MAX_SAFE_INTEGER` as a `bigint`.
   Pass rows through `toJsonable()` before `JSON.stringify`.
-- MCP tool errors carry `{error, error_type}` rather than text
-  ([MCP](mcp.md#errors)). `callTool` runs a tool without a server.
+- `callTool` runs an MCP tool without a server.
 
 ## CLI and MCP
 

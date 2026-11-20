@@ -93,7 +93,7 @@ class SyncSelfGraph:
         with self._loop_lock:
             if self._loop.is_closed():
                 coro.close()
-                raise StoreError(CLOSED_MESSAGE)
+                raise StoreError(CLOSED_MESSAGE, code="graph_closed")
             try:
                 asyncio.get_running_loop()
             except RuntimeError:

@@ -749,16 +749,13 @@ function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
   ) {
     return false;
   }
-  if (asOf === null || asOf.known === null) {
-    const replaced = fromIso(version.replaced_at);
-    return replaced == null || (asOf !== null && epochMicros(replaced) > epochMicros(asOf.valid));
-  }
-  const known = epochMicros(asOf.known);
+  if (asOf === null) return version.replaced_at == null;
+  const valid = epochMicros(asOf.valid);
   return !loads<Array<Record<string, string | null>>>(version.replacements_json, []).some(
     (r) =>
-      epochMicros(fromIso(r.at)!) <= epochMicros(asOf.valid) &&
-      epochMicros(fromIso(r.known_at)!) <= known &&
-      !(r.until && epochMicros(fromIso(r.until)!) <= known),
+      epochMicros(fromIso(r.at)!) <= valid &&
+      ops.knownBy(fromIso(r.known_at), asOf.known) &&
+      (!r.until || !ops.knownBy(fromIso(r.until), asOf.known) || epochMicros(fromIso(r.valid_until)!) > valid),
   );
 }
 
@@ -1060,7 +1057,7 @@ export async function retrieve(
     ["budget_tokens", budgetTokens, 1],
   ] as const;
   for (const [name, value, least] of bounds) {
-    if (value < least) throw new ValidationError(`${name} must be >= ${least}, got ${value}`);
+    if (value < least) throw new ValidationError(`${name} must be >= ${least}, got ${value}`, { field: name });
   }
   return graph.read((store, ns) =>
     run(graph, store, ns, query, { strategy, depth, k, maxNodes, budgetTokens, asOf, seeds, skipHubs }),

@@ -4,15 +4,29 @@ import json
 import logging
 
 import pytest
-from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_update_recorder, run
+from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
 
 import selfgraph
 import selfgraph.mcp.server as srv
-from selfgraph.errors import ValidationError
+from selfgraph.errors import HINTS, WARNING_HINTS, SelfGraphError, ValidationError
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
 TOOL_NAMES = [fn.__name__ for fn in srv.TOOLS]
+
+
+def tool_failure(server, tool, args):
+    """Call a tool that must fail and return its structured error, checking the JSON text matches it.
+
+    @param server (Any): the MCP server.
+    @param tool (str): the tool name.
+    @param args (dict): the arguments.
+    @return (dict): the structured error.
+    """
+    result = run(server.call_tool(tool, args))
+    assert result.is_error
+    assert json.loads(result.content[0].text) == result.structured_content
+    return result.structured_content
 
 
 @pytest.fixture
@@ -121,8 +135,9 @@ def test_build_server_contract():
     if _HAS_MCP:
         assert srv.build_server() is not None
     else:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(SelfGraphError) as exc:
             srv.build_server()
+        assert exc.value.code == "missing_package"
 
 
 BYPASSES = [
@@ -251,41 +266,63 @@ def test_call_tool_arguments_results_and_errors(server):
     assert len(result.content) == 1
     assert [v["revision"] for v in json.loads(result.content[0].text)] == [1]
     assert result.structured_content == {"result": json.loads(result.content[0].text)}
-    with pytest.raises(Exception, match="limit must be >= 1, got 0"):
-        run(server.call_tool("list_entities", {"limit": 0}))
-    with pytest.raises(
-        Exception, match="unknown option 'properties' for update_relation; did you mean 'set_properties'"
-    ):
-        run(server.call_tool("update_relation", {"id": "relation:x", "properties": {"a": 1}}))
+    assert tool_failure(server, "list_entities", {"limit": 0}) == {
+        "error": "limit must be >= 1, got 0",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "field": "limit",
+        "retryable": False,
+        **error_links("invalid_argument"),
+        "tool": "list_entities",
+    }
+    assert tool_failure(server, "list_entities", {"limit": -1}) == {
+        "error": "limit must be >= 1, got -1",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "field": "limit",
+        "retryable": False,
+        "tool": "list_entities",
+    }
+    assert tool_failure(server, "update_relation", {"id": "relation:x", "properties": {"a": 1}}) == {
+        "error": "unknown option 'properties' for update_relation; did you mean 'set_properties'? "
+        "(valid options: id, set_properties, remove_properties, event_time, evidence)",
+        "error_type": "ValidationError",
+        "code": "unknown_key",
+        "field": "properties",
+        "retryable": False,
+        **error_links("unknown_key"),
+        "tool": "update_relation",
+    }
     for tool, args, message in (
         ("get_schema", {"format": "bogus"}, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"),
         ("create_entity", {"name": "a"}, "invalid arguments: type: field required"),
         ("list_entities", {"limit": "x"}, "invalid arguments: limit: expected number"),
     ):
-        with pytest.raises(Exception) as exc:
-            run(server.call_tool(tool, args))
-        assert str(exc.value).endswith(f"ValidationError: {message}")
-        assert "pydantic" not in str(exc.value)
+        failure = tool_failure(server, tool, args)
+        assert (failure["error"], failure["code"], failure["field"]) == (
+            message,
+            "invalid_argument",
+            message.split(": ")[1],
+        )
     for flag in ("no", "false", "0", 0, None):
         for tool, args in (
             ("maintenance_prune", {"min_relevance": 2.0}),
             ("maintenance_decay", {}),
             ("maintenance_dedupe_relations", {}),
         ):
-            with pytest.raises(Exception, match="dry_run"):
-                run(server.call_tool(tool, {**args, "dry_run": flag}))
-        with pytest.raises(Exception, match="include_invalidated"):
-            run(server.call_tool("list_relations", {"include_invalidated": flag}))
-        with pytest.raises(Exception, match="newest_first"):
-            run(server.call_tool("relation_versions", {"id": "relation:ab", "newest_first": flag}))
+            assert tool_failure(server, tool, {**args, "dry_run": flag})["field"] == "dry_run"
+        assert tool_failure(server, "list_relations", {"include_invalidated": flag})["field"] == "include_invalidated"
+        assert (
+            tool_failure(server, "relation_versions", {"id": "relation:ab", "newest_first": flag})["field"]
+            == "newest_first"
+        )
     assert sorted(e["id"] for e in run(srv.list_entities())["items"]) == ["t:a", "t:b"]
     for tool, args in (
         ("list_decisions", {"status": "bogus"}),
         ("list_preferences", {"stance": "bogus"}),
         ("create_decision", {"title": "D", "steps": ["relation:ab"], "status": "bogus"}),
     ):
-        with pytest.raises(Exception, match="invalid arguments"):
-            run(server.call_tool(tool, args))
+        assert tool_failure(server, tool, args)["error"].startswith("invalid arguments: ")
 
 
 NUMBER_ARGUMENT_CASES = [
@@ -306,9 +343,36 @@ NUMBER_ARGUMENT_CASES = [
 
 @pytest.mark.parametrize(("tool", "args", "message"), NUMBER_ARGUMENT_CASES)
 def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, args, message):
-    with pytest.raises(Exception) as exc:
-        run(server.call_tool(tool, args))
-    assert str(exc.value).endswith(f"ValidationError: invalid arguments: {message}")
+    assert tool_failure(server, tool, args) == {
+        "error": f"invalid arguments: {message}",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "field": message.split(":")[0],
+        "retryable": False,
+        **error_links("invalid_argument"),
+        "tool": tool,
+    }
+
+
+def test_a_session_gets_each_code_hint_once_and_each_new_warning_code_hint(server):
+    schema = {"entities": [{"name": "Person"}]}
+    first = run(
+        server.call_tool("insert_facts", {"facts": {"entities": [{"name": "B", "type": "Company"}]}, "schema": schema})
+    )
+    again = run(
+        server.call_tool("insert_facts", {"facts": {"entities": [{"name": "C", "type": "Company"}]}, "schema": schema})
+    )
+    assert first.structured_content["warning_hints"] == {"unknown_entity_type": WARNING_HINTS["unknown_entity_type"]}
+    assert "warning_hints" not in again.structured_content
+    missing = tool_failure(server, "delete_entity", {"id": "company:bb"})
+    assert missing["error"].endswith("; did you mean 'company:b'?")
+    assert [missing["tool"], missing["hint"]] == ["delete_entity", HINTS["not_found"]]
+    assert "hint" not in tool_failure(server, "delete_entity", {"id": "company:bb"})
+    assert tool_failure(server, "list_entities", {"limit": "x"})["hint"] == HINTS["invalid_argument"]
+    assert "hint" not in tool_failure(server, "list_entities", {"limit": "x"})
+    other = srv.build_server()
+    assert tool_failure(other, "delete_entity", {"id": "company:bb"})["hint"] == HINTS["not_found"]
+    assert tool_failure(other, "list_entities", {"limit": "x"})["hint"] == HINTS["invalid_argument"]
 
 
 def test_whole_floats_pass_as_integers_and_integers_as_numbers(server):
@@ -399,8 +463,8 @@ def test_graph_diff_tool_returns_structured_changes_and_validates_window(server)
     result = run(server.call_tool("graph_diff", {"since": "2000-01-01", "until": "2099-01-01"}))
     assert [r["id"] for r in result.structured_content["relations_added"]] == ["relation:ab"]
     assert [e["id"] for e in result.structured_content["entities_created"]] == ["t:a", "t:b"]
-    with pytest.raises(Exception, match="until must be at or after since"):
-        run(server.call_tool("graph_diff", {"since": "2021-01-01", "until": "2020-01-01"}))
+    failure = tool_failure(server, "graph_diff", {"since": "2021-01-01", "until": "2020-01-01"})
+    assert (failure["error"], failure["code"]) == ("until must be at or after since", "invalid_argument")
 
 
 def test_proto_keys_are_rejected_by_mcp():

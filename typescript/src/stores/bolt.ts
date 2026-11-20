@@ -18,8 +18,8 @@ import neo4j, {
 } from "neo4j-driver";
 
 import {
+  connectionReason,
   errorMessage,
-  errorReason,
   maskUri,
   redactUri,
   requireEncodedUserinfo,
@@ -101,13 +101,22 @@ export function boltFailure(exc: unknown): "auth" | "database" | "unreachable" |
 export function boltError(exc: unknown, uri: string, database: string | null): StoreError | null {
   const failure = boltFailure(exc);
   if (failure === "auth") {
-    return new StoreError(`authentication failed for ${maskUri(uri)}: check the token/password`, { cause: exc });
+    return new StoreError(`authentication failed for ${maskUri(uri)}: check the token/password`, {
+      cause: exc,
+      code: "store_auth_failed",
+    });
   }
   if (failure === "database") {
-    return new StoreError(database ? `database ${pyRepr(database)} not found` : "database not found", { cause: exc });
+    return new StoreError(database ? `database ${pyRepr(database)} not found` : "database not found", {
+      cause: exc,
+      code: "database_not_found",
+    });
   }
   if (failure === "unreachable") {
-    return new StoreError(`could not connect to ${maskUri(uri)}: ${redactUri(errorReason(exc), uri)}`, { cause: exc });
+    return new StoreError(`could not connect to ${maskUri(uri)}: ${redactUri(connectionReason(exc), uri)}`, {
+      cause: exc,
+      code: "store_unreachable",
+    });
   }
   return null;
 }
@@ -185,7 +194,10 @@ export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver 
   requireEncodedUserinfo(uri);
   const scheme = splitScheme(uri)[0].toLowerCase();
   if (scheme && !BOLT_SCHEMES.includes(scheme)) {
-    throw new StoreError(`${pyRepr(maskUri(uri))} is not a Bolt URI; use bolt://host:port`);
+    throw new StoreError(`${pyRepr(maskUri(uri))} is not a Bolt URI; use bolt://host:port`, {
+      code: "invalid_setting",
+      field: "uri",
+    });
   }
   const pair = isPlainObject(auth) && typeof auth.scheme === "string" ? null : parseAuth(auth);
   const token = pair === null ? (auth as AuthToken | undefined) || undefined : neo4j.auth.basic(pair[0], pair[1]);
@@ -196,7 +208,13 @@ export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver 
       ...config,
     });
   } catch (exc) {
-    throw new StoreError(`cannot open a Bolt driver for ${pyRepr(maskUri(uri))}: ${redactUri(errorMessage(exc), uri)}`);
+    throw new StoreError(
+      `cannot open a Bolt driver for ${pyRepr(maskUri(uri))}: ${redactUri(errorMessage(exc), uri)}`,
+      {
+        code: "invalid_setting",
+        field: "uri",
+      },
+    );
   }
 }
 

@@ -8,6 +8,7 @@ import {
   fromTables,
   ids,
   KuzuStore,
+  Neo4jStore,
   SelfGraph,
   SelfGraphError,
   toJsonable,
@@ -656,13 +657,14 @@ const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
 /**
  * Call MCP tools with text, boolean, and null arguments the servers must reject before running the tool.
  *
- * @return (Promise<string[]>): the error text each call reports.
+ * @return (Promise<object[]>): the error text, code, and field each call reports, or "accepted".
  */
-async function mcpArgumentErrors(): Promise<string[]> {
-  const errors: string[] = [];
+async function mcpArgumentErrors(): Promise<(object | string)[]> {
+  const errors: (object | string)[] = [];
   for (const [name, args] of MCP_ARGUMENT_CASES) {
     const { result, isError } = await callTool(name, args);
-    errors.push(isError ? (result as { error: string }).error : "accepted");
+    const { error, code, field } = result as { error: string; code: string; field?: string };
+    errors.push(isError ? { error, code, ...(field === undefined ? {} : { field }) } : "accepted");
   }
   return errors;
 }
@@ -675,30 +677,35 @@ const USES_SPEC = {
 class Opaque {}
 
 /**
- * Run a call that should fail and return its error class and message.
+ * Run a call that should fail and return its error as the wire fields both SDKs report.
  *
  * @param call (() => Promise<unknown>): the call.
- * @return (Promise<string[]>): the error class name and message, or ["accepted"] when the call succeeds.
+ * @return (Promise<object | string>): the error's toJSON() fields, with the namespace and links reduced to what both SDKs share, or "accepted" when the call succeeds.
  */
-async function errorOf(call: () => Promise<unknown>): Promise<string[]> {
+async function errorOf(call: () => Promise<unknown>): Promise<object | string> {
   try {
     await call();
   } catch (exc) {
     if (!(exc instanceof SelfGraphError)) throw exc;
-    return [exc.name, exc.message];
+    return {
+      ...exc.toJSON(),
+      error: exc.message.replace(/in namespace '[^']*'/, "in namespace '<ns>'"),
+      docs: exc.docs.split("#")[1],
+      agent_guide: exc.agentGuide.split("#")[1],
+    };
   }
-  return ["accepted"];
+  return "accepted";
 }
 
 /**
- * Pass a bad stance, status, or evidence shape to each resource method that takes one.
+ * Pass bad input (a stance, status, evidence shape, key, type, reference, or cursor) to resource methods.
  *
  * An Opaque instance stands in for bad evidence because both SDKs name a class instance by its class.
  *
  * @param graph (SelfGraph): the conformance graph.
- * @return (Promise<Record<string, string[]>>): each case's error class and message.
+ * @return (Promise<Record<string, object | string>>): each case's error fields.
  */
-async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>> {
+async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | string>> {
   const worksAt = ids.relationId("person:jane-doe", "WORKS_AT", "company:acme");
   const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
   const bad = new Opaque() as never;
@@ -771,6 +778,14 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, string[]>>
     entity_inf_property: await errorOf(() =>
       graph.entities.create("Inf", "Person", { properties: { d: Number.POSITIVE_INFINITY } }),
     ),
+    facts_unknown_key: await errorOf(() => graph.insert.facts({ entities: [{ nmae: "A", type: "Person" }] } as never)),
+    entity_retype: await errorOf(() => graph.entities.update("person:jane-doe", { type: "Company" } as never)),
+    rel_create_dangling: await errorOf(() => graph.relations.create("person:jane-doe", "KNOWS", "person:ghost")),
+    list_bad_cursor: await errorOf(() => graph.entities.list({ cursor: "nope" })),
+    store_refused: await errorOf(() => new SelfGraph(new Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
+    list_limit_zero: await errorOf(() => graph.entities.list({ limit: 0 })),
+    list_limit_text: await errorOf(() => graph.entities.list({ limit: "5" } as never)),
+    entity_missing_near: await errorOf(() => graph.entities.delete("person:jane-do")),
   };
 }
 
@@ -1186,18 +1201,24 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   await replacedSrc.relations.certify(rv1.relations[1]!.id, { by: "hr" });
   const rv2 = await replacedSrc.insert.text("Bob works at Globex.", { source_id: "hr", replace_source: true });
   await replacedSrc.insert.facts({ entities: [{ type: "Thing", name: "Initech" }] });
-  await replacedSrc.relations.create("thing:bob", "RELATED_TO", "thing:initech", {
+  const manual = await replacedSrc.relations.create("thing:bob", "RELATED_TO", "thing:initech", {
     evidence: [{ source_id: "hr", quote: "hand" }],
   });
   const rv3 = await replacedSrc.insert.text("Alice works at Acme. Bob works at Globex. Bob works at Initech.", {
     source_id: "hr",
     replace_source: true,
   });
+  const rv4 = await replacedSrc.insert.text("Alice works at Acme.", { source_id: "hr", replace_source: true });
+  const keptManual = await replacedSrc.relations.get(manual.id);
+  if (keptManual === null || rv4.source_diff!.retired.includes(manual.id))
+    throw new Error("manual evidence was retired");
   out.replace_source_steps = toJsonable({
     v2_diff: rv2.source_diff,
     v2_warnings: rv2.warnings.map((w) => w.code),
     v3_diff: rv3.source_diff,
     v3_warnings: rv3.warnings.map((w) => w.code),
+    v4_diff: rv4.source_diff,
+    v4_manual_current: keptManual.is_current,
   });
   const storedSrc = new SelfGraph(graph.store, {
     namespace: `${graph.namespace}_replace_stored`,
@@ -1217,6 +1238,29 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     v.revision,
     v.invalidated_at ? jsonIso(v.invalidated_at) : null,
   ]);
+  const restoredSrc = new SelfGraph(graph.store, {
+    namespace: `${graph.namespace}_restore_src`,
+    extraction: "regex",
+  });
+  const [berlin, paris] = ["Ann works at Acme in Berlin.", "Ann works at Acme in Paris."];
+  await restoredSrc.insert.text(berlin, { source_id: "note", event_time: "2020-01-01T00:00:00Z" });
+  await restoredSrc.insert.text(paris, { source_id: "note", event_time: "2021-01-01T00:00:00Z", replace_source: true });
+  const beforeRestore = new Date();
+  await restoredSrc.insert.text(berlin, { source_id: "note", replace_source: true });
+  const quoted = async (at: { as_of: string; known_at?: Date }) => {
+    const lines = (await restoredSrc.retrieve("Ann Acme Berlin Paris", at)).context.split("\n");
+    return [berlin, paris].filter((text) => lines.includes(`SOURCE | ${text}`));
+  };
+  out.restore_source = [
+    await quoted({ as_of: "2020-06-01T00:00:00Z" }),
+    await quoted({ as_of: "2022-01-01T00:00:00Z" }),
+    await quoted({ as_of: "2022-01-01T00:00:00Z", known_at: beforeRestore }),
+    await quoted({ as_of: "2022-01-01T00:00:00Z", known_at: new Date() }),
+    await quoted({ as_of: "2099-01-01T00:00:00Z" }),
+  ];
+  if (JSON.stringify(out.restore_source) !== JSON.stringify([[berlin], [paris], [paris], [paris], [berlin]])) {
+    throw new Error(`restored source quoted wrongly: ${JSON.stringify(out.restore_source)}`);
+  }
   await graph.insert.facts(
     {
       entities: [

@@ -6,7 +6,7 @@ from threading import Event
 import pytest
 from helpers import make_store, new_graph, run, unique_ns
 
-from selfgraph import Schema, SelfGraph, StoreError, SyncSelfGraph, TransientError, ValidationError
+from selfgraph import Schema, SelfGraph, StoreError, SyncSelfGraph, ValidationError
 
 
 def test_namespaces_isolate_reads_and_writes():
@@ -49,7 +49,7 @@ def test_calls_after_close_raise_store_error():
     for call in (g.entities.get("person:x"), g.entities.create("X", "Person"), g.initialize()):
         with pytest.raises(StoreError, match="closed") as err:
             run(call)
-        assert not isinstance(err.value, TransientError)
+        assert err.value.code == "graph_closed"
 
 
 def test_sync_graph_exposes_schema_and_raises_after_close():

@@ -264,7 +264,9 @@ describe("Schema.parse and asSchema", () => {
       "relations[0].from.min_count: min_count 2 is greater than max_count 1",
     ],
   ])("rejects %j", (spec, message) => {
-    expect(() => asSchema(spec as Schema)).toThrow(new ValidationError(`invalid schema: ${message}`));
+    expect(() => asSchema(spec as Schema)).toThrow(
+      expect.objectContaining({ name: "ValidationError", message: `invalid schema: ${message}` }),
+    );
   });
 
   it.each([
@@ -299,7 +301,7 @@ describe("Schema.parse and asSchema", () => {
     ],
   ])("reports an unsafe count and then the first consistency problem for %j", (spec, lines) => {
     const message = `invalid schema:${lines.map((line) => `\n  ${line}`).join("")}`;
-    expect(() => asSchema(spec as Schema)).toThrow(new ValidationError(message));
+    expect(() => asSchema(spec as Schema)).toThrow(expect.objectContaining({ name: "ValidationError", message }));
   });
 
   it("lets an alias repeat its own type name", () => {

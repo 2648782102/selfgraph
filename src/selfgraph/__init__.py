@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from .client import SelfGraph
 from .errors import (
     ConflictError,
+    ErrorCode,
     ExtractionError,
     NotFoundError,
     PromptTemplateError,
@@ -169,6 +170,7 @@ __all__ = [
     "profile_id",
     "normalize_rel_type",
     "SelfGraphError",
+    "ErrorCode",
     "ValidationError",
     "NotFoundError",
     "ConflictError",

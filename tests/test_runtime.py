@@ -375,6 +375,7 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
             with pytest.raises(ValidationError) as caught:
                 build_graph(GraphSettings(store=store, uri=uri))
             assert str(caught.value) == unencoded, (store, uri)
+            assert (caught.value.code, caught.value.field) == ("invalid_setting", "uri"), (store, uri)
             assert "cr3t" not in "".join(traceback.format_exception(caught.value)), (store, uri)
         with pytest.raises(ValidationError) as caught:
             bolt_driver(uri, None)
@@ -456,8 +457,11 @@ def test_kuzu_paths_settings_and_errors(caplog, monkeypatch, tmp_path):
     run(store.initialize())
     run(store.close())
     assert (tmp_path / "sub" / "x.kuzu").exists()
-    lock = _kuzu_error(RuntimeError("IO exception: Could not set lock on file : /x"), "could not open")
-    assert str(lock).endswith("Kuzu allows one process at a time")
+    kuzu_lock = "IO exception: Could not set lock on file : /x\nSee the docs: https://docs.kuzudb.com/concurrency"
+    assert str(_kuzu_error(RuntimeError(kuzu_lock), "could not open")) == (
+        "could not open: another process (an MCP server or script) has this Kuzu database open; "
+        "Kuzu allows one process at a time"
+    )
     mmap = _kuzu_error(RuntimeError("Buffer manager exception: Mmap for size 8796093022208 failed."), "failed")
     assert str(mmap).endswith("pass a smaller max_db_size")
     for size in (-1, 0, 1.5, True):

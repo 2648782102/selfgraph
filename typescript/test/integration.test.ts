@@ -1455,7 +1455,10 @@ describe("store setup errors", () => {
       for (const leak of leaks) expect(message).not.toContain(leak);
     }
     expect(() => openDriver("http://u:hunter2@h:1", null, {})).toThrow(
-      new StoreError("'http://***@h:1' is not a Bolt URI; use bolt://host:port"),
+      new StoreError("'http://***@h:1' is not a Bolt URI; use bolt://host:port", {
+        code: "invalid_setting",
+        field: "uri",
+      }),
     );
     let refused: unknown;
     try {
@@ -1548,6 +1551,7 @@ describe("store setup errors", () => {
         const exc = rejection(() => SelfGraph.connect({ store, uri }));
         expect(exc).toBeInstanceOf(ValidationError);
         expect(exc.message).toBe(unencoded);
+        expect([(exc as ValidationError).code, (exc as ValidationError).field]).toEqual(["invalid_setting", "uri"]);
         expect(exc.stack ?? "").not.toContain("cr3t");
       }
       const exc = rejection(() => openDriver(uri, null, {}));
@@ -1556,7 +1560,9 @@ describe("store setup errors", () => {
       expect(exc.stack ?? "").not.toContain("cr3t");
     }
     for (const uri of ["bolt://u:pw@127.0.0.1:7687?a=b@c", "bolt://h:1/db@x", "bolt://u:p@ss@h:1", inPassword]) {
-      expect(() => openDriver(uri, null, {})).toThrow(new ValidationError(unencoded));
+      expect(() => openDriver(uri, null, {})).toThrow(
+        new ValidationError(unencoded, { code: "invalid_setting", field: "uri" }),
+      );
     }
     expect(splitScheme("bolt://h:1")).toEqual(["bolt", "h:1"]);
     expect(splitScheme("a+b.c-d://h")).toEqual(["a+b.c-d", "h"]);
@@ -1608,7 +1614,10 @@ describe("store setup errors", () => {
 
   it("validates addresses, trims syntax errors, and names a missing HydraDB token or another engine", async () => {
     expect(() => SelfGraph.connect({ store: "falkordb", uri: "nonsense:abc" })).toThrow(
-      new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535"),
+      new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535", {
+        code: "invalid_setting",
+        field: "uri",
+      }),
     );
     expect(() => new HydraDBStore("http://127.0.0.1:1")).toThrow(/is not a Bolt URI; use bolt:\/\/host:port$/);
     const tokens = Array.from({ length: 80 }, (_, i) => `'T${i}'`).join(", ");
@@ -1835,8 +1844,9 @@ describe("store setup errors", () => {
       else delete process.env.USERPROFILE;
       rmSync(home, { recursive: true, force: true });
     }
-    expect(kuzuError(new Error("IO exception: Could not set lock on file : /x"), "open").message).toMatch(
-      /Kuzu allows one process at a time$/,
+    const kuzuLock = "IO exception: Could not set lock on file : /x\nSee the docs: https://docs.kuzudb.com/concurrency";
+    expect(kuzuError(new Error(kuzuLock), "open").message).toBe(
+      "open: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time",
     );
     expect(kuzuError(new Error("Buffer manager exception: Mmap for size 1 failed."), "q").message).toMatch(
       /pass a smaller max_db_size$/,
@@ -2269,5 +2279,9 @@ it.each([
 ] as const)("keeps other external id value type errors: %j", (external_ids, key) => {
   expect(() =>
     parseOrThrow(Extraction, { entities: [{ type: "Person", name: "Ann", external_ids }] }, "facts"),
-  ).toThrowError(new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`));
+  ).toThrowError(
+    new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`, {
+      field: `entities[0].external_ids.${key}`,
+    }),
+  );
 });

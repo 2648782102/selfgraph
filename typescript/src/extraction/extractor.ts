@@ -448,6 +448,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
           const line = issueLine(parsed.error.issues[0]!, result);
           throw new ExtractionError(`LLM client returned an invalid result for the ${kind} pass: ${line}`, {
             cause: parsed.error,
+            code: "invalid_llm_output",
           });
         }
         return (evidence: ChunkEvidence | null) => sink(parsed.data, evidence);
