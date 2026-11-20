@@ -119,26 +119,63 @@ export function maskUri(uri: string): string {
 }
 
 /**
+ * The ways a message can show a piece of a URI: raw, as inside a Python repr, and as inside a JSON string.
+ *
+ * @param part (string): the piece of the URI.
+ * @return (string[]): the raw, repr, and JSON renderings, without their quotes.
+ */
+function escapedForms(part: string): string[] {
+  return [part, pyRepr(part).slice(1, -1), JSON.stringify(part).slice(1, -1)];
+}
+
+/**
+ * The pieces of a URI's userinfo that a driver may show before an @, longest first.
+ *
+ * Drivers that misread a password with an unencoded /, ?, #, & or = echo only the part after it, so each piece is the
+ * userinfo or the text after any of those characters up to one of its @. Each piece also comes without tabs and
+ * newlines, which URL parsers strip, and with + read as a space, as query parsers do.
+ *
+ * @param userinfo (string): the user and password of a URI.
+ * @return (string[]): the distinct non-empty pieces, longest first.
+ */
+function echoedPieces(userinfo: string): string[] {
+  const chunks = userinfo.split("@");
+  const pieces = [userinfo];
+  chunks.forEach((_, i) => {
+    const prefix = chunks.slice(0, i + 1).join("@");
+    for (let j = 0; j < prefix.length; j++) {
+      if ("/?#&=".includes(prefix.charAt(j))) pieces.push(prefix.slice(j + 1));
+    }
+  });
+  const variants = pieces.flatMap((p) => [p, p.replace(/[\t\r\n]/g, ""), p.replaceAll("+", " ")]);
+  return [...new Set(variants)].filter(Boolean).sort((a, b) => Array.from(b).length - Array.from(a).length);
+}
+
+/**
  * Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
  *
  * @param text (string): the message, which may quote the URI or repeat a driver's text about it.
  * @param uri (string | null | undefined): the configured URI.
  * @return (string): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same
- *   rendering of the masked URI, then each such rendering of the userinfo, and of its tail after the last /, ? or #,
- *   that precedes an @ replaced by ***.
+ *   rendering of the masked URI; then each such rendering of a piece of the userinfo that precedes an @ replaced by
+ *   ***; then, when the userinfo runs past the authority, the authority itself when it holds a :, since a driver may
+ *   take that part of the password for a host:port.
  */
 export function redactUri(text: string, uri: string | null | undefined): string {
   if (!uri) return text;
-  const userinfo = uriUserinfo(uri)[1];
+  const [start, userinfo] = uriUserinfo(uri);
   if (!userinfo) return text;
   const masked = maskUri(uri);
   const renders = [pyRepr, JSON.stringify, String] as ((value: string) => string)[];
-  const whole = renders.reduce((out, render) => out.replaceAll(render(uri), () => render(masked)), text);
-  const tail = userinfo.split(/[/?#]/).at(-1) ?? "";
-  const parts = tail && tail !== userinfo ? [userinfo, tail] : [userinfo];
-  return parts
-    .flatMap((part) => [part, pyRepr(part).slice(1, -1), JSON.stringify(part).slice(1, -1)])
-    .reduce((out, form) => out.replaceAll(`${form}@`, () => "***@"), whole);
+  let out = renders.reduce((acc, render) => acc.replaceAll(render(uri), () => render(masked)), text);
+  out = echoedPieces(userinfo)
+    .flatMap(escapedForms)
+    .reduce((acc, form) => acc.replaceAll(`${form}@`, () => "***@"), out);
+  const authority = uri.slice(start).split(/[/?#]/, 1)[0] ?? "";
+  if (!authority.includes("@") && authority.includes(":")) {
+    out = escapedForms(authority).reduce((acc, form) => acc.replaceAll(form, () => "***"), out);
+  }
+  return out;
 }
 
 /**

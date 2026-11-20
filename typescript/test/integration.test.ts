@@ -1427,6 +1427,9 @@ describe("store setup errors", () => {
         "Couldn't connect to ***@127.0.0.1:7687",
       );
       expect(redactUri("Given URI: 's3cr3tPW@127.0.0.1:7687'", uri)).toBe("Given URI: '***@127.0.0.1:7687'");
+      expect(redactUri("Failed to DNS resolve address u:pa: [Errno 8]", uri)).toBe(
+        "Failed to DNS resolve address ***: [Errno 8]",
+      );
       const down = err("ServiceUnavailable", "Couldn't connect to s3cr3tPW@127.0.0.1:7687");
       expect(boltError(down, uri, null)?.message).toBe(
         "could not connect to bolt://***@127.0.0.1:7687: Couldn't connect to ***@127.0.0.1:7687",
@@ -1435,6 +1438,23 @@ describe("store setup errors", () => {
     const dollar = "bolt://u:pw@h:1/d$&b";
     expect(redactUri(`x ${dollar} y`, dollar)).toBe("x bolt://***@h:1/d$&b y");
     expect(redactUri("x u:pw$'@h y", "bolt://u:pw$'@h")).toBe("x ***@h y");
+    const echoed = "Invalid parameters:'s3cr3tPW@127.0.0.1:7687?x@y=' in query string 's3cr3tPW@127.0.0.1:7687?x@y'.";
+    expect(redactUri(echoed, "neo4j://u:pa?s3cr3tPW@127.0.0.1:7687?x@y")).toBe(
+      "Invalid parameters:'***@y=' in query string '***@y'.",
+    );
+    const split = "neo4j://u:pa?s3=cr3t&PW@127.0.0.1:7687";
+    expect(redactUri("Invalid parameters:'PW@127.0.0.1:7687='", split)).toBe(
+      "Invalid parameters:'***@127.0.0.1:7687='",
+    );
+    expect(redactUri("in query string 's3=cr3t&PW@127.0.0.1:7687'", split)).toBe(
+      "in query string '***@127.0.0.1:7687'",
+    );
+    expect(redactUri("Invalid parameters:'s3cr3tPW@h:1='", "bolt://u:pa?s3cr3t\nPW@h:1")).toBe(
+      "Invalid parameters:'***@h:1='",
+    );
+    expect(redactUri("Invalid parameters:'s3cr3t PW@h:1='", "neo4j://u:pa?s3cr3t+PW@h:1")).toBe(
+      "Invalid parameters:'***@h:1='",
+    );
     const quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x";
     for (const shown of [pyRepr(quoted), JSON.stringify(quoted), quoted]) {
       expect(redactUri(`Given URI: ${shown}`, quoted)).not.toContain("ss3cr3t");

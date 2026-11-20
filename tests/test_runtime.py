@@ -276,6 +276,9 @@ def test_store_errors_hide_uri_credentials():
             redact_uri("Couldn't connect to s3cr3tPW@127.0.0.1:7687", uri) == "Couldn't connect to ***@127.0.0.1:7687"
         )
         assert redact_uri("Given URI: 's3cr3tPW@127.0.0.1:7687'", uri) == "Given URI: '***@127.0.0.1:7687'"
+        assert redact_uri("Failed to DNS resolve address u:pa: [Errno 8]", uri) == (
+            "Failed to DNS resolve address ***: [Errno 8]"
+        )
         down = DriverError("", "Couldn't connect to s3cr3tPW@127.0.0.1:7687")
         assert str(bolt_error(down, uri, None)) == (
             "could not connect to bolt://***@127.0.0.1:7687: Couldn't connect to ***@127.0.0.1:7687"
@@ -283,6 +286,18 @@ def test_store_errors_hide_uri_credentials():
     dollar = "bolt://u:pw@h:1/d$&b"
     assert redact_uri(f"x {dollar} y", dollar) == "x bolt://***@h:1/d$&b y"
     assert redact_uri("x u:pw$'@h y", "bolt://u:pw$'@h") == "x ***@h y"
+    echoed = "Invalid parameters:'s3cr3tPW@127.0.0.1:7687?x@y=' in query string 's3cr3tPW@127.0.0.1:7687?x@y'."
+    assert redact_uri(echoed, "neo4j://u:pa?s3cr3tPW@127.0.0.1:7687?x@y") == (
+        "Invalid parameters:'***@y=' in query string '***@y'."
+    )
+    split = "neo4j://u:pa?s3=cr3t&PW@127.0.0.1:7687"
+    assert redact_uri("Invalid parameters:'PW@127.0.0.1:7687='", split) == "Invalid parameters:'***@127.0.0.1:7687='"
+    assert redact_uri("in query string 's3=cr3t&PW@127.0.0.1:7687'", split) == "in query string '***@127.0.0.1:7687'"
+    stripped = redact_uri("Invalid parameters:'s3cr3tPW@h:1='", "bolt://u:pa?s3cr3t\nPW@h:1")
+    assert stripped == "Invalid parameters:'***@h:1='"
+    assert redact_uri("Invalid parameters:'s3cr3t PW@h:1='", "neo4j://u:pa?s3cr3t+PW@h:1") == (
+        "Invalid parameters:'***@h:1='"
+    )
     quoted = "bolt://u:it'ss3cr3tPW@127.0.0.1:7687/db\"x"
     for shown in (repr(quoted), json.dumps(quoted), quoted):
         assert "ss3cr3t" not in redact_uri(f"Given URI: {shown}", quoted), shown

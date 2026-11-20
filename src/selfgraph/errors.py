@@ -136,27 +136,59 @@ def mask_uri(uri: str) -> str:
     return f"{uri[:start]}***{uri[start + len(userinfo) :]}" if userinfo else uri
 
 
+def _escaped_forms(part: str) -> tuple[str, str, str]:
+    """The ways a message can show a piece of a URI: raw, as inside a Python repr, and as inside a JSON string.
+
+    @param part (str): the piece of the URI.
+    @return (tuple[str, str, str]): the raw, repr, and JSON renderings, without their quotes.
+    """
+    return part, repr(part)[1:-1], json.dumps(part, ensure_ascii=False)[1:-1]
+
+
+def _echoed_pieces(userinfo: str) -> list[str]:
+    """The pieces of a URI's userinfo that a driver may show before an @, longest first.
+
+    Drivers that misread a password with an unencoded /, ?, #, & or = echo only the part after it, so each piece is
+    the userinfo or the text after any of those characters up to one of its @. Each piece also comes without tabs and
+    newlines, which URL parsers strip, and with + read as a space, as query parsers do.
+
+    @param userinfo (str): the user and password of a URI.
+    @return (list[str]): the distinct non-empty pieces, longest first.
+    """
+    chunks = userinfo.split("@")
+    pieces = [userinfo]
+    for i in range(len(chunks)):
+        prefix = "@".join(chunks[: i + 1])
+        pieces += [prefix[j + 1 :] for j, char in enumerate(prefix) if char in "/?#&="]
+    variants = (v for p in pieces for v in (p, re.sub(r"[\t\r\n]", "", p), p.replace("+", " ")))
+    return sorted(dict.fromkeys(v for v in variants if v), key=len, reverse=True)
+
+
 def redact_uri(text: str, uri: str | None) -> str:
     """Replace the user and password of a URI with *** wherever a message shows them, raw or escaped.
 
     @param text (str): the message, which may quote the URI or repeat a driver's text about it.
     @param uri (str | None): the configured URI.
     @return (str): the message with each raw, repr, or JSON rendering of the whole URI replaced by the same rendering
-        of the masked URI, then each such rendering of the userinfo, and of its tail after the last /, ? or #, that
-        precedes an @ replaced by ***.
+        of the masked URI; then each such rendering of a piece of the userinfo that precedes an @ replaced by ***;
+        then, when the userinfo runs past the authority, the authority itself when it holds a :, since a driver may
+        take that part of the password for a host:port.
     """
     if not uri:
         return text
-    userinfo = _uri_userinfo(uri)[1]
+    start, userinfo = _uri_userinfo(uri)
     if not userinfo:
         return text
     masked = mask_uri(uri)
     for render in (repr, lambda s: json.dumps(s, ensure_ascii=False), str):
         text = text.replace(render(uri), render(masked))
-    tail = re.split(r"[/?#]", userinfo)[-1]
-    for part in (userinfo, tail) if tail and tail != userinfo else (userinfo,):
-        for form in (part, repr(part)[1:-1], json.dumps(part, ensure_ascii=False)[1:-1]):
+    for piece in _echoed_pieces(userinfo):
+        for form in _escaped_forms(piece):
             text = text.replace(f"{form}@", "***@")
+    authority = re.split(r"[/?#]", uri[start:], maxsplit=1)[0]
+    if "@" not in authority and ":" in authority:
+        for form in _escaped_forms(authority):
+            text = text.replace(form, "***")
     return text
 
 
