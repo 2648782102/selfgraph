@@ -604,7 +604,49 @@ function suite(spec: StoreSpec) {
     });
   }
 
-  it("keeps a relation stated directly after the merge, and its decision", async () => {
+  it.each([
+    ["s1 restates", ["s1"], ["s1"]],
+    ["s1 restates with a decision", ["s1"], ["s1"]],
+    ["s3 restates with a decision", ["s3"], ["s1"]],
+    ["bobby merges from s2 with a decision", ["s2"], ["s1"]],
+  ])("keeps a relation stated directly after the merge (%s)", async (kase, survivor, carried) => {
+    const g = open({ resolver: "default" });
+    const [xena, bobby] = [entityId("Person", "Xena"), entityId("Person", "Bobby")];
+    await seed(g, { type: "Person", name: "Robert", aliases: ["Bob", "Bobby"] }, { type: "Person", name: "Xena" });
+    const merged = { from_entity: BOB, type: "KNOWS", to_entity: xena };
+    const first = await g.insert.facts(
+      { entities: [{ type: "Person", name: "Bob" }], relations: [merged] },
+      { source_id: "s1" },
+    );
+    const rid = relationId(ROBERT, "KNOWS", xena);
+    const source = kase.startsWith("s3") ? "s3" : kase.startsWith("bobby") ? "s2" : "s1";
+    const base: Extraction = kase.startsWith("bobby")
+      ? { entities: [{ type: "Person", name: "Bobby" }], relations: [{ ...merged, from_entity: bobby }] }
+      : {
+          relations: [
+            {
+              from_entity: ROBERT,
+              type: "KNOWS",
+              to_entity: xena,
+              evidence: [{ source_id: source, quote: "Robert knows Xena" }],
+            },
+          ],
+        };
+    const facts: Extraction = kase.includes("decision")
+      ? { ...base, decisions: [{ title: "later", steps: [rid] }] }
+      : base;
+    const later = await g.insert.facts(facts, { source_id: source });
+    await g.entities.unmerge(first.merges[0]!.id);
+    const sources = async (id: string) => (await g.relations.evidence(id)).items.map((e) => e.source_id).sort();
+    expect(await sources(rid)).toEqual(survivor);
+    expect((await g.relations.get(rid))?.source_count).toBe(new Set(survivor).size);
+    expect(await sources(relationId(BOB, "KNOWS", xena))).toEqual(carried);
+    if (later.decisions.length) {
+      expect((await g.decisions.get(later.decisions[0]!.id))!.steps.map((step) => step.relation_id)).toEqual([rid]);
+    }
+  });
+
+  it("moves a relation its merge source restated unchanged", async () => {
     const g = open({ resolver: "default" });
     const xena = entityId("Person", "Xena");
     await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] }, { type: "Person", name: "Xena" });
@@ -615,20 +657,10 @@ function suite(spec: StoreSpec) {
       },
       { source_id: "s1" },
     );
-    const rid = relationId(ROBERT, "KNOWS", xena);
-    const later = await g.insert.facts(
-      {
-        relations: [{ from_entity: ROBERT, type: "KNOWS", to_entity: xena }],
-        decisions: [{ title: "later", steps: [rid] }],
-      },
-      { source_id: "s1" },
-    );
+    await g.insert.facts({ relations: [{ from_entity: ROBERT, type: "KNOWS", to_entity: xena }] }, { source_id: "s1" });
     await g.entities.unmerge(first.merges[0]!.id);
-    const sources = async (id: string) => (await g.relations.evidence(id)).items.map((e) => e.source_id);
-    expect(await sources(rid)).toEqual(["s1"]);
-    expect((await g.relations.get(rid))?.source_count).toBe(1);
-    expect((await g.decisions.get(later.decisions[0]!.id))!.steps.map((s) => s.relation_id)).toEqual([rid]);
-    expect(await sources(relationId(BOB, "KNOWS", xena))).toEqual(["s1"]);
+    expect(await g.relations.get(relationId(ROBERT, "KNOWS", xena))).toBeNull();
+    expect((await g.relations.evidence(relationId(BOB, "KNOWS", xena))).items.map((e) => e.source_id)).toEqual(["s1"]);
   });
 
   it("strips its sources from the survivor when the other merge has none", async () => {

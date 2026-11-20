@@ -1166,23 +1166,56 @@ def test_unmerge_drops_a_source_only_another_reverted_merge_backed(order):
     assert survivor.source_count == 1
 
 
-def test_unmerge_keeps_a_relation_stated_directly_after_the_merge_and_its_decision():
+@pytest.mark.parametrize(
+    ("case", "survivor", "carried"),
+    [
+        ("s1 restates", ["s1"], ["s1"]),
+        ("s1 restates with a decision", ["s1"], ["s1"]),
+        ("s3 restates with a decision", ["s3"], ["s1"]),
+        ("bobby merges from s2 with a decision", ["s2"], ["s1"]),
+    ],
+)
+def test_unmerge_keeps_a_relation_stated_directly_after_the_merge(case, survivor, carried):
     g = fresh_graph("res", resolver="default")
-    xena = entity_id("Person", "Xena")
-    _seed(g, ROBERT, {"type": "Person", "name": "Xena"})
+    xena, bobby = entity_id("Person", "Xena"), entity_id("Person", "Bobby")
+    _seed(g, {**ROBERT, "aliases": ["Bob", "Bobby"]}, {"type": "Person", "name": "Xena"})
     merged = {"type": "KNOWS", "from_entity": BOB_ID, "to_entity": xena}
     [merge] = run(g.insert.facts({"entities": [BOB], "relations": [merged]}, source_id="s1")).merges
     rid = relation_id(ROBERT_ID, "KNOWS", xena)
-    direct = {"type": "KNOWS", "from_entity": ROBERT_ID, "to_entity": xena}
-    [dec] = run(
-        g.insert.facts({"relations": [direct], "decisions": [{"title": "later", "steps": [rid]}]}, source_id="s1")
-    ).decisions
+    source = "s3" if case.startswith("s3") else "s2" if case.startswith("bobby") else "s1"
+    if case.startswith("bobby"):
+        facts = {"entities": [{"type": "Person", "name": "Bobby"}], "relations": [{**merged, "from_entity": bobby}]}
+    else:
+        quote = [{"source_id": source, "quote": "Robert knows Xena"}]
+        facts = {"relations": [{"type": "KNOWS", "from_entity": ROBERT_ID, "to_entity": xena, "evidence": quote}]}
+    if "decision" in case:
+        facts["decisions"] = [{"title": "later", "steps": [rid]}]
+    later = run(g.insert.facts(facts, source_id=source))
 
     run(g.entities.unmerge(merge.id))
-    survivor = run(g.relations.get(rid))
-    assert [e.source_id for e in run(g.relations.evidence(rid)).items] == ["s1"]
-    assert survivor.source_count == 1
-    assert [s.relation_id for s in run(g.decisions.get(dec.id)).steps] == [rid]
+    assert sorted(e.source_id for e in run(g.relations.evidence(rid)).items) == survivor
+    assert run(g.relations.get(rid)).source_count == len(set(survivor))
+    back = relation_id(BOB_ID, "KNOWS", xena)
+    assert sorted(e.source_id for e in run(g.relations.evidence(back)).items) == carried
+    if later.decisions:
+        assert [s.relation_id for s in run(g.decisions.get(later.decisions[0].id)).steps] == [rid]
+
+
+def test_unmerge_moves_a_relation_its_merge_source_restated_unchanged():
+    g = fresh_graph("res", resolver="default")
+    xena = entity_id("Person", "Xena")
+    _seed(g, ROBERT, {"type": "Person", "name": "Xena"})
+    [merge] = run(
+        g.insert.facts(
+            {"entities": [BOB], "relations": [{"type": "KNOWS", "from_entity": BOB_ID, "to_entity": xena}]},
+            source_id="s1",
+        )
+    ).merges
+    direct = {"type": "KNOWS", "from_entity": ROBERT_ID, "to_entity": xena}
+    run(g.insert.facts({"relations": [direct]}, source_id="s1"))
+
+    run(g.entities.unmerge(merge.id))
+    assert run(g.relations.get(relation_id(ROBERT_ID, "KNOWS", xena))) is None
     back = relation_id(BOB_ID, "KNOWS", xena)
     assert [e.source_id for e in run(g.relations.evidence(back)).items] == ["s1"]
 

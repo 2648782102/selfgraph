@@ -22,6 +22,7 @@ from ._serde import (
     L_TRACE,
     _dumps,
     _loads,
+    aware,
     decode_entity,
     decode_evidence,
     from_iso,
@@ -795,39 +796,52 @@ async def _evidence_of(runner: Any, ns: str, relation_id: str) -> list[Evidence]
     return await _ops._paged(partial(_ops.list_evidence, runner, ns, relation_id, kind="relation"))
 
 
-async def _stated_since(runner: Any, ns: str, relation_id: str, own_traces: set[str]) -> bool:
-    """Tell whether something other than a merge's own decisions uses a relation, so it was stated after the merge.
+async def _evidence_rows(runner: Any, ns: str, relation_id: str) -> list[dict[str, Any]]:
+    return await _ops._nodes_where(runner, ns, L_EVIDENCE, "target_id", [relation_id])
 
-    A relation stated again from the merge's source adds no evidence, so a decision step is the only trace of it.
 
-    @param runner (Any): graph runner.
-    @param ns (str): namespace.
-    @param relation_id (str): the relation the merge rewrote onto.
-    @param own_traces (set[str]): the decision traces the merge rewrote.
-    @return (bool): whether another decision uses the relation.
+def _merge_rows(rows: list[dict[str, Any]], own: list[str]) -> list[dict[str, Any]]:
+    """Pick the evidence rows a merge wrote: for each of its sources, that source's earliest rows on the relation.
+
+    A merge record keeps no time per source, and a repeated merge adds its source later, so the rows each source wrote
+    first are the ones the merge carried in. A later row from the same source, or any row from another source, is a
+    direct statement made since.
+
+    @param rows (list[dict[str, Any]]): the relation's evidence rows.
+    @param own (list[str]): the sources the merge was seen in.
+    @return (list[dict[str, Any]]): the merge's own rows.
     """
-    return bool(await _ops._traces_touching_relations(runner, ns, [relation_id]) - own_traces)
+    first: dict[str, datetime] = {}
+    for row in rows:
+        if row["source_id"] in own:
+            at = aware(from_iso(row["created_at"]))
+            first[row["source_id"]] = min(first.get(row["source_id"], at), at)
+    return [r for r in rows if r["source_id"] in first and aware(from_iso(r["created_at"])) == first[r["source_id"]]]
 
 
 async def _strip_merge_evidence(
     runner: Any, ns: str, relation_id: str, own: list[str], keep: set[str]
 ) -> list[Evidence]:
-    """Take a merge's sources off a relation that stays on the survivor, and recount the distinct sources left.
+    """Take a merge's own evidence off a relation that stays on the survivor, and recount the distinct sources left.
+
+    The merge's own evidence is what _merge_rows picks. Rows stated directly since stay, whatever their source.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param relation_id (str): the relation the merge rewrote onto.
     @param own (list[str]): the sources the merge was seen in.
-    @param keep (set[str]): sources that stay because another live merge or a direct statement still backs them.
-    @return (list[Evidence]): the evidence of the merge's sources, to carry onto the restored relation.
+    @param keep (set[str]): sources whose rows stay because another live merge or a prior statement still backs them.
+    @return (list[Evidence]): the merge's own evidence, to carry onto the restored relation.
     """
-    on = await _evidence_of(runner, ns, relation_id)
-    strip = [source_id for source_id in own if source_id not in keep]
-    for source_id in strip:
-        await runner.delete_nodes_by(ns, L_EVIDENCE, equals={"target_id": relation_id, "source_id": source_id})
-    left = {e.source_id for e in on if e.source_id not in strip}
+    rows = await _evidence_rows(runner, ns, relation_id)
+    mine = _merge_rows(rows, own)
+    strip = [r for r in mine if r["source_id"] not in keep]
+    if strip:
+        await runner.delete_nodes(ns, L_EVIDENCE, [r["id"] for r in strip])
+    gone = {r["id"] for r in strip}
+    left = {r["source_id"] for r in rows if r["id"] not in gone}
     await runner.update_current_edge(ns, relation_id, {"source_count": len(left)})
-    return [e for e in on if e.source_id in own]
+    return [decode_evidence(r) for r in mine]
 
 
 async def _rewrite_refs(
@@ -1346,7 +1360,6 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     orig_restored: dict[str, str] = {}
     moved: list[tuple[MergeRewrite, MergeRewrite]] = []
     relations = []
-    own_traces = {r.id for r in rec.rewrites if r.kind == "decision"}
     for rw in (r for r in rec.rewrites if r.kind == "relation"):
         original, rewritten = RelationInput.model_validate(rw.original), RelationInput.model_validate(rw.rewritten)
         source = await end(original.from_entity, rewritten.from_entity)
@@ -1359,9 +1372,8 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             properties, event_time = versions[0].properties, versions[0].event_time
             on = await _evidence_of(runner, ns, rw.id)
             held = shared.get(("relation", rw.id))
-            if await _stated_since(runner, ns, rw.id, own_traces):
-                held = {*(held or ()), *rec.source_ids}
-            if held is not None or any(e.source_id not in rec.source_ids for e in on):
+            rows = await _evidence_rows(runner, ns, rw.id)
+            if held is not None or len(_merge_rows(rows, rec.source_ids)) < len(rows):
                 carried = await _strip_merge_evidence(runner, ns, rw.id, rec.source_ids, held or set())
             else:
                 carried = on
@@ -1370,8 +1382,6 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
                 await _ops._delete_evidence(runner, ns, rw.id)
         elif rw.existed and not rw.dropped and await _ops.relation_exists(runner, ns, rw.id):
             keep = {*shared.get(("relation", rw.id), ()), *rw.prior_sources}
-            if await _stated_since(runner, ns, rw.id, own_traces):
-                keep |= set(rec.source_ids)
             carried = await _strip_merge_evidence(runner, ns, rw.id, rec.source_ids, keep)
         back = RelationInput(
             id=original.id,

@@ -5,7 +5,7 @@ import { FALLBACK_TYPE } from "./extraction/extractor.js";
 import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
 import { comparePy, cpLen, deepEqual, pyFloatRepr, pyRepr, pyStrip } from "./internal/py.js";
-import { fromIso, jsonIso, toIso } from "./internal/time.js";
+import { epochMicros, fromIso, jsonIso, toIso } from "./internal/time.js";
 import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_SOURCE_VERSION, L_TRACE } from "./labels.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import { scanLiveMerges } from "./maintenance.js";
@@ -879,27 +879,47 @@ async function evidenceOf(runner: Runner, ns: string, relationId: string): Promi
 }
 
 /**
- * Tell whether something other than a merge's own decisions uses a relation, so it was stated after the merge. A relation stated again from the merge's source adds no evidence, so a decision step is the only trace of it.
+ * Read the stored evidence rows of a relation.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
- * @param relationId (string): the relation the merge rewrote onto.
- * @param ownTraces (Set<string>): the decision traces the merge rewrote.
- * @return (Promise<boolean>): whether another decision uses the relation.
+ * @param relationId (string): the relation.
+ * @return (Promise<Props[]>): its evidence rows.
  */
-async function statedSince(runner: Runner, ns: string, relationId: string, ownTraces: Set<string>): Promise<boolean> {
-  return [...(await ops.tracesTouchingRelations(runner, ns, [relationId]))].some((t) => !ownTraces.has(t));
+function evidenceRows(runner: Runner, ns: string, relationId: string): Promise<Props[]> {
+  return ops.nodesWhere(runner, ns, L_EVIDENCE, "target_id", [relationId]);
 }
 
 /**
- * Take a merge's sources off a relation that stays on the survivor, and recount the distinct sources left.
+ * Pick the evidence rows a merge wrote: for each of its sources, that source's earliest rows on the relation.
+ *
+ * A merge record keeps no time per source, and a repeated merge adds its source later, so the rows each source wrote first are the ones the merge carried in. A later row from the same source, or any row from another source, is a direct statement made since.
+ *
+ * @param rows (readonly Props[]): the relation's evidence rows.
+ * @param own (readonly string[]): the sources the merge was seen in.
+ * @return (Props[]): the merge's own rows.
+ */
+function mergeRows(rows: readonly Props[], own: readonly string[]): Props[] {
+  const at = (row: Props): number => epochMicros(fromIso(row.created_at as string)!);
+  const first = new Map<string, number>();
+  for (const row of rows) {
+    const source = row.source_id as string;
+    if (own.includes(source)) first.set(source, Math.min(first.get(source) ?? at(row), at(row)));
+  }
+  return rows.filter((row) => first.get(row.source_id as string) === at(row));
+}
+
+/**
+ * Take a merge's own evidence off a relation that stays on the survivor, and recount the distinct sources left.
+ *
+ * The merge's own evidence is what mergeRows picks. Rows stated directly since stay, whatever their source.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param relationId (string): the relation the merge rewrote onto.
  * @param own (string[]): the sources the merge was seen in.
- * @param keep (Set<string>): sources that stay because another live merge or a direct statement still backs them.
- * @return (Promise<Evidence[]>): the evidence of the merge's sources, to carry onto the restored relation.
+ * @param keep (Set<string>): sources whose rows stay because another live merge or a prior statement still backs them.
+ * @return (Promise<Evidence[]>): the merge's own evidence, to carry onto the restored relation.
  */
 async function stripMergeEvidence(
   runner: Runner,
@@ -908,14 +928,19 @@ async function stripMergeEvidence(
   own: string[],
   keep: Set<string>,
 ): Promise<Evidence[]> {
-  const on = await evidenceOf(runner, ns, relationId);
-  const strip = own.filter((sourceId) => !keep.has(sourceId));
-  for (const sourceId of strip) {
-    await runner.deleteNodesBy(ns, L_EVIDENCE, { target_id: relationId, source_id: sourceId });
-  }
-  const left = new Set(on.filter((e) => !strip.includes(e.source_id)).map((e) => e.source_id));
+  const rows = await evidenceRows(runner, ns, relationId);
+  const mine = mergeRows(rows, own);
+  const strip = mine.filter((row) => !keep.has(row.source_id as string));
+  if (strip.length)
+    await runner.deleteNodes(
+      ns,
+      L_EVIDENCE,
+      strip.map((row) => row.id as string),
+    );
+  const gone = new Set(strip.map((row) => row.id));
+  const left = new Set(rows.filter((row) => !gone.has(row.id)).map((row) => row.source_id));
   await runner.updateCurrentEdge(ns, relationId, { source_count: left.size });
-  return on.filter((e) => own.includes(e.source_id));
+  return mine.map(decodeEvidence);
 }
 
 /**
@@ -1492,7 +1517,6 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   const origRestored = new Map<string, string>();
   const moved: Moved = [];
   const relations: Relation[] = [];
-  const ownTraces = new Set(rec.rewrites.filter((r) => r.kind === "decision").map((r) => r.id));
   for (const rw of rec.rewrites.filter((r) => r.kind === "relation")) {
     const original = parseOrThrow(RelationInput, rw.original, "relation");
     const rewritten = parseOrThrow(RelationInput, rw.rewritten, "relation");
@@ -1509,9 +1533,9 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
       properties = latest.properties;
       eventTime = latest.event_time;
       const on = await evidenceOf(runner, ns, rw.id);
-      let held = shared.get(JSON.stringify(["relation", rw.id]));
-      if (await statedSince(runner, ns, rw.id, ownTraces)) held = new Set([...(held ?? []), ...rec.source_ids]);
-      if (held !== undefined || on.some((e) => !rec.source_ids.includes(e.source_id))) {
+      const held = shared.get(JSON.stringify(["relation", rw.id]));
+      const rows = await evidenceRows(runner, ns, rw.id);
+      if (held !== undefined || mergeRows(rows, rec.source_ids).length < rows.length) {
         carried = await stripMergeEvidence(runner, ns, rw.id, rec.source_ids, held ?? new Set());
       } else {
         carried = on;
@@ -1521,7 +1545,6 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
       }
     } else if (rw.existed && !rw.dropped && (await ops.relationExists(runner, ns, rw.id))) {
       const keep = new Set([...(shared.get(JSON.stringify(["relation", rw.id])) ?? []), ...rw.prior_sources]);
-      if (await statedSince(runner, ns, rw.id, ownTraces)) for (const s of rec.source_ids) keep.add(s);
       carried = await stripMergeEvidence(runner, ns, rw.id, rec.source_ids, keep);
     }
     const back: ParsedRelationInput = {
