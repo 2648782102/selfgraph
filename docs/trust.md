@@ -82,7 +82,8 @@ Each entry of `terms` is `{term, status, matches, certified}`, where `status` is
 `missing`, `matches` lists up to ten matched ids or term names, and `certified`
 is true when a certified schema term matched: the schema term was reviewed,
 which says nothing about the stored facts (see [Certification](#certification)
-for facts). With [embedding seeds](retrieval.md#how-it-works), a report with
+for facts). A definition name that several entity types declare is certified
+only when every one of them certifies it. With [embedding seeds](retrieval.md#how-it-works), a report with
 missing terms carries a `note` that the check is lexical, since `retrieve` may
 still find them by meaning. `as_of` judges the graph as it stood then, with the
 [as_of rules](retrieval.md#as-of-a-point-in-time), and `known_at` judges only what

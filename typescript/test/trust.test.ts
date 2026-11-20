@@ -20,6 +20,7 @@ import { callTool, close, configure } from "../src/mcp.js";
 import { answerability, HUB_DEGREE, pprRank } from "../src/retrieval.js";
 import { checkedCypher, DEFAULT_SETTINGS } from "../src/runtime.js";
 import { asSchema } from "../src/schema.js";
+import { expandTokens, schemaForms } from "../src/terms.js";
 import {
   ANN_AT_ACME,
   buildCli,
@@ -113,6 +114,105 @@ function suite(spec: StoreSpec): void {
     }
     await expect(g.checkAnswerable("  ")).rejects.toThrow("question must be a non-empty string");
   });
+
+  it("keeps definition terms scoped to their entity owners", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "Employee", definitions: [{ name: "status", expression: "active", synonyms: ["employment state"] }] },
+        { name: "Project", definitions: [{ name: "status", expression: "phase", synonyms: ["project state"] }] },
+      ],
+    });
+    const tokenize = (text: string) => new Set(text.toLowerCase().split(" "));
+    const expanded = expandTokens(new Set(["employment", "state"]), schema, tokenize);
+    expect(expanded.has("employee")).toBe(true);
+    expect(expanded.has("project")).toBe(false);
+    const shared = expandTokens(new Set(["status"]), schema, tokenize);
+    expect(shared.has("employee")).toBe(true);
+    expect(shared.has("project")).toBe(true);
+    const report = answerability(
+      "project state",
+      ["project state"],
+      [entity("employee:alice", "Alice", "Employee")],
+      [],
+      [],
+      schema,
+      3,
+    );
+    expect([report.verdict, report.terms.map((term) => [term.status, term.matches])]).toEqual([
+      "not_answerable",
+      [["schema_only", ["status"]]],
+    ]);
+  });
+
+  it("lists every definition a schema-only shared synonym names", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "Employee", definitions: [{ name: "status", expression: "a", synonyms: ["state"], certified: true }] },
+        { name: "Project", definitions: [{ name: "phase", expression: "b", synonyms: ["state"], certified: false }] },
+        { name: "Person" },
+      ],
+    });
+    expect(schemaForms(schema).definition.get("state")).toEqual([
+      ["status", true],
+      ["phase", false],
+    ]);
+    const report = answerability("state", ["state"], [entity("person:alice", "Alice", "Person")], [], [], schema, 3);
+    expect(report.terms.map((term) => [term.status, term.matches, term.certified])).toEqual([
+      ["schema_only", ["phase", "status"], true],
+    ]);
+  });
+
+  it.each([
+    ["Employee", "definition"],
+    ["Person", "schema_only"],
+  ])("certifies a shared definition name only when every declaring type does (%s stored)", (stored, status) => {
+    const schema = asSchema({
+      entities: [
+        {
+          name: "Employee",
+          definitions: [{ name: "status", expression: "a", synonyms: ["standing"], certified: true }],
+        },
+        { name: "Project", definitions: [{ name: "status", expression: "b", synonyms: ["phase"] }] },
+        { name: "Invoice", certified: true },
+        { name: "InvoiceLine" },
+        { name: "Person" },
+      ],
+    });
+    const entities = [
+      entity(`${stored.toLowerCase()}:alice`, "Alice", stored),
+      entity("invoice:i1", "I1", "Invoice"),
+      entity("invoiceline:l1", "L1", "InvoiceLine"),
+    ];
+    const report = answerability("standing invoice", ["standing", "invoice"], entities, [], [], schema, 3);
+    expect(report.terms.map((term) => [term.term, term.status, term.matches, term.certified])).toEqual([
+      ["standing", status, ["status"], false],
+      ["invoice", "type", ["Invoice", "InvoiceLine"], true],
+    ]);
+  });
+
+  it.each([true, false])(
+    "keeps both declarations of a definition one type declares twice (certified first=%s)",
+    (certifiedFirst) => {
+      const declarations = [
+        { name: "status", expression: "a", synonyms: ["payroll marker"], certified: true },
+        { name: "status", expression: "b", synonyms: ["staff metric"] },
+      ];
+      const schema = asSchema({
+        entities: [
+          { name: "Employee", definitions: certifiedFirst ? declarations : [...declarations].reverse() },
+          { name: "Person" },
+        ],
+      });
+      const entities = [entity("employee:alice", "Alice", "Employee"), entity("person:bob", "Bob", "Person")];
+      const tokenize = (text: string) => new Set(text.toLowerCase().split(" "));
+      for (const term of ["payroll marker", "staff metric"]) {
+        const report = answerability(term, [term], entities, [], [], schema, 3);
+        expect(report.terms.map((t) => [t.status, t.matches, t.certified])).toEqual([["definition", ["status"], true]]);
+        const expanded = expandTokens(new Set(term.split(" ")), schema, tokenize);
+        expect([expanded.has("employee"), expanded.has("person")]).toEqual([true, false]);
+      }
+    },
+  );
 
   it("matches explicit stopword and single-character entity names and aliases only", async () => {
     const schema = {

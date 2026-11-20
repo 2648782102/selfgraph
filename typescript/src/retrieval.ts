@@ -32,7 +32,7 @@ import * as ops from "./ops.js";
 import type { GraphPrimitives, Props } from "./protocols.js";
 import type { ParsedSchema } from "./schema.js";
 import { decodeEntity } from "./serde.js";
-import { expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
+import { definitionIndex, expandTokens, groundedTerms, schemaForms, stem } from "./terms.js";
 import type { SeedTier } from "./tiers.js";
 import { checkOptions, keysOf, requireBool, requireInt, typeName } from "./validate.js";
 
@@ -1300,7 +1300,8 @@ export function answerability(
   schema: ParsedSchema | null,
   depth: number,
 ): AnswerabilityReport {
-  const found = schemaForms(schema);
+  const definitions = definitionIndex(schema);
+  const found = schemaForms(schema, definitions);
   const explicit = terms !== null;
   const asked =
     terms ??
@@ -1315,8 +1316,9 @@ export function answerability(
   );
   const isHeld = (kind: TermCoverage["status"], term: string): boolean =>
     !(kind in held) || held[kind as keyof typeof held].has(term);
-  const own = (names: Iterable<string>) => new Map([...names].map((n) => [n, [n, false] as const]));
-  const kinds: Array<[TermCoverage["status"], Map<string, readonly [string, boolean]>]> = [
+  const own = (names: Iterable<string>) =>
+    new Map<string, Array<readonly [string, boolean]>>([...names].map((n) => [n, [[n, false] as const]]));
+  const kinds: Array<[TermCoverage["status"], Map<string, Array<readonly [string, boolean]>>]> = [
     ["type", new Map([...own(entities.map((e) => e.type)), ...found.type])],
     ["definition", found.definition],
     ["relation", new Map([...own(relations.map((r) => r.type)), ...found.relation])],
@@ -1349,8 +1351,18 @@ export function answerability(
       status = "missing";
       let declared: Array<readonly [string, boolean]> = [];
       for (const [kind, named] of kinds) {
-        const hits = words.length ? [...named].filter(([form]) => covers(words, form)).map(([, hit]) => hit) : [];
-        const live = hits.filter(([t]) => isHeld(kind, t));
+        const covered = words.length ? [...named.keys()].filter((form) => covers(words, form)) : [];
+        const hits = covered.flatMap((form) => named.get(form)!);
+        let live: Array<readonly [string, boolean]> = [];
+        if (kind === "definition") {
+          for (const form of covered) {
+            for (const [name, owners] of definitions.owners.get(form)!) {
+              if (owners.some((owner) => held.type.has(owner))) live.push([name, definitions.certified.get(name)!]);
+            }
+          }
+        } else {
+          live = hits.filter(([t]) => isHeld(kind, t));
+        }
         if (live.length) {
           status = kind;
           matched = live.map(([t]) => t);
