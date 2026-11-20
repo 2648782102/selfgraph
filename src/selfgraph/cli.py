@@ -114,20 +114,23 @@ class _Parser(argparse.ArgumentParser):
             kind = None
         if match and kind is not None:
             value = message.rsplit(": ", 1)[-1]
-            text = f"argument {flag} expects {kind}, got {value}"
+            text = f"{flag} expects {kind}, got {value}"
         elif match and "invalid choice" in message:
             _, _, detail = message.partition(": ")
             value, _, choices = detail.removeprefix("invalid choice: ").partition(" (choose from ")
-            text = f"argument {flag} got {value}; choose from {choices.rstrip(')')}"
+            text = f"{flag} got {value}; choose from {choices.rstrip(')')}"
         elif match:
             text = message.removeprefix(f"argument {flag}: ")
         else:
             text = message
-        raise ValidationError(text, field=flag.removeprefix("--").replace("-", "_") if flag else None)
+        field = flag.removeprefix("--").replace("-", "_") if flag else None
+        code = "invalid_setting" if flag in _SETTING_FLAGS else "invalid_argument"
+        raise ValidationError(text, code=code, field=field)
 
 
 _ARGUMENT_ERROR = re.compile(r"argument (--[\w-]+):")
 _ARGUMENT_VALUE = re.compile(r"^(?:argument --[\w-]+: )?(?:invalid \w+ value|invalid choice):? ?")
+_SETTING_FLAGS = frozenset({"--store", "--schema-mode", "--resolver", "--contradiction", "--level", "--max-tier"})
 
 
 def _time(field: str) -> Callable[[str], datetime | None]:
