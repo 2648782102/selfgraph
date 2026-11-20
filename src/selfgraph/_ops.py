@@ -1651,7 +1651,7 @@ async def list_relation_versions(runner: Any, ns: str, rid: str, *, newest_first
 
 
 async def _write_relation_version(
-    runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict, *, retire: bool
+    runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict, *, retire: dict | None
 ) -> Relation:
     """Write a relation version as the current one, retiring the previous current version when there is one.
 
@@ -1661,12 +1661,12 @@ async def _write_relation_version(
     @param rtype (str): relation type.
     @param to_id (str): destination entity id.
     @param props (dict): the encoded version.
-    @param retire (bool): True when an existing current version must be flipped first.
+    @param retire (dict | None): the changes that flip the existing current version first, or None when there is none.
     @return (Relation): the written version.
     """
-    if retire:
+    if retire is not None:
         await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, [(rtype, from_id, to_id, props)])
-        await runner.update_current_edge(ns, props["id"], {"is_current": False})
+        await runner.update_current_edge(ns, props["id"], {**retire, "is_current": False})
     _reject_reserved_rel_type(rtype, rtype)
     if not await runner.create_edge(ns, rtype, L_ENTITY, from_id, L_ENTITY, to_id, props):
         hint = "create the entities first, then reference them by id ('type:name')"
@@ -2460,7 +2460,8 @@ async def upsert_relations(
     endpoint the batch touches is settled once after the whole batch (see Contradictions.settle): an input older than
     the relations it conflicts with is written already invalidated. New versions are written before any retirement,
     so a failed write never leaves an endpoint without its current relation. A new revision of a certified relation
-    is not certified, and a certified_dropped warning says so.
+    is not certified, and a certified_dropped warning says so; the superseded version keeps the certification, ended
+    at the write.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2537,7 +2538,11 @@ async def upsert_relations(
                 props = {**edge["props"], "source_count": sources}
             else:
                 if prev.is_current:
-                    writes[(rid, prev.revision)] = {**edge["props"], "is_current": False}
+                    writes[(rid, prev.revision)] = {
+                        **edge["props"],
+                        **_certifications(prev, created_at),
+                        "is_current": False,
+                    }
                 if prev.is_current and prev.certified_at is not None and warnings is not None:
                     message = f"relation {rid} was certified, but this write changed it, so its new revision is not"
                     warnings.append(InsertWarning(code="certified_dropped", message=message))
@@ -2690,7 +2695,7 @@ async def create_relation(
             props = _retired(edge, *ended[rid], created_at)["props"]
     retired = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in retires]
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, [(rtype, from_entity, to_entity, props), *retired])
-    rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=False)
+    rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=None)
     if retired:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, retired)
     await _write_evidence(runner, ns, records, created_at)
@@ -2719,6 +2724,9 @@ async def update_relation(
     caps: Mapping[str, RelationCap] | None = None,
 ) -> Relation:
     """Create a new version of a relation, settling its max_count endpoints again under supersede.
+
+    The mark belongs to the version: a later revision starts uncertified, and the superseded version keeps its open
+    certification, ended at the update in the same write that retires it.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2783,7 +2791,13 @@ async def update_relation(
         source_count=sources,
     )
     rel = await _write_relation_version(
-        runner, ns, current.from_entity, current.type, current.to_entity, props, retire=True
+        runner,
+        ns,
+        current.from_entity,
+        current.type,
+        current.to_entity,
+        props,
+        retire=_certifications(current, created_at),
     )
     await _write_evidence(runner, ns, records, created_at)
     moved = to_iso(new_event_time) != to_iso(current.event_time)
@@ -3065,6 +3079,27 @@ async def delete_relation(
     }
 
 
+def _certifications(rel: Relation, at: datetime, by: str | None = None) -> dict:
+    """Encode a relation version's certifications with the open one ended at a time, and a new one from then by someone.
+
+    @param rel (Relation): the stored version.
+    @param at (datetime): when the open certification ends, and the new one starts.
+    @param by (str | None): who certifies the version from then on, or None to leave it uncertified.
+    @return (dict): the version's certified_at, certified_by, and certifications_json, or none when no certification
+        is open and none starts.
+    """
+    if rel.certified_at is None and by is None:
+        return {}
+    history = [{"by": c.by, "at": to_iso(c.at), "until": to_iso(c.until or at)} for c in rel.certifications]
+    if by is not None:
+        history.append({"by": by, "at": to_iso(at), "until": None})
+    return {
+        "certified_at": None if by is None else to_iso(at),
+        "certified_by": by,
+        "certifications_json": _dumps(history),
+    }
+
+
 async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: datetime) -> Relation:
     """Mark the current version of a relation as verified by someone, in place, or clear the mark when by is None.
 
@@ -3096,20 +3131,9 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
             code="relation_invalidated",
         )
     current = _relation_of(edge)
-    held = next((c for c in current.certifications if c.until is None), None)
-    if (held.by if held else None) == by:
+    if current.certified_by == by:
         return current
-    history = [
-        {"by": c.by, "at": to_iso(c.at), "until": to_iso(at if c is held else c.until)} for c in current.certifications
-    ]
-    if by is not None:
-        history.append({"by": by, "at": to_iso(at), "until": None})
-    props = {
-        **edge["props"],
-        "certified_at": None if by is None else to_iso(at),
-        "certified_by": by,
-        "certifications_json": _dumps(history),
-    }
+    props = {**edge["props"], **_certifications(current, at, by)}
     rows = [(edge["type"], edge["from_id"], edge["to_id"], props)]
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, rows)
     await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
