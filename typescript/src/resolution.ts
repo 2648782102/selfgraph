@@ -1266,7 +1266,7 @@ export async function listMerges(
   const entityId = ids.canonicalEntityId(given);
   const rows = await runner.matchNodes(ns, L_MERGE, { equals: { survivor_id: entityId }, skip, limit });
   if (!rows.length && skip === 0 && !(await runner.nodeExists(ns, L_ENTITY, entityId))) {
-    throw new NotFoundError("Entity", entityId);
+    throw await ops.missingEntity(runner, ns, entityId);
   }
   const entries = await loadEntries(runner, ns, rows);
   return rows.map((r) => decodeMerge(r, entries.get(r.id as string)));
@@ -1348,7 +1348,7 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   requireStr("merge id", mergeId);
   await runner.lockNode(ns, L_MERGE, mergeId);
   const props = await runner.getNode(ns, L_MERGE, mergeId);
-  if (props === null) throw new NotFoundError("EntityMerge", mergeId);
+  if (props === null) throw new NotFoundError("EntityMerge", mergeId, undefined, { namespace: ns });
   const entries = (await loadEntries(runner, ns, [props])).get(mergeId) ?? [];
   const rec = decodeMerge(props, entries);
   if (rec.reverted_at !== null) {
@@ -1362,7 +1362,7 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     const versions = await ops.listRelationVersions(runner, ns, rw.id, true);
     history.set(rw.id, versions);
     if (versions[0]?.is_current && versions[0].certified_at !== null) {
-      throw new ValidationError(`relation ${rw.id} is certified; uncertify it before unmerging ${pyRepr(mergeId)}`, {
+      throw new ValidationError(`relation ${rw.id} is certified, and unmerging ${pyRepr(mergeId)} would change it`, {
         code: "relation_certified",
       });
     }

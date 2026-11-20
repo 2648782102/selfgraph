@@ -678,14 +678,19 @@ class Opaque {}
  * Run a call that should fail and return its error as the wire fields both SDKs report.
  *
  * @param call (() => Promise<unknown>): the call.
- * @return (Promise<object | string>): the error's toJSON() fields with docs cut to its anchor, since each SDK links its own release, or "accepted" when the call succeeds.
+ * @return (Promise<object | string>): the error's toJSON() fields with docs and agent_guide cut to their anchor, since each SDK links its own release and install path, and the namespace masked, since each side has its own, or "accepted" when the call succeeds.
  */
 async function errorOf(call: () => Promise<unknown>): Promise<object | string> {
   try {
     await call();
   } catch (exc) {
     if (!(exc instanceof SelfGraphError)) throw exc;
-    return { ...exc.toJSON(), docs: exc.docs.split("#")[1] };
+    return {
+      ...exc.toJSON(),
+      error: exc.message.replace(/in namespace '[^']*'/, "in namespace '<ns>'"),
+      docs: exc.docs.split("#")[1],
+      agent_guide: exc.agentGuide.split("#")[1],
+    };
   }
   return "accepted";
 }

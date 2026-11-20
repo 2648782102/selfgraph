@@ -11,7 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, get_args
 
-from .errors import NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
+from . import _ops
+from .errors import WARNING_HINTS, NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
 from .models import Stance, Status
 from .resolution import ResolverMode
 from .resources._common import DEFAULT_PAGE_LIMIT
@@ -245,14 +246,14 @@ def _add_versions(sub: Any, resource: str, noun: str) -> None:
 
 
 def _inserted(result: Any) -> Any:
-    """Print each insert warning to stderr as one "code: message" line, except those the library already logged.
+    """Log each insert warning as one "code: message" line, except those the library already logged.
 
     @param result (Any): the insert result.
     @return (Any): the same result, its warnings worded for the CLI.
     """
     for w in surfaced(result).warnings:
         if w.code not in _LOGGED_WARNINGS:
-            print(f"selfgraph: {w.code}: {w.message}", file=sys.stderr)
+            logging.getLogger("selfgraph").warning("%s: %s", w.code, w.message)
     return result
 
 
@@ -311,8 +312,10 @@ def _id_command(sub: Any, resource: str, action: str, *, paged: bool = False, **
             result = await current_relation(graph, args.id, _RETIRED_HINT)
         else:
             result = await getattr(getattr(graph, resource), action)(args.id, **page)
+        if result is None and action == "get" and resource == "entities":
+            raise await _ops.missing_entity(graph.store, graph.namespace, args.id)
         if result is None and action == "get":
-            raise NotFoundError(_OBJECT_TYPES[resource], args.id)
+            raise NotFoundError(_OBJECT_TYPES[resource], args.id, namespace=graph.namespace)
         return result
 
     p.set_defaults(func=run)
@@ -870,13 +873,56 @@ async def dispatch(graph, args: argparse.Namespace) -> int:
 
 
 class _StderrHandler(logging.Handler):
+    def __init__(self, level: int) -> None:
+        """A handler that prints library diagnostics, with a warning code's hint the first time the code appears.
+
+        @param level (int): the lowest level to print.
+        """
+        super().__init__(level)
+        self._hinted: set[str] = set()
+
     def emit(self, record: logging.LogRecord) -> None:
         """Print a library diagnostic to the current stderr.
 
         @param record (logging.LogRecord): the record.
         @return (None): nothing.
         """
-        print(f"selfgraph: {surface_hint(record.getMessage())}", file=sys.stderr, flush=True)
+        message = record.getMessage()
+        code = message.partition(": ")[0]
+        hint = "" if code in self._hinted or code not in WARNING_HINTS else f"\nhint: {WARNING_HINTS[code]}"
+        self._hinted.add(code)
+        print(f"selfgraph: {surface_hint(message)}{hint}", file=sys.stderr, flush=True)
+
+
+def _command_path(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    """Name the subcommand that ran, such as "selfgraph relation certify".
+
+    @param parser (argparse.ArgumentParser): the CLI parser.
+    @param args (argparse.Namespace): the parsed command.
+    @return (str): the command.
+    """
+    words = ["selfgraph"]
+    while sub := next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None):
+        name = getattr(args, sub.dest, None)
+        if name is None:
+            break
+        words.append(name)
+        parser = sub.choices[name]
+    return " ".join(words)
+
+
+def error_text(exc: SelfGraphError, command: str) -> str:
+    """Format an error for stderr: the code and message, the command, the field at fault, the hint, and both links.
+
+    @param exc (SelfGraphError): the error.
+    @param command (str): the command that failed, such as "selfgraph relation certify".
+    @return (str): the lines.
+    """
+    lines = [f"error[{exc.code}]: {surface_hint(str(exc)).rstrip()}", f"command: {command}"]
+    if exc.field is not None:
+        lines.append(f"field: {exc.field}")
+    lines += [f"hint: {exc.hint}", f"docs: {exc.docs}", f"agent guide: {exc.agent_guide}"]
+    return "\n".join(lines)
 
 
 async def _run_with_diagnostics(args: argparse.Namespace, settings: GraphSettings) -> int:
@@ -904,7 +950,8 @@ async def _run_with_diagnostics(args: argparse.Namespace, settings: GraphSetting
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     settings = settings_from_env(**{key: getattr(args, key, None) for key in SETTING_KEYS})
     args.store, args.namespace = store_kind(settings), settings.namespace
     ignored = ignored_settings(settings) if args.command != "version" else []
@@ -927,7 +974,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except (SelfGraphError, FileNotFoundError, RuntimeError) as exc:
         if isinstance(exc, SelfGraphError):
-            print(f"error[{exc.code}]: {surface_hint(str(exc)).rstrip()}\nhint: {exc.hint}", file=sys.stderr)
+            print(error_text(exc, _command_path(parser, args)), file=sys.stderr)
         else:
             print(f"error: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
         return 2 if isinstance(exc, _USAGE_ERRORS) else 1

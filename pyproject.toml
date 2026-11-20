@@ -34,6 +34,10 @@ path = "src/selfgraph/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/selfgraph"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"SKILL.md" = "selfgraph/SKILL.md"
+"docs/errors.md" = "selfgraph/errors.md"
+
 [tool.hatch.build.targets.sdist]
 exclude = ["typescript"]
 

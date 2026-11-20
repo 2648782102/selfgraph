@@ -1641,8 +1641,9 @@ describe("store setup errors", () => {
       else delete process.env.USERPROFILE;
       rmSync(home, { recursive: true, force: true });
     }
-    expect(kuzuError(new Error("IO exception: Could not set lock on file : /x"), "open").message).toMatch(
-      /Kuzu allows one process at a time$/,
+    const kuzuLock = "IO exception: Could not set lock on file : /x\nSee the docs: https://docs.kuzudb.com/concurrency";
+    expect(kuzuError(new Error(kuzuLock), "open").message).toBe(
+      "open: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time",
     );
     expect(kuzuError(new Error("Buffer manager exception: Mmap for size 1 failed."), "q").message).toMatch(
       /pass a smaller max_db_size$/,

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 
 import { version } from "../package.json";
-import { HINTS } from "../src/errors.js";
+import { HINTS, WARNING_HINTS } from "../src/errors.js";
 import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
 import {
   buildServer,
@@ -108,6 +108,8 @@ describe("MCP run_cypher guard", () => {
       hint: HINTS.unknown_key,
       retryable: false,
       docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#unknown_key`,
+      agent_guide: "node_modules/@hydradb/selfgraph/errors.md#unknown_key",
+      tool: "update_relation",
     });
   });
 });
@@ -124,6 +126,29 @@ async function invalid(name: string, args: Record<string, unknown>): Promise<str
   expect(error_type, name).toBe("ValidationError");
   return error;
 }
+
+describe("MCP hints per session", () => {
+  it("sends each code's hint once and the hint of each new warning code", async () => {
+    await configure({ namespace: "hints" });
+    const schema = { entities: [{ name: "Person" }] };
+    const first = await mcpOk<Record<string, unknown>>("insert_facts", {
+      facts: { entities: [{ name: "B", type: "Company" }] },
+      schema,
+    });
+    const again = await mcpOk<Record<string, unknown>>("insert_facts", {
+      facts: { entities: [{ name: "C", type: "Company" }] },
+      schema,
+    });
+    expect(first.warning_hints).toEqual({ unknown_entity_type: WARNING_HINTS.unknown_entity_type });
+    expect(again).not.toHaveProperty("warning_hints");
+    const missing = (await mcpError("delete_entity", { id: "company:bb" })) as Record<string, unknown>;
+    expect(missing.error).toMatch(/; did you mean 'company:b'\?$/);
+    expect([missing.tool, missing.hint]).toEqual(["delete_entity", HINTS.not_found]);
+    expect(await mcpError("delete_entity", { id: "company:bb" })).not.toHaveProperty("hint");
+    await configure({ namespace: "hints" });
+    expect(await mcpError("delete_entity", { id: "company:bb" })).toHaveProperty("hint", HINTS.not_found);
+  });
+});
 
 describe("MCP tools over Kuzu", () => {
   it("maps event_time on every write tool, dates facts inserts, and clears decision and preference fields", async () => {
@@ -333,15 +358,21 @@ describe("MCP tools over Kuzu", () => {
       expect(hints.check_answerable).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
       expect(hints.insert_facts).toMatchObject({ idempotentHint: true });
-      for (const [tool, args, message, field] of [
+      const firstOfCode = {
+        hint: HINTS.invalid_argument,
+        docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#invalid_argument`,
+        agent_guide: "node_modules/@hydradb/selfgraph/errors.md#invalid_argument",
+      };
+      for (const [tool, args, message, field, links] of [
         [
           "get_schema",
           { format: "bogus" },
           "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'",
           { field: "format" },
+          firstOfCode,
         ],
-        ["create_entity", { name: "a" }, "invalid arguments: type: field required", { field: "type" }],
-        ["list_entitys", {}, "unknown tool 'list_entitys'", {}],
+        ["create_entity", { name: "a" }, "invalid arguments: type: field required", { field: "type" }, {}],
+        ["list_entitys", {}, "unknown tool 'list_entitys'", {}, {}],
       ] as const) {
         const res = await client.callTool({ name: tool, arguments: args });
         expect(res.isError).toBe(true);
@@ -350,9 +381,9 @@ describe("MCP tools over Kuzu", () => {
           error_type: "ValidationError",
           code: "invalid_argument",
           ...field,
-          hint: HINTS.invalid_argument,
           retryable: false,
-          docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#invalid_argument`,
+          ...links,
+          tool,
         });
       }
     } finally {

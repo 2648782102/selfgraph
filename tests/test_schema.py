@@ -1,6 +1,7 @@
 import pytest
 from helpers import (
     FakeLLM,
+    cli_error,
     fresh_graph,
     json_file,
     kuzu_main,
@@ -12,7 +13,6 @@ from helpers import (
 
 import selfgraph.mcp.server as srv
 from selfgraph import EntityInput, Extraction, Schema, ValidationError, ids
-from selfgraph.errors import HINTS
 from selfgraph.models import as_input, suggest_key
 from selfgraph.runtime import build_graph, settings_from_env
 from selfgraph.schema import as_schema, render_schema_catalog, validate_against_schema
@@ -764,7 +764,7 @@ def test_strict_mode_needs_a_schema(tmp_path, capsys):
         with pytest.raises(ValidationError, match="^schema_mode 'strict' needs a schema$"):
             call()
     assert kuzu_main(tmp_path, "--schema-mode", "strict", "entity", "list") == 2
-    expected = f"error[schema_required]: schema_mode 'strict' needs a schema\nhint: {HINTS['schema_required']}\n"
+    expected = cli_error("schema_required", "schema_mode 'strict' needs a schema", "selfgraph entity list")
     assert capsys.readouterr().err == expected
 
 

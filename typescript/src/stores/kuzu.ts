@@ -143,14 +143,14 @@ function databasePath(path: string): string {
  * @return (StoreError): the error to throw.
  */
 export function kuzuError(exc: unknown, prefix: string): StoreError {
-  const detail = errorMessage(exc);
-  let message = `${prefix}: ${detail}`;
+  const detail = errorMessage(exc).split(/\s+/).join(" ").trim();
   if (detail.includes("Could not set lock on file")) {
     return new StoreError(
-      `${message}; another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time`,
+      `${prefix}: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time`,
       { cause: exc, code: "store_locked" },
     );
   }
+  let message = `${prefix}: ${detail}`;
   if (detail.includes("Buffer manager exception: Mmap for size")) {
     message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size";
   }

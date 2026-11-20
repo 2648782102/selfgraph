@@ -200,22 +200,29 @@ process can exit, and the next call reopens it.
 ## Errors
 
 A failing tool returns an MCP error result with the error flag set. Its
-structured content is the error with its [code](errors.md#codes), and its text
-is the same object as JSON:
+structured content is the error with its [code](errors.md#codes) and the tool
+that failed, and its text is the same object as JSON:
 
 ```json
 {
-  "error": "Entity 'person:nobody' does not exist",
+  "error": "Entity 'person:ad' does not exist in namespace 'default'; did you mean 'person:ada'?",
   "error_type": "NotFoundError",
   "code": "not_found",
-  "hint": "The object does not exist in this namespace. Check the id and the namespace, or create the object.",
+  "hint": "The object does not exist in the namespace the message names. Check the id and the namespace, and use the `did you mean` suggestion when there is one. Do not create a placeholder object just to make the call pass.",
   "retryable": false,
-  "docs": "https://github.com/hydra-db/selfgraph/blob/v<version>/docs/errors.md#not_found"
+  "docs": "https://github.com/hydra-db/selfgraph/blob/v<version>/docs/errors.md#not_found",
+  "agent_guide": "site-packages/selfgraph/errors.md#not_found",
+  "tool": "update_entity"
 }
 ```
 
 An error about one argument or key also carries `field`, such as
-`"field": "limit"`.
+`"field": "limit"`. The `hint`, `docs`, and `agent_guide` fields come with the
+first error of each code in a session, and are left out after that, so a
+repeated failure costs fewer tokens. A new session (`configure`) starts over.
+
+A result with warnings, such as an insert, carries `warning_hints`, the hint
+of each [warning code](errors.md#warning-codes) the session has not seen yet.
 
 An error that is not a SelfGraph error has `error_type` `InternalError` and no
 code.
@@ -225,8 +232,9 @@ code.
   (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`). TypeScript
   returns them as the result above. Python's MCP SDK checks arguments before
   the tool runs, so it reports them as the text
-  `ValidationError[<code>]: <message>` and a `hint: <hint>` line, with code
-  `invalid_argument`, or `unknown_key` for an unknown argument.
+  `ValidationError[<code>]: <message>`, then a `field: <field>` line when one
+  is at fault and a `hint: <hint>` line the first time the code appears, with
+  code `invalid_argument`, or `unknown_key` for an unknown argument.
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
 - An unknown tool name fails as a tool error.

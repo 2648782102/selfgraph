@@ -69,6 +69,7 @@ from .models import (
     Status,
     as_input,
     check_options,
+    suggest_key,
 )
 
 _RESERVED_LABELS = frozenset(t.lower() for t in LABELS)
@@ -758,7 +759,9 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
         else:
             exists = await relation_exists(runner, ns, target_id)
         if not exists:
-            raise NotFoundError("Entity" if kind == "entity" else "Relation", target_id)
+            if kind == "entity":
+                raise await missing_entity(runner, ns, target_id)
+            raise NotFoundError("Relation", target_id, namespace=ns)
     return [decode_evidence(r) for r in rows]
 
 
@@ -959,6 +962,23 @@ async def validate_facts(
                 raise ValidationError(f"decision step references unknown relation {rel_id!r}", code="unknown_reference")
         await _require_trace_refs(runner, ns, dec.actor_entity, dec.outcome_entity, dec.alternative_entities, entities)
     return facts
+
+
+_SUGGEST_SCAN = 500
+
+
+async def missing_entity(runner: Any, ns: str, eid: str) -> NotFoundError:
+    """The error for an entity id that does not exist, suggesting the closest existing id of the same type.
+
+    @param runner (Any): the store.
+    @param ns (str): namespace.
+    @param eid (str): the missing entity id.
+    @return (NotFoundError): the error, naming the namespace, and the suggestion when an id is close.
+    """
+    prefix = eid.partition(":")[0] + ":"
+    rows = await runner.match_nodes(ns, L_ENTITY, order_by="id", id_gt=prefix, limit=_SUGGEST_SCAN)
+    ids = [r["id"] for r in rows if r["id"].startswith(prefix)]
+    return NotFoundError("Entity", eid, namespace=ns, suggestion=suggest_key(eid, ids))
 
 
 async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
@@ -1166,7 +1186,7 @@ async def update_entity(
     eid = _ids.canonical_entity_id(eid)
     existing = await get_entity(runner, ns, eid)
     if existing is None:
-        raise NotFoundError("Entity", eid)
+        raise await missing_entity(runner, ns, eid)
     for key in ("aliases", "remove_aliases", "remove_properties"):
         if key in fields:
             _require_list(key, fields[key])
@@ -1354,7 +1374,7 @@ async def delete_entity(
     """
     eid = _ids.canonical_entity_id(eid)
     if not await runner.node_exists(ns, L_ENTITY, eid):
-        raise NotFoundError("Entity", eid)
+        raise await missing_entity(runner, ns, eid)
     return await delete_entities(runner, ns, [eid], caps)
 
 
@@ -1691,7 +1711,7 @@ async def _lock_current(
     if before is None:
         latest = await _newest_edge(runner, ns, oid, keep)
         if latest is None:
-            raise NotFoundError(kind.capitalize(), oid)
+            raise NotFoundError(kind.capitalize(), oid, namespace=ns)
         if latest["props"].get("invalidated_at"):
             raise ValidationError(
                 f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
@@ -2986,7 +3006,7 @@ async def delete_relation(
     _ids._require_str("relation id", rid)
     newest = await _newest_edge(runner, ns, rid, _is_relation_type)
     if newest is None:
-        raise NotFoundError("Relation", rid)
+        raise NotFoundError("Relation", rid, namespace=ns)
     trace_ids = await _traces_touching_relations(runner, ns, [rid])
     n = await runner.delete_edges(ns, rid)
     await _delete_evidence(runner, ns, rid)
@@ -3025,7 +3045,7 @@ async def certify_relation(runner: Any, ns: str, rid: str, by: str | None, at: d
     if edge is None or not _is_relation_type(edge["type"]):
         newest = await _newest_edge(runner, ns, rid, _is_relation_type)
         if newest is None:
-            raise NotFoundError("Relation", rid)
+            raise NotFoundError("Relation", rid, namespace=ns)
         raise ValidationError(
             f"{invalidated_note(_relation_of(newest))}; only a current relation can be certified",
             code="relation_invalidated",
@@ -3521,7 +3541,7 @@ async def delete_preference(runner: Any, ns: str, pid: str) -> dict[str, int]:
     """
     _ids._require_str("preference id", pid)
     if not await preference_exists(runner, ns, pid):
-        raise NotFoundError("Preference", pid)
+        raise NotFoundError("Preference", pid, namespace=ns)
     return {**_NO_DELETES, "deleted_preference_versions": await runner.delete_edges(ns, pid)}
 
 
@@ -3830,7 +3850,7 @@ async def update_trace(runner: Any, ns: str, tid: str, *, clear: Iterable[str] =
     await runner.lock_node(ns, L_TRACE, tid)
     existing = await get_trace(runner, ns, tid)
     if existing is None:
-        raise NotFoundError("DecisionTrace", tid)
+        raise NotFoundError("DecisionTrace", tid, namespace=ns)
     return await upsert_trace(
         runner,
         ns,
@@ -3891,5 +3911,5 @@ async def delete_trace(runner: Any, ns: str, tid: str) -> dict[str, int]:
     """
     _ids._require_str("decision id", tid)
     if not await _delete_trace_quietly(runner, ns, tid):
-        raise NotFoundError("DecisionTrace", tid)
+        raise NotFoundError("DecisionTrace", tid, namespace=ns)
     return {**_NO_DELETES, "deleted_decisions": 1}

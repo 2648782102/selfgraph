@@ -14,7 +14,7 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import core_schema
 
 from ..client import SelfGraph
-from ..errors import SelfGraphError, ValidationError, surface_hint
+from ..errors import WARNING_HINTS, SelfGraphError, ValidationError, surface_hint
 from ..ids import type_name
 from ..models import Stance, Status, check_options, validation_error
 from ..resources._common import DEFAULT_PAGE_LIMIT
@@ -43,6 +43,7 @@ __all__ = ["configure", "close", "build_server", "run_stdio", "TOOLS"]
 
 _settings: GraphSettings | None = None
 _graph: SelfGraph | None = None
+_hinted: set[str] = set()
 _opening: asyncio.Future[SelfGraph] | None = None
 
 _WRITE_CLAUSE = re.compile(
@@ -101,6 +102,42 @@ def _json_result(result: Any, *, error: bool = False) -> Any:
     )
 
 
+def _first_time(code: str) -> bool:
+    """Record that this session has seen a code, so its hint and links are sent only the first time.
+
+    @param code (str): the error or warning code.
+    @return (bool): whether the session had not seen the code before.
+    """
+    first = code not in _hinted
+    _hinted.add(code)
+    return first
+
+
+def _error_result(exc: SelfGraphError, tool: str) -> dict[str, Any]:
+    """The structured result for a failed tool, with the hint and links only the first time the session sees its code.
+
+    @param exc (SelfGraphError): the error.
+    @param tool (str): the tool that failed.
+    @return (dict[str, Any]): the error fields, worded for the server, with the tool name.
+    """
+    fields = {**exc.to_dict(), "error": surface_hint(str(exc)), "tool": tool}
+    if not _first_time(exc.code):
+        for key in ("hint", "docs", "agent_guide"):
+            del fields[key]
+    return fields
+
+
+def _with_warning_hints(result: dict[str, Any]) -> dict[str, Any]:
+    """Add the hint of each warning code in a result that the session has not seen yet, as warning_hints.
+
+    @param result (dict[str, Any]): the tool result.
+    @return (dict[str, Any]): the result, with warning_hints when a warning code is new.
+    """
+    codes = {w.get("code") for w in result.get("warnings") or [] if isinstance(w, dict)} & WARNING_HINTS.keys()
+    hints = {code: WARNING_HINTS[code] for code in sorted(codes) if _first_time(code)}
+    return {**result, "warning_hints": hints} if hints else result
+
+
 def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     """Wrap a tool so an error fails the call with a structured error result and a null or list result is sent as JSON.
 
@@ -113,12 +150,12 @@ def _tool(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         try:
             result = await fn(*args, **kwargs)
         except SelfGraphError as exc:
-            return _json_result({**exc.to_dict(), "error": surface_hint(str(exc))}, error=True)
+            return _json_result(_error_result(exc, fn.__name__), error=True)
         except Exception as exc:  # noqa: BLE001
             return _json_result({"error": f"{type(exc).__name__}: {exc}", "error_type": "InternalError"}, error=True)
         if result is None or isinstance(result, list):
             return _json_result(result)
-        return result
+        return _with_warning_hints(result) if isinstance(result, dict) else result
 
     return wrapper
 
@@ -164,6 +201,7 @@ async def configure(settings: GraphSettings | None = None) -> None:
     """
     global _settings
     _settings = settings or settings_from_env()
+    _hinted.clear()
     await close()
 
 
@@ -987,9 +1025,12 @@ def _check_arguments(server: Any, name: str) -> None:
             failure = exc
         except PydanticValidationError as exc:
             failure = validation_error("invalid arguments", exc)
-        raise _ArgumentError.from_exception_data(
-            f"ValidationError[{failure.code}]: {failure}\nhint: {failure.hint}", []
-        )
+        lines = [f"ValidationError[{failure.code}]: {failure}"]
+        if failure.field is not None:
+            lines.append(f"field: {failure.field}")
+        if _first_time(failure.code):
+            lines.append(f"hint: {failure.hint}")
+        raise _ArgumentError.from_exception_data("\n".join(lines), [])
 
     checked = create_model(model.__name__, __base__=model)
     checked.model_validate = classmethod(validate)  # type: ignore[method-assign]

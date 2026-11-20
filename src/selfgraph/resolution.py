@@ -1104,7 +1104,7 @@ async def list_merges(runner: Any, ns: str, entity_id: str, *, skip: int, limit:
         ns, L_MERGE, equals={"survivor_id": entity_id}, order_by="id", skip=skip, limit=limit
     )
     if not rows and skip == 0 and not await runner.node_exists(ns, L_ENTITY, entity_id):
-        raise NotFoundError("Entity", entity_id)
+        raise await _ops.missing_entity(runner, ns, entity_id)
     entries = await _load_entries(runner, ns, rows)
     return [_decode_merge(r, entries[r["id"]]) for r in rows]
 
@@ -1202,7 +1202,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
     await runner.lock_node(ns, L_MERGE, merge_id)
     props = await runner.get_node(ns, L_MERGE, merge_id)
     if props is None:
-        raise NotFoundError("EntityMerge", merge_id)
+        raise NotFoundError("EntityMerge", merge_id, namespace=ns)
     entries = (await _load_entries(runner, ns, [props]))[merge_id]
     rec = _decode_merge(props, entries)
     if rec.reverted_at is not None:
@@ -1215,7 +1215,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             history[rw.id] = await _ops.list_relation_versions(runner, ns, rw.id, newest_first=True)
             if history[rw.id] and history[rw.id][0].is_current and history[rw.id][0].certified_at is not None:
                 raise ValidationError(
-                    f"relation {rw.id} is certified; uncertify it before unmerging {merge_id!r}",
+                    f"relation {rw.id} is certified, and unmerging {merge_id!r} would change it",
                     code="relation_certified",
                 )
     at = now()

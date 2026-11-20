@@ -238,11 +238,13 @@ selfgraph mcp
 
 ## Errors
 
-Every error is a `SelfGraphError` with a stable `code`, a `hint` that says how to repair it, `retryable`, a `docs` link, and `field` when one argument, key, or setting is at fault (all codes: `docs/errors.md#codes`). Branch on `code`, never on the message text, and follow the `hint`. The CLI prints `error[<code>]: <message>` and then `hint: <hint>` on stderr; an MCP error result is `{error, error_type, code, field, hint, retryable, docs}`, without `field` when none is at fault.
+Every error is a `SelfGraphError` with a stable `code`, a `hint` that says how to repair it, `retryable`, a `docs` link, an `agent_guide` path to the same section in the installed package (`errors.md`, beside this file), and `field` when one argument, key, or setting is at fault. Branch on `code`, never on the message text, and follow the `hint`. The CLI prints the code, message, command, field, hint, and both links on stderr. An MCP error result is `{error, error_type, code, field, hint, retryable, docs, agent_guide, tool}`; after the first error of a code in a session it leaves out `hint`, `docs`, and `agent_guide`.
 
 - Retry the same call only when `retryable` is true (`write_conflict`, `store_busy`). Inserts are idempotent upserts, so a retry never duplicates data.
 - Setup codes (`store_unreachable`, `store_locked`, `store_auth_failed`, `wrong_engine`, `invalid_setting`, `missing_package`) do not clear on retry; fix the setup the message names.
-- Do not lower `level` or drop a feature just to silence `llm_required`, `embedder_required`, or `schema_required` when the task needs it.
+- Fix what the hint names. Do not turn a check off to make an error go away: lowering `level`, switching schema mode, uncertifying a relation, or dropping a value is the user's decision.
+- `not_found` names the namespace and, for an entity id, the closest existing id. Check both before creating anything.
+- Insert warnings have codes too (`docs/errors.md#warning-codes`); the CLI and MCP server show each code's hint the first time it appears.
 
 ## TypeScript
 

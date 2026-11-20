@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildParser } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
-import { HINTS, surfaceHint, ValidationError } from "../src/errors.js";
+import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
 import {
   bindParams,
   buildLlm,
@@ -16,7 +16,17 @@ import {
   storeKind,
   version,
 } from "../src/runtime.js";
-import { A_KNOWS_B, ANN_AT_ACME, buildCli, CLI, captureWarnings, runCli, SINGLE_EMPLOYER, tempDir } from "./helpers.js";
+import {
+  A_KNOWS_B,
+  ANN_AT_ACME,
+  buildCli,
+  CLI,
+  captureWarnings,
+  cliError,
+  runCli,
+  SINGLE_EMPLOYER,
+  tempDir,
+} from "./helpers.js";
 
 const dir = tempDir("sg-cli-");
 
@@ -206,8 +216,12 @@ describe("built CLI against Kuzu", () => {
       input: JSON.stringify({ entities: [{ type: "P" }, { name: 3, type: "P" }] }),
     });
     expect(bad.err).toBe(
-      "error[invalid_argument]: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n" +
-        `hint: ${HINTS.invalid_argument}\n`,
+      cliError(
+        "invalid_argument",
+        "invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string",
+        "selfgraph insert facts",
+        "entities[0].name",
+      ),
     );
   });
 
@@ -384,10 +398,19 @@ describe("built CLI against Kuzu", () => {
       "looks like a SelfGraph schema, not a Neo4j one",
     );
     const warned = cli([...kuzu, "--namespace", "cli_warn", "--schema", schema, "insert", "facts", "-"], {
-      input: JSON.stringify({ entities: [{ name: "B", type: "Company" }] }),
+      input: JSON.stringify({
+        entities: [
+          { name: "B", type: "Company" },
+          { name: "C", type: "Company" },
+        ],
+      }),
     });
-    expect(warned.err).toContain("selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n");
-    expect(warned.out).toMatchObject({ warnings: [{ code: "unknown_entity_type" }] });
+    expect(warned.err).toBe(
+      "selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n" +
+        `hint: ${WARNING_HINTS.unknown_entity_type}\n` +
+        "selfgraph: unknown_entity_type: entity company:c has unknown type 'Company'\n",
+    );
+    expect(warned.out).toMatchObject({ warnings: [{ code: "unknown_entity_type" }, { code: "unknown_entity_type" }] });
   });
 
   it("explains a retired relation on get and supersedes from now on create", () => {
@@ -421,7 +444,11 @@ describe("built CLI against Kuzu", () => {
     const none = cli([...g, "relation", "versions", "relation:ghost"]);
     expect([none.code, none.err]).toEqual([
       1,
-      `error[not_found]: Relation 'relation:ghost' does not exist\nhint: ${HINTS.not_found}\n`,
+      cliError(
+        "not_found",
+        "Relation 'relation:ghost' does not exist in namespace 'default'",
+        "selfgraph relation versions",
+      ),
     ]);
   });
 

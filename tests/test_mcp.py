@@ -8,7 +8,7 @@ from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_updat
 
 import selfgraph
 import selfgraph.mcp.server as srv
-from selfgraph.errors import HINTS, ValidationError
+from selfgraph.errors import HINTS, WARNING_HINTS, ValidationError
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
@@ -272,6 +272,15 @@ def test_call_tool_arguments_results_and_errors(server):
         "hint": HINTS["invalid_argument"],
         "retryable": False,
         "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#invalid_argument",
+        "agent_guide": "site-packages/selfgraph/errors.md#invalid_argument",
+        "tool": "list_entities",
+    }
+    assert tool_failure(server, "list_entities", {"limit": -1}) == {
+        "error": "limit must be >= 1, got -1",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "retryable": False,
+        "tool": "list_entities",
     }
     with pytest.raises(
         Exception,
@@ -285,9 +294,8 @@ def test_call_tool_arguments_results_and_errors(server):
     ):
         with pytest.raises(Exception) as exc:
             run(server.call_tool(tool, args))
-        assert str(exc.value).endswith(
-            f"ValidationError[invalid_argument]: {message}\nhint: {HINTS['invalid_argument']}"
-        )
+        field = message.split(": ")[1]
+        assert str(exc.value).endswith(f"ValidationError[invalid_argument]: {message}\nfield: {field}")
         assert "pydantic" not in str(exc.value)
     for flag in ("no", "false", "0", 0, None):
         for tool, args in (
@@ -331,9 +339,28 @@ NUMBER_ARGUMENT_CASES = [
 def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, args, message):
     with pytest.raises(Exception) as exc:
         run(server.call_tool(tool, args))
+    field = message.split(":")[0]
     assert str(exc.value).endswith(
-        f"ValidationError[invalid_argument]: invalid arguments: {message}\nhint: {HINTS['invalid_argument']}"
+        f"ValidationError[invalid_argument]: invalid arguments: {message}\nfield: {field}\nhint: {HINTS['invalid_argument']}"
     )
+
+
+def test_a_session_gets_each_code_hint_once_and_each_new_warning_code_hint(server):
+    schema = {"entities": [{"name": "Person"}]}
+    first = run(
+        server.call_tool("insert_facts", {"facts": {"entities": [{"name": "B", "type": "Company"}]}, "schema": schema})
+    )
+    again = run(
+        server.call_tool("insert_facts", {"facts": {"entities": [{"name": "C", "type": "Company"}]}, "schema": schema})
+    )
+    assert first.structured_content["warning_hints"] == {"unknown_entity_type": WARNING_HINTS["unknown_entity_type"]}
+    assert "warning_hints" not in again.structured_content
+    missing = tool_failure(server, "delete_entity", {"id": "company:bb"})
+    assert missing["error"].endswith("; did you mean 'company:b'?")
+    assert [missing["tool"], missing["hint"]] == ["delete_entity", HINTS["not_found"]]
+    assert "hint" not in tool_failure(server, "delete_entity", {"id": "company:bb"})
+    run(srv.configure(srv._settings))
+    assert tool_failure(server, "delete_entity", {"id": "company:bb"})["hint"] == HINTS["not_found"]
 
 
 def test_whole_floats_pass_as_integers_and_integers_as_numbers(server):

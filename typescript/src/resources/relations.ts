@@ -225,7 +225,7 @@ export class Relations extends Resource {
     const versions = await this.graph.read((store, ns) =>
       ops.listRelationVersions(store, ns, id, options.newest_first ?? true),
     );
-    if (!versions.length) throw new NotFoundError("Relation", id);
+    if (!versions.length) throw new NotFoundError("Relation", id, undefined, { namespace: this.graph.namespace });
     return versions;
   }
 

@@ -12,9 +12,16 @@ import {
 } from "@commander-js/extra-typings";
 
 import { SelfGraph } from "./client.js";
-import { NotFoundError, PromptTemplateError, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
+import {
+  NotFoundError,
+  PromptTemplateError,
+  SelfGraphError,
+  surfaceHint,
+  ValidationError,
+  WARNING_HINTS,
+} from "./errors.js";
 import { toOssie } from "./export.js";
-import { setLogger } from "./internal/log.js";
+import { log, setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
 import { toIso } from "./internal/time.js";
 import { runStdio } from "./mcp.js";
@@ -29,7 +36,7 @@ import {
   Status,
 } from "./models.js";
 import { fromNeo4jOntology, toNeo4jOntology } from "./neo4jSchema.js";
-import { DECISION_CLEARABLE, PREFERENCE_CLEARABLE, requireChanges } from "./ops.js";
+import { DECISION_CLEARABLE, missingEntity, PREFERENCE_CLEARABLE, requireChanges } from "./ops.js";
 import { dumps } from "./output.js";
 import { RESOLVER_MODES, type ResolverMode } from "./resolution.js";
 import { DEFAULT_PAGE_LIMIT } from "./resources/common.js";
@@ -146,15 +153,17 @@ function writeOut(text: string): Promise<void> {
 /**
  * Raise NotFoundError when a get found nothing, so it fails like delete instead of printing null.
  *
+ * @param graph (SelfGraph): the graph that was read, for the namespace and an entity id suggestion.
  * @param objectType (string): the type named in the error.
  * @param id (string): the id that was looked up.
- * @return ((found: T | null) => T): the check.
+ * @return ((found: T | null) => Promise<T>): the check.
  */
 const found =
-  <T>(objectType: string, id: string) =>
-  (value: T | null): T => {
-    if (value === null) throw new NotFoundError(objectType, id);
-    return value;
+  <T>(graph: SelfGraph, objectType: string, id: string) =>
+  async (value: T | null): Promise<T> => {
+    if (value !== null) return value;
+    if (objectType === "Entity") throw await missingEntity(graph.store, graph.namespace, id);
+    throw new NotFoundError(objectType, id, undefined, { namespace: graph.namespace });
   };
 
 /**
@@ -284,7 +293,7 @@ async function emit(cmd: { optsWithGlobals(): GlobalOptions }, call: (graph: Sel
  */
 function inserted(result: InsertResult): InsertResult {
   for (const w of surfaced(result).warnings) {
-    if (!LOGGED_WARNINGS.includes(w.code)) process.stderr.write(`selfgraph: ${w.code}: ${w.message}\n`);
+    if (!LOGGED_WARNINGS.includes(w.code)) log(`${w.code}: ${w.message}`);
   }
   return result;
 }
@@ -329,7 +338,7 @@ function entityCommands(program: Command<[], GlobalOptions>): void {
   ent
     .command("get <id>")
     .description("print one entity")
-    .action((id, _o, cmd) => emit(cmd, (g) => g.entities.get(id).then(found("Entity", id))));
+    .action((id, _o, cmd) => emit(cmd, (g) => g.entities.get(id).then(found(g, "Entity", id))));
   paging(
     ent
       .command("list")
@@ -407,7 +416,7 @@ function relationCommands(program: Command<[], GlobalOptions>): void {
     .action((id, _o, cmd) =>
       emit(cmd, (g) =>
         currentRelation(g, id, "use relation versions or relation list --include-invalidated").then(
-          found("Relation", id),
+          found(g, "Relation", id),
         ),
       ),
     );
@@ -502,7 +511,7 @@ function preferenceCommands(program: Command<[], GlobalOptions>): void {
   pref
     .command("get <id>")
     .description("print the current version of a preference")
-    .action((id, _o, cmd) => emit(cmd, (g) => g.preferences.get(id).then(found("Preference", id))));
+    .action((id, _o, cmd) => emit(cmd, (g) => g.preferences.get(id).then(found(g, "Preference", id))));
   paging(
     pref
       .command("list [subject]")
@@ -575,7 +584,7 @@ function decisionCommands(program: Command<[], GlobalOptions>): void {
   dec
     .command("get <id>")
     .description("print one decision trace")
-    .action((id, _o, cmd) => emit(cmd, (g) => g.decisions.get(id).then(found("DecisionTrace", id))));
+    .action((id, _o, cmd) => emit(cmd, (g) => g.decisions.get(id).then(found(g, "DecisionTrace", id))));
   paging(
     dec
       .command("list")
@@ -935,25 +944,51 @@ export function buildParser(): Command<[], GlobalOptions> {
 }
 
 /**
- * Print an error on stderr, with its code and repair hint when it is a SelfGraph error.
+ * Format an error for stderr: the code and message, the command, the field at fault, the hint, and both links.
  *
- * @param exc (unknown): the thrown value.
- * @param status (number): the exit code to return.
- * @return (number): the exit code.
+ * @param exc (SelfGraphError): the error.
+ * @param command (string): the command that failed, such as "selfgraph relation certify".
+ * @return (string): the lines.
  */
-function fail(exc: unknown, status: number): number {
-  const text =
-    exc instanceof SelfGraphError
-      ? `error[${exc.code}]: ${surfaceHint(exc.message).trimEnd()}\nhint: ${exc.hint}`
-      : `error: ${(exc instanceof Error ? exc.message : String(exc)).trimEnd()}`;
-  process.stderr.write(`${text}\n`);
-  return status;
+export function errorText(exc: SelfGraphError, command: string): string {
+  return [
+    `error[${exc.code}]: ${surfaceHint(exc.message).trimEnd()}`,
+    `command: ${command}`,
+    ...(exc.field === undefined ? [] : [`field: ${exc.field}`]),
+    `hint: ${exc.hint}`,
+    `docs: ${exc.docs}`,
+    `agent guide: ${exc.agentGuide}`,
+  ].join("\n");
 }
 
-function exitOverride(cmd: Command<unknown[], OptionValues, OptionValues>): void {
+/**
+ * Print a library diagnostic on stderr, with a warning code's hint the first time the code appears.
+ *
+ * @param hinted (Set<string>): the warning codes whose hint was already printed.
+ * @return ((message: string) => void): the logger.
+ */
+function stderrLogger(hinted: Set<string>): (message: string) => void {
+  return (message) => {
+    const code = message.split(": ")[0]!;
+    const hint = hinted.has(code) || WARNING_HINTS[code] === undefined ? "" : `\nhint: ${WARNING_HINTS[code]}`;
+    hinted.add(code);
+    process.stderr.write(`selfgraph: ${surfaceHint(message)}${hint}\n`);
+  };
+}
+
+/**
+ * Make a command and its subcommands throw instead of exiting, and record the subcommand path as it is dispatched.
+ *
+ * @param cmd (Command<unknown[], OptionValues, OptionValues>): the command.
+ * @param words (string[]): the command path, such as ["selfgraph", "relation", "certify"], extended in place.
+ */
+function prepare(cmd: Command<unknown[], OptionValues, OptionValues>, words: string[]): void {
   cmd.exitOverride();
   cmd.showHelpAfterError(cmd.helpInformation().split("\n")[0]);
-  for (const sub of cmd.commands) exitOverride(sub);
+  cmd.hook("preSubcommand", (_cmd, sub) => {
+    words.push(sub.name());
+  });
+  for (const sub of cmd.commands) prepare(sub, words);
 }
 
 /**
@@ -964,8 +999,9 @@ function exitOverride(cmd: Command<unknown[], OptionValues, OptionValues>): void
  */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const program = buildParser();
-  exitOverride(program);
-  const previous = setLogger((message) => process.stderr.write(`selfgraph: ${surfaceHint(message)}\n`));
+  const words = ["selfgraph"];
+  prepare(program, words);
+  const previous = setLogger(stderrLogger(new Set()));
   try {
     await program.parseAsync(argv, { from: "user" });
     return 0;
@@ -975,10 +1011,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     if (exc instanceof SelfGraphError) {
       const usage = exc instanceof ValidationError || exc instanceof PromptTemplateError;
-      return fail(exc, usage ? 2 : 1);
+      process.stderr.write(`${errorText(exc, words.join(" "))}\n`);
+      return usage ? 2 : 1;
     }
     if ((exc as NodeJS.ErrnoException).code === "EPIPE") return 141;
-    return fail(exc, 1);
+    process.stderr.write(`error: ${(exc instanceof Error ? exc.message : String(exc)).trimEnd()}\n`);
+    return 1;
   } finally {
     setLogger(previous);
   }

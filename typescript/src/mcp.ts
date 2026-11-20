@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { SelfGraph } from "./client.js";
-import { errorMessage, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
+import { errorMessage, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
 import { toOssie } from "./export.js";
 import { Lazy } from "./internal/lazy.js";
 import { loadOptional } from "./internal/optional.js";
@@ -740,6 +740,7 @@ export const TOOLS: Tool[] = [
 ];
 
 let settings: GraphSettings | null = null;
+const hinted = new Set<string>();
 const graph = new Lazy(async () => {
   if (settings === null) settings = settingsFromEnv();
   const g = SelfGraph.connect(settings);
@@ -754,6 +755,7 @@ const graph = new Lazy(async () => {
  */
 export async function configure(value: GraphSettings | null = null): Promise<void> {
   settings = value ?? settingsFromEnv();
+  hinted.clear();
   await close();
 }
 
@@ -769,6 +771,52 @@ export async function close(): Promise<void> {
  * @param args (Record<string, unknown>): the arguments.
  * @return ({ result: unknown; isError: boolean }): the JSON-ready result, and whether it is an error.
  */
+/**
+ * Record that this session has seen a code, so its hint and links are sent only the first time.
+ *
+ * @param code (string): the error or warning code.
+ * @return (boolean): whether the session had not seen the code before.
+ */
+function firstTime(code: string): boolean {
+  const first = !hinted.has(code);
+  hinted.add(code);
+  return first;
+}
+
+/**
+ * The structured result for a failed tool, with the hint and links only the first time the session sees its code.
+ *
+ * @param exc (SelfGraphError): the error.
+ * @param tool (string): the tool that failed.
+ * @return (Record<string, unknown>): the error fields, worded for the server, with the tool name.
+ */
+function errorResult(exc: SelfGraphError, tool: string): Record<string, unknown> {
+  const fields: Record<string, unknown> = { ...exc.toJSON(), error: surfaceHint(exc.message), tool };
+  if (firstTime(exc.code)) return fields;
+  const { hint: _hint, docs: _docs, agent_guide: _guide, ...rest } = fields;
+  return rest;
+}
+
+/**
+ * Add the hint of each warning code in a result that the session has not seen yet, as warning_hints.
+ *
+ * @param result (unknown): the tool result.
+ * @return (unknown): the result, with warning_hints when a warning code is new.
+ */
+function withWarningHints(result: unknown): unknown {
+  const warnings = (result as { warnings?: unknown } | null)?.warnings;
+  if (!Array.isArray(warnings)) return result;
+  const codes = new Set(warnings.map((w) => (w as { code?: unknown })?.code).filter((c) => typeof c === "string"));
+  const hints = Object.fromEntries(
+    [...codes]
+      .filter((code) => WARNING_HINTS[code] !== undefined)
+      .sort()
+      .filter(firstTime)
+      .map((code) => [code, WARNING_HINTS[code]]),
+  );
+  return Object.keys(hints).length ? { ...(result as object), warning_hints: hints } : result;
+}
+
 export async function callTool(
   target: Tool | string,
   args: Record<string, unknown> = {},
@@ -782,10 +830,10 @@ export async function callTool(
     }
     const parsed = z.object(t.input).safeParse(args);
     if (!parsed.success) throw validationError("invalid arguments", parsed.error, args);
-    return { result: toJsonable(await t.run(await graph.get(), parsed.data)), isError: false };
+    return { result: withWarningHints(toJsonable(await t.run(await graph.get(), parsed.data))), isError: false };
   } catch (exc) {
     if (exc instanceof SelfGraphError) {
-      return { result: { ...exc.toJSON(), error: surfaceHint(exc.message) }, isError: true };
+      return { result: errorResult(exc, t?.name ?? String(target)), isError: true };
     }
     const name = exc instanceof Error ? exc.name : "Error";
     return { result: { error: `${name}: ${errorMessage(exc)}`, error_type: "InternalError" }, isError: true };

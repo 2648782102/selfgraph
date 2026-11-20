@@ -176,15 +176,22 @@ problem, such as `invalid facts: entities[0].name: field required`. See
 
 ## Exit codes
 
-A failed command prints `error[<code>]: <message>` on stderr, with the error's
-[code](errors.md#codes), and then `hint: <hint>`, the code's repair:
+A failed command prints the error on stderr: its [code](errors.md#codes) and
+message, the command that failed, the field at fault when there is one, the
+code's hint, the docs link, and the installed copy of the docs:
 
 ```
-error[not_found]: Relation 'relation:ghost' does not exist
-hint: The object does not exist in this namespace. Check the id and the namespace, or create the object.
+error[not_found]: Entity 'person:ad' does not exist in namespace 'default'; did you mean 'person:ada'?
+command: selfgraph entity get
+hint: The object does not exist in the namespace the message names. Check the id and the namespace, and use the `did you mean` suggestion when there is one. Do not create a placeholder object just to make the call pass.
+docs: https://github.com/hydra-db/selfgraph/blob/v<version>/docs/errors.md#not_found
+agent guide: site-packages/selfgraph/errors.md#not_found
 ```
 
-An error that is not a SelfGraph error prints `error: <message>` alone.
+An error that is not a SelfGraph error prints `error: <message>` alone. A
+warning prints as `selfgraph: <code>: <message>`, followed the first time its
+code appears by a `hint:` line from
+[Warning codes](errors.md#warning-codes).
 
 | Code | Meaning |
 |------|---------|

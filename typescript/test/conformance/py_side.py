@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -670,13 +671,19 @@ async def error_of(call):
     """Await a call that should fail and return its error as the wire fields both SDKs report.
 
     @param call (Awaitable): the pending call.
-    @return (dict | str): the error's to_dict() fields with docs cut to its anchor, since each SDK links its own
-        release, or "accepted" when the call succeeds.
+    @return (dict | str): the error's to_dict() fields with docs and agent_guide cut to their anchor, since each SDK
+        links its own release and install path, and the namespace masked, since each side has its own, or "accepted"
+        when the call succeeds.
     """
     try:
         await call
     except SelfGraphError as exc:
-        return {**exc.to_dict(), "docs": exc.docs.partition("#")[2]}
+        return {
+            **exc.to_dict(),
+            "error": re.sub(r"in namespace '[^']*'", "in namespace '<ns>'", str(exc)),
+            "docs": exc.docs.partition("#")[2],
+            "agent_guide": exc.agent_guide.partition("#")[2],
+        }
     return "accepted"
 
 

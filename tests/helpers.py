@@ -206,6 +206,27 @@ def cli(g: SelfGraph, argv: list[str], capsys: Any) -> Any:
     return json.loads(capsys.readouterr().out)
 
 
+def cli_error(code: str, message: str, command: str, field: str | None = None) -> str:
+    """The stderr text the CLI prints for a SelfGraph error.
+
+    @param code (str): the error code.
+    @param message (str): the message.
+    @param command (str): the command that failed, such as "selfgraph entity get".
+    @param field (str | None): the field at fault, when one is.
+    @return (str): the lines, ending in a newline.
+    """
+    import selfgraph
+    from selfgraph.errors import HINTS
+
+    lines = [f"error[{code}]: {message}", f"command: {command}", *([f"field: {field}"] if field else [])]
+    lines += [
+        f"hint: {HINTS[code]}",
+        f"docs: https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#{code}",
+        f"agent guide: site-packages/selfgraph/errors.md#{code}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def kuzu_main(tmp_path: Any, *argv: str) -> int:
     pytest.importorskip("kuzu")
     from selfgraph.cli import main

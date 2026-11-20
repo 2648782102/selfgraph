@@ -86,6 +86,7 @@ import {
   requireStr,
   requireStrMapping,
   requireUnit,
+  suggestKey,
   typeName,
 } from "./validate.js";
 
@@ -657,7 +658,8 @@ export async function listEvidence(
   if (!rows.length && skip === 0) {
     const exists =
       kind === "entity" ? await runner.nodeExists(ns, L_ENTITY, targetId) : await relationExists(runner, ns, targetId);
-    if (!exists) throw new NotFoundError(kind === "entity" ? "Entity" : "Relation", targetId);
+    if (!exists && kind === "entity") throw await missingEntity(runner, ns, targetId);
+    if (!exists) throw new NotFoundError("Relation", targetId, undefined, { namespace: ns });
   }
   return rows.map(decodeEvidence);
 }
@@ -778,6 +780,23 @@ function canonicalRefs(facts: ParsedExtraction): ParsedExtraction {
         : d.alternative_entities,
     })),
   };
+}
+
+const SUGGEST_SCAN = 500;
+
+/**
+ * The error for an entity id that does not exist, suggesting the closest existing id of the same type.
+ *
+ * @param runner (Runner): the store.
+ * @param ns (string): namespace.
+ * @param eid (string): the missing entity id.
+ * @return (Promise<NotFoundError>): the error, naming the namespace, and the suggestion when an id is close.
+ */
+export async function missingEntity(runner: Runner, ns: string, eid: string): Promise<NotFoundError> {
+  const prefix = `${eid.split(":")[0]}:`;
+  const rows = await runner.matchNodes(ns, L_ENTITY, { id_gt: prefix, limit: SUGGEST_SCAN });
+  const ids = rows.map((r) => r.id as string).filter((id) => id.startsWith(prefix));
+  return new NotFoundError("Entity", eid, undefined, { namespace: ns, suggestion: suggestKey(eid, ids) });
 }
 
 /**
@@ -1075,7 +1094,7 @@ export async function updateEntity(
   requireChanges(fields ?? {});
   const eid = ids.canonicalEntityId(given);
   let existing = await getEntity(runner, ns, eid);
-  if (existing === null) throw new NotFoundError("Entity", eid);
+  if (existing === null) throw await missingEntity(runner, ns, eid);
   for (const key of ["aliases", "remove_aliases", "remove_properties"] as const) {
     if (fields[key] !== undefined) requireList(key, fields[key]);
   }
@@ -1328,7 +1347,7 @@ export async function deleteEntity(
   caps?: ReadonlyMap<string, RelationCap> | null,
 ): Promise<DeleteResult> {
   const eid = ids.canonicalEntityId(given);
-  if (!(await runner.nodeExists(ns, L_ENTITY, eid))) throw new NotFoundError("Entity", eid);
+  if (!(await runner.nodeExists(ns, L_ENTITY, eid))) throw await missingEntity(runner, ns, eid);
   return deleteEntities(runner, ns, [eid], caps);
 }
 
@@ -2808,7 +2827,9 @@ async function lockCurrent<T>(
   const before = await get(runner, ns, id);
   if (before === null) {
     const latest = await newest(runner, ns, id);
-    if (latest === null) throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id);
+    if (latest === null) {
+      throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id, undefined, { namespace: ns });
+    }
     const ended = latest as Partial<Relation>;
     if (ended.invalidated_at != null) {
       throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`, {
@@ -3200,7 +3221,7 @@ export async function certifyRelation(
   }
   if (edge === null || !isRelationType(edge.type)) {
     const newest = await newestRelation(runner, ns, rid);
-    if (newest === null) throw new NotFoundError("Relation", rid);
+    if (newest === null) throw new NotFoundError("Relation", rid, undefined, { namespace: ns });
     throw new ValidationError(`${invalidatedNote(newest)}; only a current relation can be certified`, {
       code: "relation_invalidated",
     });
@@ -3354,7 +3375,7 @@ export async function deleteRelation(
 ): Promise<DeleteResult> {
   requireStr("relation id", rid);
   const newest = newestEdge(await typedEdgeVersions(runner, ns, rid, isRelationType));
-  if (newest === null) throw new NotFoundError("Relation", rid);
+  if (newest === null) throw new NotFoundError("Relation", rid, undefined, { namespace: ns });
   const traceIds = await tracesTouchingRelations(runner, ns, [rid]);
   const deletedVersions = await runner.deleteEdges(ns, rid);
   await deleteEvidence(runner, ns, rid);
@@ -3721,7 +3742,8 @@ export async function listPreferences(
 
 export async function deletePreference(runner: Runner, ns: string, pid: string): Promise<DeleteResult> {
   requireStr("preference id", pid);
-  if (!(await preferenceExists(runner, ns, pid))) throw new NotFoundError("Preference", pid);
+  if (!(await preferenceExists(runner, ns, pid)))
+    throw new NotFoundError("Preference", pid, undefined, { namespace: ns });
   return { ...NO_DELETES, deleted_preference_versions: await runner.deleteEdges(ns, pid) };
 }
 
@@ -4049,7 +4071,7 @@ export async function updateTrace(
   requireChanges({ ...fields, clear: cleared.size ? cleared : undefined });
   await runner.lockNode(ns, L_TRACE, tid);
   const existing = await getTrace(runner, ns, tid);
-  if (existing === null) throw new NotFoundError("DecisionTrace", tid);
+  if (existing === null) throw new NotFoundError("DecisionTrace", tid, undefined, { namespace: ns });
   const pick = <K extends keyof UpdateTraceFields>(key: K, fallback: Exclude<UpdateTraceFields[K], undefined>) =>
     cleared.has(key)
       ? ((LIST_FIELDS.includes(key) ? [] : null) as Exclude<UpdateTraceFields[K], undefined>)
@@ -4099,6 +4121,8 @@ export async function listTraces(
 
 export async function deleteTrace(runner: Runner, ns: string, tid: string): Promise<DeleteResult> {
   requireStr("decision id", tid);
-  if (!(await deleteTraceQuietly(runner, ns, tid))) throw new NotFoundError("DecisionTrace", tid);
+  if (!(await deleteTraceQuietly(runner, ns, tid))) {
+    throw new NotFoundError("DecisionTrace", tid, undefined, { namespace: ns });
+  }
   return { ...NO_DELETES, deleted_decisions: 1 };
 }
