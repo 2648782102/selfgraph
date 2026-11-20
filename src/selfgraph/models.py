@@ -72,7 +72,7 @@ __all__ = [
     "AnswerabilityReport",
     "LintIssue",
     "Readiness",
-    "validation_message",
+    "validation_error",
 ]
 
 _KEY_SYNONYMS = {
@@ -181,7 +181,9 @@ def check_options(method: str, given: Iterable[str], allowed: Iterable[str]) -> 
     unknown = sorted(str(k) for k in given if k not in accepted)
     if unknown:
         raise ValidationError(
-            f"unknown option {unknown[0]!r} for {method}{key_hint(unknown[0], accepted, 'options')}", code="unknown_key"
+            f"unknown option {unknown[0]!r} for {method}{key_hint(unknown[0], accepted, 'options')}",
+            code="unknown_key",
+            field=unknown[0],
         )
 
 
@@ -206,13 +208,14 @@ def _nested_input(annotation: Any) -> "tuple[type[InputModel] | None, bool]":
     return None, False
 
 
-def _unknown_key(model: "type[InputModel]", value: Any, where: str) -> str | None:
-    """Walk raw input against an input model and describe the first unknown key, depth first in declared order.
+def _unknown_key(model: "type[InputModel]", value: Any, label: str, path: str = "") -> ValidationError | None:
+    """Walk raw input against an input model and report the first unknown key, depth first in declared order.
 
     @param model (type[InputModel]): the model the value should match.
     @param value (Any): the raw input.
-    @param where (str): the location of the value, for the message.
-    @return (str | None): the error message, or None when every key is known.
+    @param label (str): what the input is, for the message.
+    @param path (str): the location of the value inside the input, such as "entities[0]".
+    @return (ValidationError | None): the error, or None when every key is known.
     """
     if not isinstance(value, Mapping):
         return None
@@ -220,7 +223,12 @@ def _unknown_key(model: "type[InputModel]", value: Any, where: str) -> str | Non
     accepted = set(keys) | set(model.model_fields)
     unknown = sorted(str(k) for k in value if k not in accepted)
     if unknown:
-        return f"unknown key {unknown[0]!r} in {where}{key_hint(unknown[0], keys)}"
+        where = f"{label}.{path}" if path else label
+        return ValidationError(
+            f"unknown key {unknown[0]!r} in {where}{key_hint(unknown[0], keys)}",
+            code="unknown_key",
+            field=f"{path}.{unknown[0]}" if path else unknown[0],
+        )
     for name, field in model.model_fields.items():
         key = field.alias or name
         nested, many = _nested_input(field.annotation)
@@ -230,7 +238,8 @@ def _unknown_key(model: "type[InputModel]", value: Any, where: str) -> str | Non
         if many and not isinstance(items, list | tuple):
             continue
         for i, item in enumerate(items):
-            found = _unknown_key(nested, item, f"{where}.{key}[{i}]" if many else f"{where}.{key}")
+            at = f"{path}.{key}" if path else key
+            found = _unknown_key(nested, item, label, f"{at}[{i}]" if many else at)
             if found:
                 return found
     return None
@@ -261,7 +270,7 @@ class InputModel(BaseModel):
     def _reject_unknown_keys(cls, data: Any) -> Any:
         found = _unknown_key(cls, data, cls.input_label)
         if found:
-            raise ValidationError(found, code="unknown_key")
+            raise found
         return data
 
 
@@ -277,7 +286,7 @@ class TopInputModel(InputModel):
         try:
             super().__init__(**data)
         except PydanticValidationError as exc:
-            raise ValidationError(validation_message(f"invalid {self.input_label}", exc)) from exc
+            raise validation_error(f"invalid {self.input_label}", exc) from exc
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -296,7 +305,7 @@ def as_input(model: type[M], value: Any, what: str) -> M | None:
     try:
         return model.model_validate(value)
     except PydanticValidationError as exc:
-        raise ValidationError(validation_message(f"invalid {what}", exc)) from exc
+        raise validation_error(f"invalid {what}", exc) from exc
 
 
 def _issue_message(err: Mapping[str, Any]) -> str:
@@ -321,11 +330,11 @@ def _issue_message(err: Mapping[str, Any]) -> str:
     return msg[:1].lower() + msg[1:]
 
 
-def issue_line(err: Mapping[str, Any]) -> str:
-    """Format one pydantic error as an "entities[0].name: message" line, or the message alone at the root.
+def _issue_path(err: Mapping[str, Any]) -> str:
+    """Render one pydantic error's location as entities[0].name.
 
     @param err (Mapping[str, Any]): one entry of a pydantic ValidationError's errors().
-    @return (str): the line.
+    @return (str): the path, or "" at the root.
     """
     path = ""
     for part in err["loc"]:
@@ -333,21 +342,33 @@ def issue_line(err: Mapping[str, Any]) -> str:
             path += f"[{part}]"
         else:
             path += f".{part}" if path else str(part)
+    return path
+
+
+def issue_line(err: Mapping[str, Any]) -> str:
+    """Format one pydantic error as an "entities[0].name: message" line, or the message alone at the root.
+
+    @param err (Mapping[str, Any]): one entry of a pydantic ValidationError's errors().
+    @return (str): the line.
+    """
+    path = _issue_path(err)
     message = _issue_message(err)
     return f"{path}: {message}" if path else message
 
 
-def validation_message(head: str, exc: PydanticValidationError) -> str:
-    """Format a pydantic ValidationError as one "path: message" line per issue, with entities[0].name paths.
+def validation_error(head: str, exc: PydanticValidationError) -> ValidationError:
+    """Turn a pydantic ValidationError into SelfGraph's, one "path: message" line per issue, at the first issue's field.
 
     One issue stays inline after the heading; several go on indented lines.
 
     @param head (str): what failed, such as "invalid facts".
     @param exc (PydanticValidationError): the error.
-    @return (str): the message.
+    @return (ValidationError): the error.
     """
-    lines = [issue_line(err) for err in exc.errors()]
-    return f"{head}: {lines[0]}" if len(lines) == 1 else head + ":" + "".join(f"\n  {line}" for line in lines)
+    issues = exc.errors()
+    lines = [issue_line(err) for err in issues]
+    message = f"{head}: {lines[0]}" if len(lines) == 1 else head + ":" + "".join(f"\n  {line}" for line in lines)
+    return ValidationError(message, field=_issue_path(issues[0]) or None)
 
 
 T = TypeVar("T")
@@ -788,7 +809,9 @@ class LLMConfig(TopInputModel):
         known = sep and not self.base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
         if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other):
             raise ValidationError(
-                f"provider {self.provider!r} conflicts with model prefix {prefix!r}", code="invalid_setting"
+                f"provider {self.provider!r} conflicts with model prefix {prefix!r}",
+                code="invalid_setting",
+                field="provider",
             )
         return self
 

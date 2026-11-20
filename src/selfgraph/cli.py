@@ -926,8 +926,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except (SelfGraphError, FileNotFoundError, RuntimeError) as exc:
-        label = f"error[{exc.code}]" if isinstance(exc, SelfGraphError) else "error"
-        print(f"{label}: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
+        if isinstance(exc, SelfGraphError):
+            print(f"error[{exc.code}]: {surface_hint(str(exc)).rstrip()}\nhint: {exc.hint}", file=sys.stderr)
+        else:
+            print(f"error: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
         return 2 if isinstance(exc, _USAGE_ERRORS) else 1
 
 

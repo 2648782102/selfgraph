@@ -15,7 +15,7 @@ from selfgraph.cli import _kv
 from selfgraph.errors import SelfGraphError
 from selfgraph.extraction.extractor import _lenient_event_time
 from selfgraph.mcp import server as mcp_server
-from selfgraph.models import validation_message
+from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
 from selfgraph.runtime import parse_json, to_jsonable
 from selfgraph.schema import validate_against_schema
@@ -598,7 +598,7 @@ async def mcp_argument_errors():
             await validate_call(getattr(mcp_server, name))(**args)
             errors.append("accepted")
         except PydanticValidationError as exc:
-            errors.append(validation_message("invalid arguments", exc))
+            errors.append(str(validation_error("invalid arguments", exc)))
     return errors
 
 
@@ -670,12 +670,13 @@ async def error_of(call):
     """Await a call that should fail and return its error as the wire fields both SDKs report.
 
     @param call (Awaitable): the pending call.
-    @return (dict | str): the error's to_dict() fields, or "accepted" when the call succeeds.
+    @return (dict | str): the error's to_dict() fields with docs cut to its anchor, since each SDK links its own
+        release, or "accepted" when the call succeeds.
     """
     try:
         await call
     except SelfGraphError as exc:
-        return exc.to_dict()
+        return {**exc.to_dict(), "docs": exc.docs.partition("#")[2]}
     return "accepted"
 
 

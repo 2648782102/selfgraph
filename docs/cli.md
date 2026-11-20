@@ -176,10 +176,15 @@ problem, such as `invalid facts: entities[0].name: field required`. See
 
 ## Exit codes
 
-A failed command prints one line on stderr, `error[<code>]: <message>`, with
-the error's [code](errors.md#codes), such as
-`error[not_found]: Relation 'relation:ghost' does not exist`. An error that is
-not a SelfGraph error prints `error: <message>`.
+A failed command prints `error[<code>]: <message>` on stderr, with the error's
+[code](errors.md#codes), and then `hint: <hint>`, the code's repair:
+
+```
+error[not_found]: Relation 'relation:ghost' does not exist
+hint: The object does not exist in this namespace. Check the id and the namespace, or create the object.
+```
+
+An error that is not a SelfGraph error prints `error: <message>` alone.
 
 | Code | Meaning |
 |------|---------|

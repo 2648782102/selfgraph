@@ -8,7 +8,7 @@ from typing import Any
 
 from neo4j.graph import Node, Path, Relationship
 
-from ..errors import STORE_CLOSED_MESSAGE, StoreError, TransientError, ValidationError, error_reason
+from ..errors import STORE_CLOSED_MESSAGE, StoreError, TransientError, ValidationError, connection_reason
 from ..ids import quote_label, quote_reltype, require_identifier
 from ..models import CypherResult, JsonValue
 
@@ -78,13 +78,13 @@ def bolt_driver(uri: str, auth: Any, **kwargs: Any) -> Any:
         raise StoreError("the 'neo4j' Bolt driver is required; pip install neo4j", code="missing_package") from exc
     scheme, sep, _ = uri.partition("://")
     if sep and scheme.lower() not in _BOLT_SCHEMES:
-        raise StoreError(f"{uri!r} is not a Bolt URI; use bolt://host:port", code="invalid_setting")
+        raise StoreError(f"{uri!r} is not a Bolt URI; use bolt://host:port", code="invalid_setting", field="uri")
     kwargs.setdefault("connection_timeout", BOLT_CONNECT_TIMEOUT)
     kwargs.setdefault("connection_acquisition_timeout", BOLT_CONNECT_TIMEOUT)
     try:
         return AsyncGraphDatabase.driver(uri, auth=auth, **kwargs)
     except Exception as exc:  # noqa: BLE001
-        raise StoreError(f"cannot open a Bolt driver for {uri!r}: {exc}", code="invalid_setting") from exc
+        raise StoreError(f"cannot open a Bolt driver for {uri!r}: {exc}", code="invalid_setting", field="uri") from exc
 
 
 def bolt_failure(exc: BaseException) -> str | None:
@@ -119,7 +119,7 @@ def bolt_error(exc: BaseException, uri: str, database: str | None) -> StoreError
             f"database {database!r} not found" if database else "database not found", code="database_not_found"
         )
     if failure == "unreachable":
-        return StoreError(f"could not connect to {uri}: {error_reason(exc)}", code="store_unreachable")
+        return StoreError(f"could not connect to {uri}: {connection_reason(exc)}", code="store_unreachable")
     return None
 
 

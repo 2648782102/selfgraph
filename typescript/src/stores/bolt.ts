@@ -17,7 +17,7 @@ import neo4j, {
   type Result,
 } from "neo4j-driver";
 
-import { errorMessage, errorReason, StoreError, TransientError, ValidationError } from "../errors.js";
+import { connectionReason, errorMessage, StoreError, TransientError, ValidationError } from "../errors.js";
 import { isPlainObject, pyRepr } from "../internal/py.js";
 import type { CypherResult, JsonValue } from "../models.js";
 import { type CounterName, graphProperties, WRITE_COUNTER_NAMES } from "./cypherPrimitives.js";
@@ -103,7 +103,7 @@ export function boltError(exc: unknown, uri: string, database: string | null): S
     });
   }
   if (failure === "unreachable") {
-    return new StoreError(`could not connect to ${uri}: ${errorReason(exc)}`, {
+    return new StoreError(`could not connect to ${uri}: ${connectionReason(exc)}`, {
       cause: exc,
       code: "store_unreachable",
     });
@@ -181,7 +181,10 @@ export function parseAuth(auth: unknown, defaultUser = "neo4j"): [string, string
 export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver {
   const scheme = uri.includes("://") ? uri.slice(0, uri.indexOf("://")).toLowerCase() : null;
   if (scheme !== null && !BOLT_SCHEMES.includes(scheme)) {
-    throw new StoreError(`${pyRepr(uri)} is not a Bolt URI; use bolt://host:port`, { code: "invalid_setting" });
+    throw new StoreError(`${pyRepr(uri)} is not a Bolt URI; use bolt://host:port`, {
+      code: "invalid_setting",
+      field: "uri",
+    });
   }
   const pair = isPlainObject(auth) && typeof auth.scheme === "string" ? null : parseAuth(auth);
   const token = pair === null ? (auth as AuthToken | undefined) || undefined : neo4j.auth.basic(pair[0], pair[1]);
@@ -195,6 +198,7 @@ export function openDriver(uri: string, auth: BoltAuth, config: Config): Driver 
     throw new StoreError(`cannot open a Bolt driver for ${pyRepr(uri)}: ${errorMessage(exc)}`, {
       cause: exc,
       code: "invalid_setting",
+      field: "uri",
     });
   }
 }

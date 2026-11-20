@@ -14,7 +14,7 @@ import {
   type ExtractionPrompts,
   Stance,
   Status,
-  validationMessage,
+  validationError,
 } from "./models.js";
 import { toNeo4jOntology } from "./neo4jSchema.js";
 import { DECISION_CLEARABLE, PREFERENCE_CLEARABLE, requireChanges } from "./ops.js";
@@ -781,7 +781,7 @@ export async function callTool(
       if (field in t.input) rejectProtoKeys(args[field]);
     }
     const parsed = z.object(t.input).safeParse(args);
-    if (!parsed.success) throw new ValidationError(validationMessage("invalid arguments", parsed.error, args));
+    if (!parsed.success) throw validationError("invalid arguments", parsed.error, args);
     return { result: toJsonable(await t.run(await graph.get(), parsed.data)), isError: false };
   } catch (exc) {
     if (exc instanceof SelfGraphError) {

@@ -1,6 +1,6 @@
 import type { FalkorDB, FalkorDBOptions, Graph, GraphReply, QueryParams } from "falkordb";
 
-import { errorMessage, errorReason, StoreError, TransientError } from "../errors.js";
+import { connectionReason, errorMessage, StoreError, TransientError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import type { CypherResult, JsonValue } from "../models.js";
@@ -131,7 +131,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
       graph = (await this.connection.get()).graph;
     } catch (exc) {
       if (exc instanceof StoreError) throw exc;
-      const reason = errorReason(exc).replace(/^Failed to connect to FalkorDB: /, "");
+      const reason = connectionReason(exc).replace(/^Failed to connect to FalkorDB: /, "");
       throw new StoreError(`failed connecting to FalkorDB at ${this.host}:${this.port}: ${reason}`, {
         cause: exc,
         code: "store_unreachable",

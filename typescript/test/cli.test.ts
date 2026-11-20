@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildParser } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
-import { surfaceHint, ValidationError } from "../src/errors.js";
+import { HINTS, surfaceHint, ValidationError } from "../src/errors.js";
 import {
   bindParams,
   buildLlm,
@@ -206,7 +206,8 @@ describe("built CLI against Kuzu", () => {
       input: JSON.stringify({ entities: [{ type: "P" }, { name: 3, type: "P" }] }),
     });
     expect(bad.err).toBe(
-      "error[invalid_argument]: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n",
+      "error[invalid_argument]: invalid facts:\n  entities[0].name: field required\n  entities[1].name: expected string\n" +
+        `hint: ${HINTS.invalid_argument}\n`,
     );
   });
 
@@ -418,7 +419,10 @@ describe("built CLI against Kuzu", () => {
     expect(res.err).toContain(`relation ${acme!.id} was invalidated by ${acme!.invalidated_by} at `);
     expect(res.err).toContain("; use relation versions or relation list --include-invalidated");
     const none = cli([...g, "relation", "versions", "relation:ghost"]);
-    expect([none.code, none.err]).toEqual([1, "error[not_found]: Relation 'relation:ghost' does not exist\n"]);
+    expect([none.code, none.err]).toEqual([
+      1,
+      `error[not_found]: Relation 'relation:ghost' does not exist\nhint: ${HINTS.not_found}\n`,
+    ]);
   });
 
   it("takes connection flags after the subcommand and parses time flags", () => {

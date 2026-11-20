@@ -134,6 +134,7 @@ def _require_provider(provider: str, known: list[str]) -> None:
         f"unknown LLM provider {provider!r}: use a litellm provider such as anthropic, openai, gemini, or ollama, "
         f"or openai with base_url for an OpenAI-compatible endpoint{hint}",
         code="invalid_setting",
+        field="provider",
     )
 
 

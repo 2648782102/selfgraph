@@ -429,7 +429,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   if (scheme && !FALKOR_SCHEMES.includes(scheme)) {
     throw new ValidationError(
       `invalid FalkorDB address ${pyRepr(uri)}: the 'falkordb' store expects ${FALKOR_ADDRESS}`,
-      { code: "invalid_setting" },
+      { code: "invalid_setting", field: "uri" },
     );
   }
   let url: URL | null;
@@ -441,7 +441,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
   if (url === null || url.port === "0") {
     throw new ValidationError(
       `invalid FalkorDB address ${pyRepr(uri)}: expected host:port with a port from 1 to 65535`,
-      { code: "invalid_setting" },
+      { code: "invalid_setting", field: "uri" },
     );
   }
   return { url, tls: scheme === "rediss" || scheme === "falkors" };
@@ -510,13 +510,13 @@ function requireStoreUri(kind: string, uri: string | null): void {
   if (!uri) {
     throw new ValidationError(
       `the ${pyRepr(kind)} store needs ${SERVER_STORES[kind]!.address}; pass ${settingHint("uri")}`,
-      { code: "invalid_setting" },
+      { code: "invalid_setting", field: "uri" },
     );
   }
   if (!uri.includes("://") && (uri.endsWith(".kuzu") || uri.includes("/") || uri.includes(sep))) {
     throw new ValidationError(
       `${pyRepr(uri)} is not a URI for the ${pyRepr(kind)} store; this looks like a Kuzu path; ${STORE_KUZU_HINT}`,
-      { code: "invalid_setting" },
+      { code: "invalid_setting", field: "uri" },
     );
   }
   if (kind === "falkordb") falkorAddress(uri);
@@ -552,6 +552,7 @@ export function llmTimeout(value: number | string | null): number {
   if (!(seconds > 0) || !Number.isFinite(seconds)) {
     throw new ValidationError(`llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`, {
       code: "invalid_setting",
+      field: "llm_timeout",
     });
   }
   return seconds;
@@ -570,6 +571,7 @@ export function llmConcurrency(value: number | string | null): number {
   if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1) {
     throw new ValidationError(`llm_concurrency must be a positive integer, got ${pyRepr(value)}`, {
       code: "invalid_setting",
+      field: "llm_concurrency",
     });
   }
   return n;
@@ -588,13 +590,14 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
   if (!settings.llm_model) {
     throw new ValidationError(`an LLM needs a model; pass ${settingHint("llm_model")}, e.g. gpt-4o-mini`, {
       code: "invalid_setting",
+      field: "llm_model",
     });
   }
   if (!provider) {
     throw new ValidationError(
       `an LLM needs a provider; pass ${settingHint("llm_provider")}, or a provider-prefixed ` +
         "model such as openai/gpt-4o-mini",
-      { code: "invalid_setting" },
+      { code: "invalid_setting", field: "llm_provider" },
     );
   }
   requireMatchingPrefix(provider, settings.llm_model, settings.llm_base_url);
@@ -611,6 +614,7 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
 const unknownStore = (settings: GraphSettings) =>
   new ValidationError(`unknown store ${pyRepr(settings.store)}; choose one of ${STORES.join(", ")}`, {
     code: "invalid_setting",
+    field: "store",
   });
 
 /**
@@ -624,6 +628,7 @@ export function checkSettings(settings: GraphSettings): GraphSettings {
   if (settings.uri != null && !pyStrip(settings.uri)) {
     throw new ValidationError(`uri cannot be empty; omit ${settingHint("uri")} to use the default store`, {
       code: "invalid_setting",
+      field: "uri",
     });
   }
   const kind = storeKind(settings);

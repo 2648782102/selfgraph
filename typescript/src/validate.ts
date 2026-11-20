@@ -252,7 +252,7 @@ export function checkOptions(method: string, options: unknown, allowed: readonly
   if (!unknown.length) return;
   throw new ValidationError(
     `unknown option ${pyRepr(unknown[0])} for ${method}${keyHint(unknown[0]!, allowed, "options")}`,
-    { code: "unknown_key" },
+    { code: "unknown_key", field: unknown[0]! },
   );
 }
 

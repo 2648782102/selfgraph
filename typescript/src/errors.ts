@@ -1,56 +1,97 @@
+import { version } from "../package.json";
 import { pyRepr } from "./internal/py.js";
 
-export type ErrorCode =
-  | "invalid_argument"
-  | "unknown_key"
-  | "invalid_setting"
-  | "llm_required"
-  | "embedder_required"
-  | "schema_required"
-  | "schema_violation"
-  | "immutable_identity"
-  | "unknown_reference"
-  | "relation_certified"
-  | "relation_invalidated"
-  | "merge_reverted"
-  | "invalid_cursor"
-  | "invalid_resolver_decision"
-  | "read_only_query"
-  | "missing_package"
-  | "not_found"
-  | "already_exists"
-  | "extraction_failed"
-  | "llm_auth_failed"
-  | "llm_model_not_found"
-  | "invalid_llm_output"
-  | "invalid_prompt_template"
-  | "query_failed"
-  | "graph_closed"
-  | "store_closed"
-  | "store_unreachable"
-  | "store_locked"
-  | "store_auth_failed"
-  | "database_not_found"
-  | "wrong_engine"
-  | "write_too_large"
-  | "write_conflict"
-  | "store_busy";
-export const DOCS_URL = "https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md";
+export const HINTS = {
+  invalid_argument:
+    "An argument, input field, or option value is wrong. The message names the field and what it expected. Fix the value and call again.",
+  unknown_key:
+    "A key or option name is not one the call accepts. Use the name the message suggests after `did you mean`.",
+  invalid_setting:
+    "A graph setting is missing or wrong: `uri`, `store`, `llm_provider`, `llm_model`, `llm_timeout`, `llm_concurrency`, or the provider in the LLM config. Fix the setting, flag, or `SELFGRAPH_*` variable the message names.",
+  llm_required:
+    "The call needs an LLM and none is configured. Configure one (the `llm` option, or `--llm-provider` and `--llm-model` in the CLI and MCP server), or choose a tier that needs no LLM.",
+  embedder_required:
+    "The `embeddings` seeds tier needs an embedder. Pass one with the SDK's `embedder` option, or choose another seeds tier.",
+  schema_required:
+    "Strict schema mode, or exporting the schema, needs a schema. Pass one (the `schema` option, or `--schema`), or use schema mode `warn`.",
+  schema_violation:
+    "A write breaks the schema in strict mode. Fix the facts to match the schema, change the schema, or use schema mode `warn`. A relation over its `max_count` can also retire the older one with contradiction mode `supersede`.",
+  immutable_identity:
+    "The change touches a field that is part of the object's id: an entity's type, a relation's endpoints and type, or a preference's subject, stance, key, and value. Create a new object instead of updating this one.",
+  unknown_reference: "The input references an entity or relation that does not exist. Create it first, or fix the id.",
+  relation_certified: "A certified relation blocks the change. Uncertify the relation, then run the call again.",
+  relation_invalidated:
+    "The relation was invalidated (superseded or retired). Create it again to reassert it, or act on its current version.",
+  merge_reverted: "The merge was already reverted. There is nothing left to undo.",
+  invalid_cursor: "The cursor did not come from this listing. Start the listing again without a cursor.",
+  invalid_resolver_decision:
+    "A custom entity resolver returned a bad decision. Return a `ResolutionDecision` whose target is one of the offered entities, with a confidence and a reason.",
+  read_only_query: "`run_cypher` runs a single read. Write through the typed tools instead.",
+  missing_package: "An optional package is not installed. Run the install command in the message.",
+  not_found: "The object does not exist in this namespace. Check the id and the namespace, or create the object.",
+  already_exists: "An object with this id already exists. Update it, or insert it, which upserts.",
+  extraction_failed:
+    "LLM extraction failed. The message carries the first failure. Check the LLM settings and the provider, then run the insert again.",
+  llm_auth_failed:
+    "The LLM provider got no API key, or rejected it. Pass `api_key` in the LLM config, or set `SELFGRAPH_LLM_API_KEY` or the provider's own variable.",
+  llm_model_not_found: "The provider does not know the model. Check the model name and the provider.",
+  invalid_llm_output:
+    "The model, or a custom LLM client, returned output that does not match the pass's schema. Use another model, or fix the client.",
+  invalid_prompt_template:
+    "A prompt template is malformed. Keep `{text}` in the user template and use no placeholder other than `{text}` and `{instructions}`.",
+  query_failed:
+    "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself.",
+  graph_closed: "The SelfGraph was closed. Create a new SelfGraph.",
+  store_closed: "The store was closed, and closing a graph closes its store. Create a new store for each SelfGraph.",
+  store_unreachable:
+    "The SDK could not connect to the backend. Check that the server is running and that the address is right.",
+  store_locked:
+    "Another process (an MCP server or a script) has the embedded Kuzu database open, and Kuzu allows one process at a time. Close it, or point this one at another path.",
+  store_auth_failed:
+    "The backend rejected the credentials, or HydraDB got no token. Pass the right `auth` (CLI and MCP: `--auth`, or `SELFGRAPH_AUTH`).",
+  database_not_found: "The database named in the settings does not exist on the server. Create it, or fix the name.",
+  wrong_engine: "The server at the address is another engine. Pass the store that matches it, such as `neo4j`.",
+  write_too_large:
+    "A single node or edge row is larger than HydraDB accepts in one message. Split large property values or text.",
+  write_conflict:
+    "A concurrent write conflicted and the SDK's own retries ran out. Run the same call again: ids are deterministic and inserts are upserts, so a retry does not duplicate anything. Retryable, as is every `TransientError`.",
+  store_busy:
+    "The server timed out or was too busy to take the query. Run the same call again after a moment. Retryable.",
+} as const;
+export type ErrorCode = keyof typeof HINTS;
+export const DOCS_URL = `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md`;
+
+export type ErrorFields = {
+  error: string;
+  error_type: string;
+  code: ErrorCode;
+  field?: string;
+  hint: string;
+  retryable: boolean;
+  docs: string;
+};
 
 export class SelfGraphError extends Error {
   static readonly code: ErrorCode = "invalid_argument";
   readonly code: ErrorCode;
+  readonly field?: string;
 
   /**
    * An SDK error with a stable code that names the failure and its repair.
    *
    * @param message (string | undefined): what happened, with the fix when one applies.
-   * @param options ({ cause?: unknown; code?: ErrorCode } | undefined): the cause, and the code when not the class default.
+   * @param options ({ cause?: unknown; code?: ErrorCode; field?: string } | undefined): the cause, the code when not the class default, and the argument, key, or setting at fault, when one is.
    */
-  constructor(message?: string, options?: { cause?: unknown; code?: ErrorCode }) {
+  constructor(message?: string, options?: { cause?: unknown; code?: ErrorCode; field?: string }) {
     super(message, options);
     this.name = new.target.name;
     this.code = options?.code ?? (new.target as typeof SelfGraphError).code;
+    if (options?.field !== undefined) this.field = options.field;
+  }
+
+  /** How to repair this error's code, as its docs section says. */
+  get hint(): string {
+    return HINTS[this.code];
   }
 
   /** Whether the same call can succeed when run again unchanged: true for a TransientError. */
@@ -58,7 +99,7 @@ export class SelfGraphError extends Error {
     return this instanceof TransientError;
   }
 
-  /** The docs section that explains this error's code and its repair. */
+  /** The docs section for this error's code, at the installed release. */
   get docs(): string {
     return `${DOCS_URL}#${this.code}`;
   }
@@ -66,10 +107,18 @@ export class SelfGraphError extends Error {
   /**
    * The error as JSON-ready fields, as the MCP server returns it.
    *
-   * @return ({ error: string; error_type: string; code: ErrorCode; retryable: boolean; docs: string }): the fields.
+   * @return (ErrorFields): error, error_type, code, field when one is at fault, hint, retryable, and docs.
    */
-  toJSON(): { error: string; error_type: string; code: ErrorCode; retryable: boolean; docs: string } {
-    return { error: this.message, error_type: this.name, code: this.code, retryable: this.retryable, docs: this.docs };
+  toJSON(): ErrorFields {
+    return {
+      error: this.message,
+      error_type: this.name,
+      code: this.code,
+      ...(this.field === undefined ? {} : { field: this.field }),
+      hint: this.hint,
+      retryable: this.retryable,
+      docs: this.docs,
+    };
   }
 }
 
@@ -243,6 +292,17 @@ export function connectionFailure(exc: unknown): string {
   if (err === null) return "";
   const phrase = CONNECT_CODES[err.code as string]!;
   return typeof err.address === "string" ? `${phrase} ${err.address}${err.port ? `:${err.port}` : ""}` : phrase;
+}
+
+/**
+ * Describe a failed connection in plain words ("connection refused") when the error chain says which.
+ *
+ * @param exc (unknown): the thrown value.
+ * @return (string): the phrase, or the error's reason.
+ */
+export function connectionReason(exc: unknown): string {
+  const err = connectError(exc);
+  return err === null ? errorReason(exc) : CONNECT_CODES[err.code as string]!;
 }
 
 /**

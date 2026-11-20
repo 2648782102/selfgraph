@@ -6,8 +6,8 @@ from typing import get_args
 import pytest
 
 import selfgraph
-from selfgraph import NotFoundError, StoreError, TransientError
-from selfgraph.errors import DOCS_URL, ErrorCode, SelfGraphError
+from selfgraph import Extraction, NotFoundError, StoreError, TransientError
+from selfgraph.errors import HINTS, ErrorCode, SelfGraphError
 from selfgraph.runtime import GraphSettings, check_settings
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -34,38 +34,58 @@ def _python_codes():
     return found
 
 
-def test_codes_agree_across_python_typescript_and_the_docs():
-    ts_source = "".join(p.read_text() for p in (ROOT / "typescript" / "src").rglob("*.ts"))
-    start = ts_source.index("export type ErrorCode =")
-    catalog = ts_source[start : ts_source.index(";", start)]
-    documented = re.findall(r"^#### `(\w+)`$", (ROOT / "docs" / "errors.md").read_text(), re.M)
-    assert set(re.findall(r'^  \| "(\w+)"$', catalog, re.M)) == set(ERROR_CODES)
-    assert sorted(documented) == sorted(ERROR_CODES)
+def _documented():
+    """Each code's section in docs/errors.md, as one line of text.
+
+    @return (dict[str, str]): the section text by code.
+    """
+    text = (ROOT / "docs" / "errors.md").read_text()
+    sections = re.finditer(r"^#### `(\w+)`\n\n(.*?)(?=\n#|\Z)", text, re.S | re.M)
+    return {m.group(1): " ".join(m.group(2).split()) for m in sections}
+
+
+def test_every_raised_code_is_documented_and_its_hint_is_its_docs_section():
+    assert _documented() == HINTS
+    assert set(HINTS) == set(ERROR_CODES)
     assert _python_codes() == set(ERROR_CODES)
 
 
-def test_an_error_carries_its_code_retryability_and_docs():
+def test_an_error_carries_its_code_hint_retryability_and_release_docs():
     missing = NotFoundError("Entity", "person:nobody")
     assert missing.to_dict() == {
         "error": "Entity 'person:nobody' does not exist",
         "error_type": "NotFoundError",
         "code": "not_found",
+        "hint": HINTS["not_found"],
         "retryable": False,
-        "docs": f"{DOCS_URL}#not_found",
+        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#not_found",
     }
     assert [TransientError().retryable, StoreError().retryable] == [True, False]
 
 
 @pytest.mark.parametrize(
-    ("settings", "code"),
+    ("facts", "code", "field"),
     [
-        ({"store": "bogus"}, "invalid_setting"),
-        ({"level": "max"}, "llm_required"),
-        ({"schema_mode": "strict"}, "schema_required"),
-        ({"llm_timeout": "-1"}, "invalid_setting"),
+        ({"entities": [{"name": "Ada", "type": "Person", "bogus": 1}]}, "unknown_key", "entities[0].bogus"),
+        ({"entities": [{"type": "Person"}]}, "invalid_argument", "entities[0].name"),
     ],
 )
-def test_settings_fail_with_a_narrow_code(settings, code):
+def test_bad_input_names_the_field_at_fault(facts, code, field):
+    with pytest.raises(SelfGraphError) as exc:
+        Extraction(**facts)
+    assert (exc.value.code, exc.value.to_dict()["field"]) == (code, field)
+
+
+@pytest.mark.parametrize(
+    ("settings", "code", "field"),
+    [
+        ({"store": "bogus"}, "invalid_setting", "store"),
+        ({"level": "max"}, "llm_required", None),
+        ({"schema_mode": "strict"}, "schema_required", None),
+        ({"llm_timeout": "-1"}, "invalid_setting", "llm_timeout"),
+    ],
+)
+def test_settings_fail_with_a_narrow_code(settings, code, field):
     with pytest.raises(SelfGraphError) as exc:
         check_settings(GraphSettings(**settings))
-    assert exc.value.code == code
+    assert (exc.value.code, exc.value.to_dict().get("field")) == (code, field)

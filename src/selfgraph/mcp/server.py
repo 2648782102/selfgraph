@@ -16,7 +16,7 @@ from pydantic_core import core_schema
 from ..client import SelfGraph
 from ..errors import SelfGraphError, ValidationError, surface_hint
 from ..ids import type_name
-from ..models import Stance, Status, check_options, validation_message
+from ..models import Stance, Status, check_options, validation_error
 from ..resources._common import DEFAULT_PAGE_LIMIT
 from ..runtime import (
     _BLANK,
@@ -986,8 +986,10 @@ def _check_arguments(server: Any, name: str) -> None:
         except ValidationError as exc:
             failure = exc
         except PydanticValidationError as exc:
-            failure = ValidationError(validation_message("invalid arguments", exc))
-        raise _ArgumentError.from_exception_data(f"ValidationError[{failure.code}]: {failure}", [])
+            failure = validation_error("invalid arguments", exc)
+        raise _ArgumentError.from_exception_data(
+            f"ValidationError[{failure.code}]: {failure}\nhint: {failure.hint}", []
+        )
 
     checked = create_model(model.__name__, __base__=model)
     checked.model_validate = classmethod(validate)  # type: ignore[method-assign]

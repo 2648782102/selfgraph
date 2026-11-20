@@ -35,11 +35,17 @@ TypeScript raise the same code for the same failure, and renaming one is a
 breaking change.
 
 - `code`: one of the codes below (TypeScript type `ErrorCode`).
+- `field`: the argument, input key, or setting at fault, such as
+  `entities[0].name` or `uri`, when the error is about one; otherwise None
+  (TypeScript `undefined`).
+- `hint`: how to repair the code, the text of its section below.
 - `retryable`: whether the same call can succeed when run again unchanged;
   true only for a `TransientError`.
-- `docs`: a link to the code's section below.
+- `docs`: a link to the code's section below, at the installed release (tag
+  `v<version>` for Python, `ts-v<version>` for TypeScript).
 - `to_dict()` (TypeScript `toJSON()`): the fields above with the message and
-  class name, as the MCP server returns them.
+  class name, as the MCP server returns them. `field` is left out when there
+  is none.
 
 ```python
 from selfgraph import SelfGraphError
@@ -76,24 +82,25 @@ config. Fix the setting, flag, or `SELFGRAPH_*` variable the message names.
 
 #### `llm_required`
 
-The call needs an LLM and none is configured. Pass `llm=` (CLI and MCP:
-`--llm-provider` and `--llm-model`), or choose a tier that needs no LLM.
+The call needs an LLM and none is configured. Configure one (the `llm` option,
+or `--llm-provider` and `--llm-model` in the CLI and MCP server), or choose a
+tier that needs no LLM.
 
 #### `embedder_required`
 
-The `embeddings` seeds tier needs an embedder. Pass `embedder=`, or choose
-another seeds tier.
+The `embeddings` seeds tier needs an embedder. Pass one with the SDK's
+`embedder` option, or choose another seeds tier.
 
 #### `schema_required`
 
-Strict schema mode, or exporting the schema, needs a schema. Pass `schema=`, or
-use schema mode `warn`.
+Strict schema mode, or exporting the schema, needs a schema. Pass one (the
+`schema` option, or `--schema`), or use schema mode `warn`.
 
 #### `schema_violation`
 
 A write breaks the schema in strict mode. Fix the facts to match the schema,
 change the schema, or use schema mode `warn`. A relation over its `max_count`
-can also retire the older one with `contradiction="supersede"`.
+can also retire the older one with contradiction mode `supersede`.
 
 #### `missing_package`
 
@@ -225,8 +232,8 @@ fix the name.
 
 #### `wrong_engine`
 
-The server at the address is another engine. Pass the matching store, such as
-`store="neo4j"`.
+The server at the address is another engine. Pass the store that matches it,
+such as `neo4j`.
 
 #### `write_too_large`
 

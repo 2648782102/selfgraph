@@ -208,10 +208,14 @@ is the same object as JSON:
   "error": "Entity 'person:nobody' does not exist",
   "error_type": "NotFoundError",
   "code": "not_found",
+  "hint": "The object does not exist in this namespace. Check the id and the namespace, or create the object.",
   "retryable": false,
-  "docs": "https://github.com/hydra-db/selfgraph/blob/main/docs/errors.md#not_found"
+  "docs": "https://github.com/hydra-db/selfgraph/blob/v<version>/docs/errors.md#not_found"
 }
 ```
+
+An error about one argument or key also carries `field`, such as
+`"field": "limit"`.
 
 An error that is not a SelfGraph error has `error_type` `InternalError` and no
 code.
@@ -221,8 +225,8 @@ code.
   (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`). TypeScript
   returns them as the result above. Python's MCP SDK checks arguments before
   the tool runs, so it reports them as the text
-  `ValidationError[<code>]: <message>`, with code `invalid_argument`, or
-  `unknown_key` for an unknown argument.
+  `ValidationError[<code>]: <message>` and a `hint: <hint>` line, with code
+  `invalid_argument`, or `unknown_key` for an unknown argument.
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
 - An unknown tool name fails as a tool error.

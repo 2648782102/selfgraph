@@ -8,7 +8,7 @@ from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, mcp_session, preference_updat
 
 import selfgraph
 import selfgraph.mcp.server as srv
-from selfgraph.errors import DOCS_URL, ValidationError
+from selfgraph.errors import HINTS, ValidationError
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
@@ -269,8 +269,9 @@ def test_call_tool_arguments_results_and_errors(server):
         "error": "limit must be >= 1, got 0",
         "error_type": "ValidationError",
         "code": "invalid_argument",
+        "hint": HINTS["invalid_argument"],
         "retryable": False,
-        "docs": f"{DOCS_URL}#invalid_argument",
+        "docs": f"https://github.com/hydra-db/selfgraph/blob/v{selfgraph.__version__}/docs/errors.md#invalid_argument",
     }
     with pytest.raises(
         Exception,
@@ -284,7 +285,9 @@ def test_call_tool_arguments_results_and_errors(server):
     ):
         with pytest.raises(Exception) as exc:
             run(server.call_tool(tool, args))
-        assert str(exc.value).endswith(f"ValidationError[invalid_argument]: {message}")
+        assert str(exc.value).endswith(
+            f"ValidationError[invalid_argument]: {message}\nhint: {HINTS['invalid_argument']}"
+        )
         assert "pydantic" not in str(exc.value)
     for flag in ("no", "false", "0", 0, None):
         for tool, args in (
@@ -328,7 +331,9 @@ NUMBER_ARGUMENT_CASES = [
 def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, args, message):
     with pytest.raises(Exception) as exc:
         run(server.call_tool(tool, args))
-    assert str(exc.value).endswith(f"ValidationError[invalid_argument]: invalid arguments: {message}")
+    assert str(exc.value).endswith(
+        f"ValidationError[invalid_argument]: invalid arguments: {message}\nhint: {HINTS['invalid_argument']}"
+    )
 
 
 def test_whole_floats_pass_as_integers_and_integers_as_numbers(server):

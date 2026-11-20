@@ -195,7 +195,7 @@ function requireProvider(config: ParsedLLMConfig): void {
   throw new ValidationError(
     `unknown LLM provider ${pyRepr(config.provider)}: use one of ${KNOWN_PROVIDERS.join(", ")}, set base_url for an ` +
       `OpenAI-compatible endpoint, or pass an AI SDK model as llm${hint}`,
-    { code: "invalid_setting" },
+    { code: "invalid_setting", field: "provider" },
   );
 }
 

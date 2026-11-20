@@ -1413,6 +1413,7 @@ describe("store setup errors", () => {
     expect(() => SelfGraph.connect({ store: "falkordb", uri: "nonsense:abc" })).toThrow(
       new ValidationError("invalid FalkorDB address 'nonsense:abc': expected host:port with a port from 1 to 65535", {
         code: "invalid_setting",
+        field: "uri",
       }),
     );
     expect(() => new HydraDBStore("http://127.0.0.1:1")).toThrow(/is not a Bolt URI; use bolt:\/\/host:port$/);
@@ -2074,5 +2075,9 @@ it.each([
 ] as const)("keeps other external id value type errors: %j", (external_ids, key) => {
   expect(() =>
     parseOrThrow(Extraction, { entities: [{ type: "Person", name: "Ann", external_ids }] }, "facts"),
-  ).toThrowError(new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`));
+  ).toThrowError(
+    new ValidationError(`invalid facts: entities[0].external_ids.${key}: expected string`, {
+      field: `entities[0].external_ids.${key}`,
+    }),
+  );
 });

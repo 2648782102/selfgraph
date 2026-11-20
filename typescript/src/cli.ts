@@ -12,14 +12,7 @@ import {
 } from "@commander-js/extra-typings";
 
 import { SelfGraph } from "./client.js";
-import {
-  type ErrorCode,
-  NotFoundError,
-  PromptTemplateError,
-  SelfGraphError,
-  surfaceHint,
-  ValidationError,
-} from "./errors.js";
+import { NotFoundError, PromptTemplateError, SelfGraphError, surfaceHint, ValidationError } from "./errors.js";
 import { toOssie } from "./export.js";
 import { setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
@@ -942,15 +935,18 @@ export function buildParser(): Command<[], GlobalOptions> {
 }
 
 /**
- * Print an error on stderr, tagged with its code when it is a SelfGraph error.
+ * Print an error on stderr, with its code and repair hint when it is a SelfGraph error.
  *
- * @param message (string): the message.
+ * @param exc (unknown): the thrown value.
  * @param status (number): the exit code to return.
- * @param code (ErrorCode | undefined): the error code.
  * @return (number): the exit code.
  */
-function fail(message: string, status: number, code?: ErrorCode): number {
-  process.stderr.write(`${code ? `error[${code}]` : "error"}: ${message.trimEnd()}\n`);
+function fail(exc: unknown, status: number): number {
+  const text =
+    exc instanceof SelfGraphError
+      ? `error[${exc.code}]: ${surfaceHint(exc.message).trimEnd()}\nhint: ${exc.hint}`
+      : `error: ${(exc instanceof Error ? exc.message : String(exc)).trimEnd()}`;
+  process.stderr.write(`${text}\n`);
   return status;
 }
 
@@ -979,10 +975,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     if (exc instanceof SelfGraphError) {
       const usage = exc instanceof ValidationError || exc instanceof PromptTemplateError;
-      return fail(surfaceHint(exc.message), usage ? 2 : 1, exc.code);
+      return fail(exc, usage ? 2 : 1);
     }
     if ((exc as NodeJS.ErrnoException).code === "EPIPE") return 141;
-    return fail(exc instanceof Error ? exc.message : String(exc), 1);
+    return fail(exc, 1);
   } finally {
     setLogger(previous);
   }

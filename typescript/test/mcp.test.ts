@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 
-import { DOCS_URL } from "../src/errors.js";
+import { version } from "../package.json";
+import { HINTS } from "../src/errors.js";
 import { DEFAULT_SETTINGS, type GraphSettings, toNeo4jOntology } from "../src/index.js";
 import {
   buildServer,
@@ -103,8 +104,10 @@ describe("MCP run_cypher guard", () => {
         "(valid options: id, set_properties, remove_properties, event_time, evidence)",
       error_type: "ValidationError",
       code: "unknown_key",
+      field: "properties",
+      hint: HINTS.unknown_key,
       retryable: false,
-      docs: `${DOCS_URL}#unknown_key`,
+      docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#unknown_key`,
     });
   });
 });
@@ -330,10 +333,15 @@ describe("MCP tools over Kuzu", () => {
       expect(hints.check_answerable).toMatchObject({ readOnlyHint: true });
       expect(hints.create_entity).toMatchObject({ destructiveHint: false, idempotentHint: false });
       expect(hints.insert_facts).toMatchObject({ idempotentHint: true });
-      for (const [tool, args, message] of [
-        ["get_schema", { format: "bogus" }, "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'"],
-        ["create_entity", { name: "a" }, "invalid arguments: type: field required"],
-        ["list_entitys", {}, "unknown tool 'list_entitys'"],
+      for (const [tool, args, message, field] of [
+        [
+          "get_schema",
+          { format: "bogus" },
+          "invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'",
+          { field: "format" },
+        ],
+        ["create_entity", { name: "a" }, "invalid arguments: type: field required", { field: "type" }],
+        ["list_entitys", {}, "unknown tool 'list_entitys'", {}],
       ] as const) {
         const res = await client.callTool({ name: tool, arguments: args });
         expect(res.isError).toBe(true);
@@ -341,8 +349,10 @@ describe("MCP tools over Kuzu", () => {
           error: message,
           error_type: "ValidationError",
           code: "invalid_argument",
+          ...field,
+          hint: HINTS.invalid_argument,
           retryable: false,
-          docs: `${DOCS_URL}#invalid_argument`,
+          docs: `https://github.com/hydra-db/selfgraph/blob/ts-v${version}/docs/errors.md#invalid_argument`,
         });
       }
     } finally {

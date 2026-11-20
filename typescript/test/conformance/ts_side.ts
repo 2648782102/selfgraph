@@ -678,14 +678,14 @@ class Opaque {}
  * Run a call that should fail and return its error as the wire fields both SDKs report.
  *
  * @param call (() => Promise<unknown>): the call.
- * @return (Promise<object | string>): the error's toJSON() fields, or "accepted" when the call succeeds.
+ * @return (Promise<object | string>): the error's toJSON() fields with docs cut to its anchor, since each SDK links its own release, or "accepted" when the call succeeds.
  */
 async function errorOf(call: () => Promise<unknown>): Promise<object | string> {
   try {
     await call();
   } catch (exc) {
     if (!(exc instanceof SelfGraphError)) throw exc;
-    return exc.toJSON();
+    return { ...exc.toJSON(), docs: exc.docs.split("#")[1] };
   }
   return "accepted";
 }

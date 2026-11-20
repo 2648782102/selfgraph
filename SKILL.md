@@ -238,7 +238,7 @@ selfgraph mcp
 
 ## Errors
 
-Every error is a `SelfGraphError` with a stable `code`, `retryable`, and a `docs` link to the code's repair (all codes: `docs/errors.md#codes`). Branch on `code`, never on the message text. The CLI prints `error[<code>]: <message>` on stderr; an MCP error result is `{error, error_type, code, retryable, docs}`.
+Every error is a `SelfGraphError` with a stable `code`, a `hint` that says how to repair it, `retryable`, a `docs` link, and `field` when one argument, key, or setting is at fault (all codes: `docs/errors.md#codes`). Branch on `code`, never on the message text, and follow the `hint`. The CLI prints `error[<code>]: <message>` and then `hint: <hint>` on stderr; an MCP error result is `{error, error_type, code, field, hint, retryable, docs}`, without `field` when none is at fault.
 
 - Retry the same call only when `retryable` is true (`write_conflict`, `store_busy`). Inserts are idempotent upserts, so a retry never duplicates data.
 - Setup codes (`store_unreachable`, `store_locked`, `store_auth_failed`, `wrong_engine`, `invalid_setting`, `missing_package`) do not clear on retry; fix the setup the message names.

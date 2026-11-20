@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Mapping
 from typing import Any
 
-from ..errors import StoreError, TransientError, error_reason
+from ..errors import StoreError, TransientError, connection_reason
 from ..models import CypherResult, check_options
 from ._cypher import WRITE_COUNTERS, AutoCommitStore, CypherPrimitives, graph_properties
 
@@ -76,7 +76,7 @@ class FalkorDBStore(AutoCommitStore, CypherPrimitives):
                 self._graph = self._db.select_graph(self._graph_name)
             except Exception as exc:  # noqa: BLE001
                 raise StoreError(
-                    f"failed connecting to FalkorDB at {self._host}:{self._port}: {error_reason(exc)}",
+                    f"failed connecting to FalkorDB at {self._host}:{self._port}: {connection_reason(exc)}",
                     code="store_unreachable",
                 ) from exc
 

@@ -59,7 +59,7 @@ embedder.
 - Put docstrings only on functions and methods, in doxygen form: a one-line summary, then `@param <name> (<type>)` and `@return (<type>)`. Do not write module-level or class-level docstrings. Thin pass-through methods take no docstring.
 - Do not write narration comments. Keep only functional pragmas such as `# type:`, `# noqa`, and `# pragma`.
 - Do not use em dashes anywhere, in code or prose.
-- Raise every new failure with a code: the class default, or a narrower `code=` (`{ code }` in TypeScript). A new code goes in `ErrorCode` in `errors.py` and `errors.ts`, and a `docs/errors.md` section with its repair; `tests/test_errors.py` checks all three agree.
+- Raise every new failure with a code: the class default, or a narrower `code=` (`{ code }` in TypeScript). A new code goes in `ErrorCode` and `HINTS` in `errors.py`, in `HINTS` in `errors.ts`, and in a `docs/errors.md` section whose text is its hint; `tests/test_errors.py` and `typescript/test/errors.test.ts` check they agree. Pass `field=` (`{ field }`) when one argument, key, or setting is at fault.
 - Models are pydantic. IDs are deterministic and every insert is an idempotent upsert; preserve both properties.
 - Keep the public surface listed in each module's `__all__` and exposed through the typed resource classes.
 - A graph option that users set also goes through `runtime.py` (`GraphSettings`, so `SELFGRAPH_*` reads it), the CLI flags, the MCP server, `SyncSelfGraph`, and the matching docs page. `level` and `max_tier` are the model to follow.
