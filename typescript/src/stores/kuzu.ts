@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, SelfGraphError, StoreError, ValidationError } from "../errors.js";
+import { errorMessage, maskUri, SelfGraphError, StoreError, ValidationError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
@@ -137,6 +137,19 @@ function databasePath(path: string): string {
       ? join(homedir(), path.slice(1))
       : path,
   );
+}
+
+const SERVER_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+
+/**
+ * Whether a Kuzu path is actually a server URI, which Kuzu would turn into a
+ * directory named after the URI.
+ *
+ * @param path (string): the value given to KuzuStore.
+ * @return (boolean): true for bolt://, redis://, https:// and similar schemes.
+ */
+function serverUri(path: string): boolean {
+  return SERVER_SCHEME.test(path);
 }
 
 /**
@@ -329,6 +342,13 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     const size = options.max_db_size;
     if (size !== undefined && (typeof size !== "number" || !Number.isSafeInteger(size) || size < 1)) {
       throw new ValidationError(`max_db_size must be a positive integer of bytes, got ${pyRepr(size)}`);
+    }
+    if (serverUri(path)) {
+      throw new StoreError(
+        `KuzuStore takes a local path, not the server URI ${pyRepr(maskUri(path))}; ` +
+          "use Neo4jStore or HydraDBStore for a server, or pass a file path for Kuzu",
+        { code: "invalid_setting", field: "uri" },
+      );
     }
     this.path = databasePath(path);
     this.cacheKey = this.path === "" || this.path === ":memory:" ? Symbol() : this.path;

@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -12,13 +13,24 @@ from contextvars import ContextVar
 from functools import partial
 from typing import Any
 
-from ..errors import SelfGraphError, StoreError, ValidationError
+from ..errors import SelfGraphError, StoreError, ValidationError, mask_uri
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["KuzuStore"]
+
+_SERVER_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://", re.ASCII)
+
+
+def _server_uri(path: str) -> bool:
+    """Whether `path` is a server URI rather than a local database path.
+
+    @param path (str): the value given to KuzuStore.
+    @return (bool): True for bolt://, redis://, https:// and similar schemes.
+    """
+    return bool(_SERVER_SCHEME.match(path))
 
 
 def _normalize(value: Any) -> Any:
@@ -241,6 +253,13 @@ class KuzuStore(AutoCommitStore):
         max_db_size = db_kwargs.get("max_db_size")
         if max_db_size is not None and (type(max_db_size) is not int or max_db_size < 1):
             raise ValidationError(f"max_db_size must be a positive integer of bytes, got {max_db_size!r}")
+        if _server_uri(path):
+            raise StoreError(
+                f"KuzuStore takes a local path, not the server URI {mask_uri(path)!r}; "
+                "use Neo4jStore or HydraDBStore for a server, or pass a file path for Kuzu",
+                code="invalid_setting",
+                field="uri",
+            )
         path = os.path.expanduser(path)
         if path in ("", ":memory:"):
             key: object = object()

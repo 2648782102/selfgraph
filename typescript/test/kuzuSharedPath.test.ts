@@ -98,3 +98,19 @@ describe("two KuzuStore instances over one database", () => {
     await second.close();
   });
 });
+
+describe("KuzuStore path validation", () => {
+  it("refuses a server URI instead of creating a directory named after it", () => {
+    expect(() => new KuzuStore("bolt://u:hunter2@h:1")).toThrow(
+      expect.objectContaining({ name: "StoreError", code: "invalid_setting", field: "uri" }),
+    );
+    let message = "";
+    try {
+      new KuzuStore("bolt://u:hunter2@h:1");
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("bolt://***@h:1");
+    expect(message).not.toContain("hunter2");
+  });
+});
