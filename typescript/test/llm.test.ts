@@ -643,7 +643,7 @@ describe("LLM extraction through the AI SDK", () => {
         .catch((e: unknown) => e);
     try {
       expect(String(await call({ max_retries: 0 }))).toContain(
-        `LLM model "m" was not found for provider openai at ${base}`,
+        `LLM model 'm' was not found for provider openai at ${base}`,
       );
     } finally {
       await new Promise((resolve) => server.close(resolve));
