@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 from pydantic import ValidationError as PydanticValidationError
@@ -28,7 +29,6 @@ from ..models import (
     ExtractionInstructions,
     ExtractionPrompts,
     InsertWarning,
-    JsonValue,
     ParsedDocument,
     PreferenceInput,
     RelationInput,
@@ -58,7 +58,7 @@ class _RelOut(BaseModel):
     from_name: str
     type: str
     to_name: str
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
     event_time: str | None = None
     _evidence: EvidenceInput | None = PrivateAttr(default=None)
 
@@ -387,16 +387,16 @@ class LLMExtractor(_WarningSink):
         def add_relation(from_id: str, rtype: str, to_id: str, props=None, event_time=None, evidence=None) -> str:
             rid = _ids.relation_id(from_id, rtype, to_id)
             _reject_reserved_rel_type(_ids.normalize_rel_type(rtype), rtype)
+            _ids._reject_proto_keys(props)
+            _ids._require_clean_json("relation property", props)
             if rid not in relations:
-                relations[rid] = RelationInput(
-                    from_entity=from_id,
-                    type=rtype,
-                    to_entity=to_id,
-                    properties=dict(props or {}),
-                    event_time=event_time,
-                )
-            if evidence is not None and evidence not in relations[rid].evidence:
-                relations[rid].evidence.append(evidence)
+                relations[rid] = RelationInput(from_entity=from_id, type=rtype, to_entity=to_id)
+            relation = relations[rid]
+            relation.properties.update(props or {})
+            if event_time is not None:
+                relation.event_time = event_time
+            if evidence is not None and evidence not in relation.evidence:
+                relation.evidence.append(evidence)
             return rid
 
         promoted: list[_PrefOut] = []

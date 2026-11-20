@@ -95,27 +95,36 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
     @param value (object): the JSON-shaped value to validate.
     @param depth (int): the current nesting depth, for the recursion guard.
     @param safe_ints (bool): reject integers outside +/-(2**53 - 1), which JSON readers in other languages round.
-    @return (None): nothing; raises ValidationError on excess depth, a control/surrogate key, a surrogate value, an
-        unsafe integer, or a date or datetime.
+    @return (None): nothing; raises ValidationError on excess depth, a non-string or control/surrogate key, a surrogate
+        value, an unsafe integer, NaN or Infinity, a date or datetime, or any other non-JSON value.
     """
     if depth > _MAX_JSON_DEPTH:
         raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
     if isinstance(value, str):
         if _unstorable(value):
             raise ValidationError(f"{name} values cannot contain NUL or unpaired surrogate characters")
-    elif isinstance(value, int) and not isinstance(value, bool):
+    elif value is None or isinstance(value, bool):
+        return
+    elif isinstance(value, int):
         if safe_ints and abs(value) > MAX_SAFE_INTEGER:
             raise ValidationError(f"{name} integer {value} is outside the safe range; store it as a string")
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValidationError(f"{name} cannot hold NaN or Infinity; use a finite number or a string")
     elif isinstance(value, date):
         raise ValidationError(f"{name} cannot hold {type_name(value)} values; use an ISO 8601 string")
     elif isinstance(value, Mapping):
         for key, item in value.items():
-            if isinstance(key, str) and _has_control(key):
+            if not isinstance(key, str):
+                raise ValidationError(f"{name} keys must be strings")
+            if _has_control(key):
                 raise ValidationError(f"{name} keys cannot contain control or surrogate characters")
             _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
     elif isinstance(value, list | tuple):
         for item in value:
             _require_clean_json(name, item, depth + 1, safe_ints=safe_ints)
+    else:
+        raise ValidationError(f"{name} cannot hold {type_name(value)} values; use plain JSON")
 
 
 def type_name(value: object) -> str:

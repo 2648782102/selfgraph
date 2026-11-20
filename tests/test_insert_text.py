@@ -17,6 +17,7 @@ from selfgraph import (
     ValidationError,
 )
 from selfgraph import ids as _ids
+from selfgraph.extraction.chunking import chunk_text
 from selfgraph.extraction.extractor import (
     LLMExtractor,
     _DecisionsOut,
@@ -29,6 +30,146 @@ from selfgraph.extraction.extractor import (
     _StepOut,
 )
 from selfgraph.extraction.prompts import render
+
+
+@pytest.mark.parametrize(
+    ("dates", "expected"),
+    [
+        ([None, "2020-01-01"], "2020-01-01"),
+        (["2020-01-01", None], "2020-01-01"),
+        ([None, None], None),
+        (["2020-01-01", "2020-01-01"], "2020-01-01"),
+        (["2020-01-01", "2022-01-01"], "2022-01-01"),
+        (["2022-01-01", "2020-01-01"], "2020-01-01"),
+        ([None, "2020-01-01", "2022-01-01"], "2022-01-01"),
+        (["not a date", "2020-01-01"], "2020-01-01"),
+        (["2020-01-01", "not a date"], "2020-01-01"),
+        (["0001", None], "0001-01-01"),
+    ],
+)
+def test_repeated_extracted_relations_keep_the_last_valid_date(dates, expected):
+    facts = LLMExtractor._assemble(
+        [EntityInput(type="Person", name="Jane"), EntityInput(type="Company", name="Acme")],
+        [_RelOut(from_name="Jane", type="WORKS_AT", to_name="Acme", event_time=date) for date in dates],
+        [],
+        [],
+    )
+    [rel] = facts.relations
+    assert rel.event_time == _lenient_event_time(expected)
+    assert (rel.from_entity, rel.type, rel.to_entity) == ("person:jane", "WORKS_AT", "company:acme")
+
+
+@pytest.mark.parametrize("multiple_chunks", [False, True])
+def test_repeated_extracted_relations_merge_dates_properties_and_evidence(multiple_chunks):
+    first = [
+        {"event_time": "2020-01-01", "properties": {"role": "Engineer", "remove": "old", "nested": {"old": 1}}},
+        {"event_time": None, "properties": {"team": "Platform"}},
+    ]
+    later = [
+        {"event_time": "2022-01-01", "properties": {"role": "Lead", "remove": None, "nested": {"new": 2}}},
+        {"event_time": "not a date", "properties": {"office": "London"}},
+        {"event_time": None},
+    ]
+
+    class DatedLLM(FakeLLM):
+        relation_calls = 0
+
+        async def generate(self, *, system, user, output):
+            if output is _RelationsOut:
+                self.relation_calls += 1
+                rows = (first if self.relation_calls == 1 else later) if multiple_chunks else first + later
+                return _RelationsOut(
+                    relations=[_RelOut(from_name="Jane", type="WORKS_AT", to_name="Acme", **row) for row in rows]
+                )
+            return await super().generate(system=system, user=user, output=output)
+
+    text = "Jane works at Acme." + (" context" * 650 if multiple_chunks else "")
+    chunks = chunk_text(text)
+    assert (len(chunks) > 1) == multiple_chunks
+    llm = DatedLLM(extracting_llm([("Person", "Jane"), ("Company", "Acme")], []).responses)
+    g = fresh_graph("chunk-dates", llm=llm, resolver="exact")
+    result = run(g.insert.text(text, source_id="dated-chunks"))
+    [rel] = run(g.relations.list()).items
+    assert rel.event_time == utc(2022)
+    assert rel.properties == {"role": "Lead", "team": "Platform", "office": "London", "nested": {"new": 2}}
+    assert len(result.relations) == 1
+    assert llm.relation_calls == len(chunks)
+    evidence = run(g.relations.evidence(rel.id)).items
+    assert {e.chunk_id for e in evidence} == {_ids.chunk_id(result.source_version, c.index) for c in chunks}
+    assert rel.source_count == 1
+    assert [r.id for r in run(g.retrieve("Jane", as_of="2023-01-01")).subgraph.relations] == [rel.id]
+
+
+def _relations_llm(rows):
+    return FakeLLM(
+        {
+            **extracting_llm([("Person", "Jane"), ("Company", "Acme")]).responses,
+            "_RelationsOut": {
+                "relations": [{"from_name": "Jane", "type": "WORKS_AT", "to_name": "Acme", **r} for r in rows]
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([{"properties": {"role": None}}], {"team": "Platform"}),
+        (
+            [{"properties": {"role": "a", "office": "London"}}, {"properties": {"role": None}}],
+            {"team": "Platform", "office": "London"},
+        ),
+        ([{"properties": {"role": None}}, {"properties": {"role": "b"}}], {"team": "Platform", "role": "b"}),
+    ],
+)
+def test_extracted_null_property_clears_the_stored_key(rows, expected):
+    g = fresh_graph("null-props", llm=_relations_llm(rows), resolver="exact")
+    run(
+        g.insert.facts(
+            {
+                "entities": [{"type": "Person", "name": "Jane"}, {"type": "Company", "name": "Acme"}],
+                "relations": [
+                    {
+                        "from_entity": "person:jane",
+                        "type": "WORKS_AT",
+                        "to_entity": "company:acme",
+                        "properties": {"role": "x", "team": "Platform"},
+                    }
+                ],
+            }
+        )
+    )
+    res = run(g.insert.text("Jane works at Acme.", source_id="null-props"))
+    assert res.warnings == []
+    [rel] = run(g.relations.list()).items
+    assert rel.properties == expected
+    assert rel.revision == 2
+
+
+def test_extracted_relation_with_a_proto_or_control_property_key_or_non_json_value_is_dropped_with_a_warning():
+    bad = [
+        {"__proto__": 1},
+        {"nested": {"__proto__": {}}},
+        {"a\x00b": 1},
+        {"nested": [{"a\x00b": 1}]},
+        {"when": utc(2022, 1, 1)},
+        {"p": float("inf")},
+        {"p": float("nan")},
+    ]
+    rows = [{"properties": {"ok": 1}}, *({"properties": p, "event_time": "2022-01-01"} for p in bad)]
+    g = fresh_graph("bad-prop-keys", llm=_relations_llm(rows), resolver="exact")
+    res = run(g.insert.text("Jane works at Acme.", source_id="bad-prop-keys"))
+    proto = "dropped an extracted relation: property and external id keys cannot be '__proto__'"
+    control = "dropped an extracted relation: relation property keys cannot contain control or surrogate characters"
+    date = "dropped an extracted relation: relation property cannot hold Date values; use an ISO 8601 string"
+    finite = (
+        "dropped an extracted relation: relation property cannot hold NaN or Infinity; use a finite number or a string"
+    )
+    assert [(w.code, w.message) for w in res.warnings] == [
+        ("extraction_partial_failure", m) for m in [proto, proto, control, control, date, finite, finite]
+    ]
+    [rel] = run(g.relations.list()).items
+    assert (rel.properties, rel.event_time) == ({"ok": 1}, None)
 
 
 def _full_responses():

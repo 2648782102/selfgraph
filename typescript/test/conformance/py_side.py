@@ -14,7 +14,7 @@ from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _kv
 from selfgraph.errors import SelfGraphError
-from selfgraph.extraction.extractor import _lenient_event_time
+from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
@@ -344,6 +344,34 @@ def tables_reference_errors():
     return messages
 
 
+def repeated_extracted_relations():
+    """Assemble repeated extracted relations, including rows with a __proto__ or NUL property key, with their warnings.
+
+    @return (dict): the assembled facts and the warnings for the dropped rows.
+    """
+    rows = [
+        {"event_time": "2022-01-01", "properties": {"role": "Engineer", "remove": "old", "nested": {"a": 1}}},
+        {"event_time": None, "properties": {"office": "London"}},
+        {"event_time": "2020-01-01", "properties": {"role": "Lead", "remove": None, "nested": {"b": 2}}},
+        {"event_time": "not a date"},
+        {"event_time": "2024-01-01", "properties": {"__proto__": 1}},
+        {"event_time": "2024-01-01", "properties": {"nested": {"__proto__": {}}}},
+        {"event_time": "2024-01-01", "properties": {"a\x00b": 1}},
+        {"event_time": "2024-01-01", "properties": {"nested": [{"a\x00b": 1}]}},
+        {"type": "FOUNDED", "properties": {"__proto__": 1}},
+        {"type": "ADVISES", "properties": {"a\x00b": 1}},
+    ]
+    warnings = []
+    facts = LLMExtractor._assemble(
+        [],
+        [_RelOut(**{"from_name": "Jane", "type": "WORKS_AT", "to_name": "Acme", **row}) for row in rows],
+        [],
+        [],
+        warnings,
+    )
+    return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
+
+
 def schema_warnings():
     """Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
 
@@ -463,6 +491,7 @@ def schema_warnings():
             for q in ("Employees", "staff", "personnel")
         ],
         "lenient_event_times": [json_iso(_lenient_event_time(value)) for value in LENIENT_EVENT_TIMES],
+        "repeated_extracted_relations": repeated_extracted_relations(),
     }
 
 

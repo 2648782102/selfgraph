@@ -14,6 +14,7 @@ import {
   type InsertWarning,
   insertWarning,
   issueLine,
+  type JsonObject,
   LLM_DEFAULTS,
   type ParsedDocument,
   type ParsedExtraction,
@@ -24,7 +25,7 @@ import {
 import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
 import type { Extractor, LLMClient } from "../protocols.js";
 import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
-import { checkOptions, keysOf, requireOptionalText } from "../validate.js";
+import { checkOptions, keysOf, rejectProtoKeys, requireCleanJson, requireOptionalText } from "../validate.js";
 import { checkPrompts, effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
 const EntitiesOut = z.object({
@@ -37,8 +38,8 @@ const RelationsOut = z.object({
       from_name: z.string(),
       type: z.string(),
       to_name: z.string(),
-      properties: z.record(z.string(), z.unknown()).default({}),
       event_time: z.string().nullable(),
+      properties: z.record(z.string(), z.unknown()).optional(),
     }),
   ),
 });
@@ -234,7 +235,10 @@ export function assembleExtraction(
     return ids.entityId(ent.type, ent.name);
   };
 
-  const relations = new Map<string, Record<string, unknown> & { evidence: ChunkEvidence[] }>();
+  const relations = new Map<
+    string,
+    Record<string, unknown> & { properties: JsonObject; event_time: Date | null; evidence: ChunkEvidence[] }
+  >();
   const addRelation = (
     fromId: string,
     rtype: string,
@@ -245,17 +249,22 @@ export function assembleExtraction(
   ): string => {
     const rid = ids.relationId(fromId, rtype, toId);
     rejectReservedRelType(ids.normalizeRelType(rtype), rtype);
+    rejectProtoKeys(props);
+    requireCleanJson("relation property", props);
     if (!relations.has(rid)) {
       relations.set(rid, {
         from_entity: fromId,
         type: rtype,
         to_entity: toId,
-        properties: { ...(props ?? {}) },
-        event_time: eventTime ?? null,
+        properties: {},
+        event_time: null,
         evidence: [],
       });
     }
-    const cited = relations.get(rid)!.evidence;
+    const relation = relations.get(rid)!;
+    Object.assign(relation.properties, props);
+    if (eventTime != null) relation.event_time = eventTime;
+    const cited = relation.evidence;
     if (evidence && !cited.some((ev) => ev.chunk_id === evidence.chunk_id && ev.source_id === evidence.source_id)) {
       cited.push(evidence);
     }
@@ -438,7 +447,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
     const step = <T>(
       kind: ObjectType,
       schema: z.ZodType<T>,
-      sink: (result: T, evidence: ChunkEvidence | null) => void,
+      sink: (result: T, evidence: ChunkEvidence | null, raw: unknown) => void,
     ) => ({
       kind,
       run: async (text: string) => {
@@ -452,13 +461,19 @@ export class LLMExtractor extends WarningSink implements Extractor {
             code: "invalid_llm_output",
           });
         }
-        return (evidence: ChunkEvidence | null) => sink(parsed.data, evidence);
+        return (evidence: ChunkEvidence | null) => sink(parsed.data, evidence, result);
       },
     });
     const steps = [
       step("entities", EntitiesOut, (r) => rawEntities.push(...r.entities)),
-      step("relations", RelationsOut, (r, evidence) =>
-        rawRelations.push(...r.relations.map((x) => ({ ...x, evidence }))),
+      step("relations", RelationsOut, (r, evidence, raw) =>
+        rawRelations.push(
+          ...r.relations.map((x, i) => ({
+            ...x,
+            properties: (raw as z.input<typeof RelationsOut>).relations[i]!.properties ?? x.properties,
+            evidence,
+          })),
+        ),
       ),
       step("preferences", PreferencesOut, (r) => rawPreferences.push(...r.preferences)),
       step("decisions", DecisionsOut, (r, evidence) =>

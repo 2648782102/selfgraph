@@ -84,6 +84,7 @@ export function requireCleanJson(name: string, value: unknown, depth = 0, safeIn
   if (depth > MAX_JSON_DEPTH) {
     throw new ValidationError(`${name} is nested too deeply; keep it under ${MAX_JSON_DEPTH} levels`);
   }
+  if (value === null || value === undefined || typeof value === "boolean") return;
   if (typeof value === "string") {
     if (isUnstorable(value)) {
       throw new ValidationError(`${name} values cannot contain NUL or unpaired surrogate characters`);
@@ -93,6 +94,9 @@ export function requireCleanJson(name: string, value: unknown, depth = 0, safeIn
       throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`);
     }
   } else if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new ValidationError(`${name} cannot hold NaN or Infinity; use a finite number or a string`);
+    }
     if (safeInts && Number.isInteger(value) && !Number.isSafeInteger(value)) {
       throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`);
     }
@@ -105,6 +109,8 @@ export function requireCleanJson(name: string, value: unknown, depth = 0, safeIn
       if (hasControl(key)) throw new ValidationError(`${name} keys cannot contain control or surrogate characters`);
       requireCleanJson(name, item, depth + 1, safeInts);
     }
+  } else {
+    throw new ValidationError(`${name} cannot hold ${typeName(value)} values; use plain JSON`);
   }
 }
 
