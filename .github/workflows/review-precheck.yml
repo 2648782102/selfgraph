@@ -1,0 +1,35 @@
+name: Review precheck
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  review-precheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: pip install ".[dev,tokenizer,kuzu]"
+      - run: npm ci
+        working-directory: typescript
+      - run: git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+      - run: python scripts/precheck.py --base "origin/${BASE}"
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          SELFGRAPH_TEST_STORE: kuzu
+          SELFGRAPH_TEST_STORES: kuzu
+          PR_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
