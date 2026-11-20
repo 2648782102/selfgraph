@@ -388,6 +388,21 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
     assert "ignored" not in capsys.readouterr().err
 
 
+def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):
+    uri = str(tmp_path / "export.kuzu")
+    assert main(["--store", "kuzu", "--uri", uri, "entity", "create", "--name", "Ada", "--type", "Person"]) == 0
+    target = tmp_path / "notes"
+    target.write_text("not a directory")
+    capsys.readouterr()
+
+    assert main(["--store", "kuzu", "--uri", uri, "export", "obsidian", str(target)]) == 2
+    err = capsys.readouterr().err
+    assert "error[invalid_argument]: cannot write the vault to" in err
+    assert "File exists" in err
+    assert "field: directory" in err
+    assert "Traceback" not in err
+
+
 def test_version_and_help_text(capsys):
     for flag in ("--version", "-V"):
         with pytest.raises(SystemExit) as exc:

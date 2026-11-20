@@ -275,10 +275,15 @@ async def _schema_export(graph, args):
 async def _export_obsidian(graph, args):
     folder = Path(args.directory)
     notes = await graph.export_obsidian()
-    for path, text in notes.items():
-        target = folder / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+    try:
+        for path, text in notes.items():
+            target = folder / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise ValidationError(
+            f"cannot write the vault to {str(folder)!r}: {exc.strerror or exc}", field="directory"
+        ) from exc
     return {"directory": str(folder), "notes": len(notes)}
 
 

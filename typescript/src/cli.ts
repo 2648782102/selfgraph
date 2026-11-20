@@ -805,10 +805,17 @@ export function buildParser(): Command<[], GlobalOptions> {
     .action((directory, _o, cmd) =>
       emit(cmd, async (g) => {
         const notes = await g.exportObsidian();
-        for (const [path, text] of Object.entries(notes)) {
-          const target = join(directory, path);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, text, "utf8");
+        try {
+          for (const [path, text] of Object.entries(notes)) {
+            const target = join(directory, path);
+            mkdirSync(dirname(target), { recursive: true });
+            writeFileSync(target, text, "utf8");
+          }
+        } catch (exc) {
+          const reason = (exc as NodeJS.ErrnoException).message;
+          throw new ValidationError(`cannot write the vault to ${pyRepr(directory)}: ${reason}`, {
+            field: "directory",
+          });
         }
         return { directory: normalize(directory).replace(/(.)\/+$/, "$1"), notes: Object.keys(notes).length };
       }),

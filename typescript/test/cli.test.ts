@@ -72,6 +72,20 @@ describe("built CLI against Kuzu", () => {
     });
   });
 
+  it("reports an export filesystem error with a code, a field, and no traceback", () => {
+    const ns = ["--namespace", "cli_export_error"];
+    seed(ns, "Ada");
+    const target = join(dir, "notes");
+    writeFileSync(target, "not a directory");
+
+    const result = cli([...kuzu, ...ns, "export", "obsidian", target]);
+
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("error[invalid_argument]: cannot write the vault to");
+    expect(result.err).toContain("field: directory");
+    expect(result.err).not.toContain("stack");
+  });
+
   it("prints init, the version, and help, warning only about flags kuzu ignores", () => {
     const ok = cli(["init"], { env: { HOME: join(dir, "home") } });
     expect(ok.code).toBe(0);
