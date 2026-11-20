@@ -1186,18 +1186,24 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   await replacedSrc.relations.certify(rv1.relations[1]!.id, { by: "hr" });
   const rv2 = await replacedSrc.insert.text("Bob works at Globex.", { source_id: "hr", replace_source: true });
   await replacedSrc.insert.facts({ entities: [{ type: "Thing", name: "Initech" }] });
-  await replacedSrc.relations.create("thing:bob", "RELATED_TO", "thing:initech", {
+  const manual = await replacedSrc.relations.create("thing:bob", "RELATED_TO", "thing:initech", {
     evidence: [{ source_id: "hr", quote: "hand" }],
   });
   const rv3 = await replacedSrc.insert.text("Alice works at Acme. Bob works at Globex. Bob works at Initech.", {
     source_id: "hr",
     replace_source: true,
   });
+  const rv4 = await replacedSrc.insert.text("Alice works at Acme.", { source_id: "hr", replace_source: true });
+  const keptManual = await replacedSrc.relations.get(manual.id);
+  if (keptManual === null || rv4.source_diff!.retired.includes(manual.id))
+    throw new Error("manual evidence was retired");
   out.replace_source_steps = toJsonable({
     v2_diff: rv2.source_diff,
     v2_warnings: rv2.warnings.map((w) => w.code),
     v3_diff: rv3.source_diff,
     v3_warnings: rv3.warnings.map((w) => w.code),
+    v4_diff: rv4.source_diff,
+    v4_manual_current: keptManual.is_current,
   });
   const storedSrc = new SelfGraph(graph.store, {
     namespace: `${graph.namespace}_replace_stored`,

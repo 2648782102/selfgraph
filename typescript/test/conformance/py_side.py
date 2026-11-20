@@ -1165,18 +1165,23 @@ async def write(graph):
     await replaced_src.relations.certify(rv1.relations[1].id, by="hr")
     rv2 = await replaced_src.insert.text("Bob works at Globex.", source_id="hr", replace_source=True)
     await replaced_src.insert.facts({"entities": [{"type": "Thing", "name": "Initech"}]})
-    await replaced_src.relations.create(
+    manual = await replaced_src.relations.create(
         "thing:bob", "RELATED_TO", "thing:initech", evidence=[{"source_id": "hr", "quote": "hand"}]
     )
     rv3 = await replaced_src.insert.text(
         "Alice works at Acme. Bob works at Globex. Bob works at Initech.", source_id="hr", replace_source=True
     )
+    rv4 = await replaced_src.insert.text("Alice works at Acme.", source_id="hr", replace_source=True)
+    kept_manual = await replaced_src.relations.get(manual.id)
+    assert kept_manual is not None and manual.id not in rv4.source_diff.retired, "manual evidence was retired"
     out["replace_source_steps"] = to_jsonable(
         {
             "v2_diff": rv2.source_diff,
             "v2_warnings": [w.code for w in rv2.warnings],
             "v3_diff": rv3.source_diff,
             "v3_warnings": [w.code for w in rv3.warnings],
+            "v4_diff": rv4.source_diff,
+            "v4_manual_current": kept_manual.is_current,
         }
     )
     stored_src = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_replace_stored", extraction="regex")
