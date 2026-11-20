@@ -154,8 +154,6 @@ def _chunk_by_chars(text: str, *, size: int, overlap: int) -> list[Chunk]:
     size = max(1, size)
     overlap = max(0, min(overlap, size - 1))
     chunks: list[Chunk] = []
-    # Leading whitespace is not part of the first word: start at the first
-    # non-space, so the word gets the whole window and no chunk exceeds size.
     start = len(text) - len(text.lstrip())
     n = len(text)
     index = 0
