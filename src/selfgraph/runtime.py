@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from ._cypher_guard import blank_lexical_tokens
 from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
@@ -82,8 +83,6 @@ _IGNORED_BY_STORE = {"kuzu": ("auth", "database")}
 _FALKOR_SCHEMES = ("redis", "rediss", "falkor", "falkors")
 _FALKOR_ADDRESS = "host:port or a redis://, rediss://, falkor://, or falkors:// URL"
 _PARAM_REF = re.compile(r"\$(\w+)")
-_LINE_TERMINATORS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
-_BLANK = "\x00"
 _Hinted = TypeVar("_Hinted", InsertResult, PruneResult)
 
 
@@ -184,69 +183,6 @@ def _json_setting(value: Any, what: str) -> Any:
     if value.lstrip().startswith("{"):
         return parse_json(value, f" in the inline {what}")
     return read_json(value)
-
-
-def blank_lexical_tokens(query: str) -> str:
-    """Blank string literals, backtick identifiers, and comments with one char scan that matches engine lexing.
-
-    Quoted strings use backslash escaping; a backtick identifier escapes a backtick by doubling it; a line
-    comment ends at any engine line terminator (not only newline); a block comment ends at the first '*/'. An
-    unterminated token leaves the rest of the query visible so a hidden write keyword is still scanned, which
-    makes the guard fail closed rather than desynchronise on a mis-modelled token boundary.
-
-    @param query (str): the raw Cypher statement.
-    @return (str): the query with each lexical token replaced by one NUL character.
-    """
-    out: list[str] = []
-    i, n = 0, len(query)
-    while i < n:
-        ch = query[i]
-        if ch in "'\"":
-            j = i + 1
-            while j < n:
-                if query[j] == "\\":
-                    j += 2
-                    continue
-                if query[j] == ch:
-                    j += 1
-                    break
-                j += 1
-            else:
-                break
-            out.append(_BLANK)
-            i = j
-        elif ch == "`":
-            j = i + 1
-            while j < n:
-                if query[j] == "`":
-                    if j + 1 < n and query[j + 1] == "`":
-                        j += 2
-                        continue
-                    j += 1
-                    break
-                j += 1
-            else:
-                break
-            out.append(_BLANK)
-            i = j
-        elif ch == "/" and i + 1 < n and query[i + 1] == "*":
-            end = query.find("*/", i + 2)
-            if end == -1:
-                break
-            out.append(_BLANK)
-            i = end + 2
-        elif ch == "/" and i + 1 < n and query[i + 1] == "/":
-            j = i + 2
-            while j < n and query[j] not in _LINE_TERMINATORS:
-                j += 1
-            out.append(_BLANK)
-            i = j
-        else:
-            out.append(ch)
-            i += 1
-    if i < n:
-        out.append(query[i:])
-    return "".join(out)
 
 
 _PATTERN_NAMES = re.compile(

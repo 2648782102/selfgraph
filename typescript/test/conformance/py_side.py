@@ -782,6 +782,8 @@ async def choice_errors(graph):
     works_at = ids.relation_id("person:jane-doe", "WORKS_AT", "company:acme")
     dec = ids.decision_id("person:jane-doe", "Pick HydraDB")
     return {
+        "cypher_query_length": await error_of(graph.run_cypher("RETURN 1 // " + "é" * 32_768)),
+        "cypher_keyword_boundary": {"blocked": mcp_server._is_blocked_query("RETURN 42SET")},
         "proto_value_type": await error_of(
             graph.insert.facts({"entities": [{"type": "Person", "name": "Proto", "external_ids": {"__proto__": 1}}]})
         ),

@@ -2429,6 +2429,10 @@
   "SHOW TRANSACTIONS YIELD transactionId AS t TERMINATE TRANSACTIONS t YIELD transactionId AS z RETURN z": true,
   "RETURN 1; ANALYZE GRAPH": true,
   "RETURN 1; MATCH (n) RETURN n;": false,
+  "RETURN 42SET": true,
+  "RETURN .5SET": true,
+  "RETURN 1.SET": true,
+  "RETURN offset42SET": false,
   "": false,
   "   ": false,
   "foo": true

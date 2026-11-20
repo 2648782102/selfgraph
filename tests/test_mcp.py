@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+from unittest.mock import AsyncMock
 
 import pytest
 from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, error_links, mcp_session, preference_update_recorder, run
@@ -9,6 +10,7 @@ from helpers import AB_FACTS, HYDRADB, RAW_CYPHER, error_links, mcp_session, pre
 import selfgraph
 import selfgraph.mcp.server as srv
 from selfgraph.errors import HINTS, WARNING_HINTS, SelfGraphError, ValidationError
+from selfgraph.models import CypherResult
 
 _HAS_MCP = importlib.util.find_spec("mcp") is not None
 needs_mcp = pytest.mark.skipif(not _HAS_MCP, reason="mcp is not installed")
@@ -176,6 +178,38 @@ def test_run_cypher_guard_rejects_bypasses():
             run(srv.run_cypher(query))
     for query in READS:
         assert not srv._is_blocked_query(query), query
+
+
+def test_run_cypher_guard_recognizes_adjacent_keyword_tokens():
+    for fragment in ("42SET", ".5SET", "1.SET", "1.5e+2SET", "'text'SET", "/* text */SET", "]SET"):
+        assert srv._is_blocked_query(f"RETURN {fragment}"), fragment
+    for fragment in ("offset42SET", "n.set", "{set: 42}", "'42SET'", ".5e+2"):
+        assert not srv._is_blocked_query(f"RETURN {fragment}"), fragment
+
+
+def test_raw_cypher_limits_before_store_dispatch():
+    store = AsyncMock()
+    store.run_cypher.return_value = CypherResult()
+    graph = selfgraph.SelfGraph(store=store)
+    prefix = "RETURN 1 // "
+    exact_bytes = prefix + "é" * ((65_536 - len(prefix)) // 2)
+    for query, limit in (
+        (exact_bytes + "é", "maximum length of 65536 UTF-8 bytes"),
+        ("RETURN " + "([{item:" * 11 + "1" + "}])" * 11, "maximum nesting depth of 32"),
+    ):
+        with pytest.raises(ValidationError, match=limit) as exc:
+            run(graph.run_cypher(query))
+        assert (exc.value.code, exc.value.field) == ("cypher_query_limit", "query")
+    store.initialize.assert_not_called()
+    store.run_cypher.assert_not_called()
+    ignored = "([{ " * 33
+    for query in (
+        exact_bytes,
+        "RETURN " + "(" * 32 + "1" + ")" * 32,
+        f"RETURN '{ignored}' AS `{ignored}` /* {ignored} */",
+    ):
+        assert run(graph.run_cypher(query)) == CypherResult()
+        store.run_cypher.assert_awaited_with(query, None)
 
 
 def test_event_time_and_metadata_reach_the_sdk_and_empty_updates_fail():

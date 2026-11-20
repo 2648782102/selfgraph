@@ -122,6 +122,13 @@ ask the user to.
 `run_cypher` runs a single read. Write through the typed tools instead. Do not
 reword the query to get a write past the guard.
 
+#### `cypher_query_limit`
+
+Shorten the Cypher statement or reduce its delimiter nesting before trying again.
+
+Raw Cypher is limited to 65,536 UTF-8 bytes and 32 nested delimiters. The
+error identifies which limit the `query` exceeded.
+
 ### Graph state
 
 #### `not_found`
