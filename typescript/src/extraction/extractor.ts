@@ -37,6 +37,7 @@ const RelationsOut = z.object({
       from_name: z.string(),
       type: z.string(),
       to_name: z.string(),
+      properties: z.record(z.string(), z.unknown()).default({}),
       event_time: z.string().nullable(),
     }),
   ),
