@@ -238,6 +238,13 @@ def test_every_input_code_exits_two_whatever_class_raised_it(capsys, monkeypatch
     assert "field: uri" in err
 
 
+def test_a_cypher_query_limit_exits_two(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN 1 // " + " " * 65_536) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error[cypher_query_limit]: ")
+    assert "field: query" in err
+
+
 def test_setting_and_runtime_codes_take_their_own_exit_codes(capsys, tmp_path):
     from selfgraph import NotFoundError
 

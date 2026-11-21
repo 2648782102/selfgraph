@@ -94,6 +94,7 @@ _USAGE_CODES = frozenset(
         "invalid_cursor",
         "invalid_resolver_decision",
         "read_only_query",
+        "cypher_query_limit",
         "invalid_prompt_template",
     }
 )

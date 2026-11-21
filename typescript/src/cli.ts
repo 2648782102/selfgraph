@@ -75,6 +75,7 @@ const USAGE_CODES: ReadonlySet<string> = new Set([
   "invalid_cursor",
   "invalid_resolver_decision",
   "read_only_query",
+  "cypher_query_limit",
   "invalid_prompt_template",
 ]);
 const NEO4J_KEYS = ["node_types", "relationship_types", "patterns", "constraints", "nodeTypes", "relationshipTypes"];
