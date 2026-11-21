@@ -57,7 +57,6 @@ const PAGE = 500;
 const MAX_POOL = 5000;
 const SEED_PAGE = 5000;
 const NEIGHBOR_PARTS = 8;
-const MAX_PASSAGE_SOURCES = 12;
 const MAX_PASSAGES = 6;
 const PASSAGE_BUDGET_PERCENT = 60;
 const BM25_K1 = 2.0;
@@ -759,6 +758,50 @@ function quotable(version: Props | undefined, asOf: ops.AsOf | null): boolean {
   );
 }
 
+/**
+ * Read the stripped, non-empty chunk texts of source versions in chunk order, a batch per query.
+ *
+ * @param store (GraphPrimitives): the graph store.
+ * @param ns (string): the namespace.
+ * @param versions (string[]): the source version ids.
+ * @return (Map<string, string[]>): each source version's chunk texts, in chunk order.
+ */
+async function chunkTexts(store: GraphPrimitives, ns: string, versions: string[]): Promise<Map<string, string[]>> {
+  const edges = await ops.edgesAt(
+    store,
+    ns,
+    { from_label: L_SOURCE_VERSION, to_label: L_CHUNK, type: R_HAS_CHUNK },
+    "from_in",
+    versions,
+  );
+  const chunks = await ops.nodesById(
+    store,
+    ns,
+    L_CHUNK,
+    edges.map((edge) => edge.to_id),
+  );
+  const ordered = new Map<string, Array<[number, string]>>(versions.map((sv) => [sv, []]));
+  for (const edge of edges) {
+    const chunk = chunks.get(edge.to_id)!;
+    const text = typeof chunk.text === "string" ? pyStrip(chunk.text) : "";
+    if (text) ordered.get(edge.from_id)!.push([Math.trunc(Number(chunk.index)), text]);
+  }
+  return new Map([...ordered].map(([sv, found]) => [sv, found.sort((a, b) => a[0] - b[0]).map(([, text]) => text)]));
+}
+
+/**
+ * Gather the most query-relevant source passages behind the retrieved entities.
+ *
+ * Every usable source version of every entity is scored, so a passage is never cut before it is ranked. Chunk texts are read a batch of versions at a time, and only the best MAX_PASSAGES distinct ones are kept between batches. A passage ranks by the query tokens it holds, then by the closeness of the nearest entity that cites its version, then by first read.
+ *
+ * @param store (GraphPrimitives): the open graph store to read.
+ * @param ns (string): the namespace to read.
+ * @param entities (Entity[]): the collected entities.
+ * @param dist (Map<string, number>): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
+ * @param queryTokens (Set<string>): the content tokens from the query.
+ * @param asOf (ops.AsOf | null): skip source versions that took effect after its valid time or were written after its known time.
+ * @return (string[]): passage texts, most query-relevant first; a version replaced by a newer one of its source (insert.text with replace_source) by then is skipped.
+ */
 async function collectPassages(
   store: GraphPrimitives,
   ns: string,
@@ -771,10 +814,9 @@ async function collectPassages(
   const svDist = new Map<string, number>();
   const usable = new Map<string, boolean>();
   for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
-    if (svDist.size >= MAX_PASSAGE_SOURCES) break;
     if (!e.source_count) continue;
     const fetch = ops.nodeListing(store, ns, L_EVIDENCE, { equals: { target_id: e.id } });
-    for (let skip = 0; svDist.size < MAX_PASSAGE_SOURCES; ) {
+    for (let skip = 0; ; ) {
       const rows = await fetch(skip, PAGE);
       const unseen = [...new Set(rows.map((r) => r.source_version as string).filter((sv) => !usable.has(sv)))];
       const versions = await ops.nodesById(store, ns, L_SOURCE_VERSION, unseen);
@@ -784,38 +826,27 @@ async function collectPassages(
         if (!usable.get(sv)) continue;
         if (asOf !== null && !ops.knownBy(fromIso(row.created_at), asOf.known)) continue;
         if (!svDist.has(sv)) svDist.set(sv, distOf(e.id));
-        if (svDist.size >= MAX_PASSAGE_SOURCES) break;
       }
       if (rows.length < PAGE) break;
       skip += rows.length;
     }
   }
 
-  const candidates: Array<[number, number, string]> = [];
-  for (const [sv, d] of svDist) {
-    const chunks = await store.childNodes(ns, L_SOURCE_VERSION, sv, R_HAS_CHUNK, L_CHUNK);
-    chunks.sort((a, b) => Math.trunc(Number(a.index)) - Math.trunc(Number(b.index)));
-    for (const chunk of chunks) {
-      const text = typeof chunk.text === "string" ? pyStrip(chunk.text) : "";
-      if (text) {
-        let overlap = 0;
-        for (const t of tokens(text)) if (queryTokens.has(t)) overlap++;
-        candidates.push([overlap, d, text]);
+  type Ranked = [string, [number, number, number]];
+  const byRank = (a: Ranked, b: Ranked): number => a[1][0] - b[1][0] || a[1][1] - b[1][1] || a[1][2] - b[1][2];
+  let best = new Map<string, [number, number, number]>();
+  let order = 0;
+  for (const batch of ops.batches([...svDist.keys()])) {
+    for (const [sv, texts] of await chunkTexts(store, ns, batch)) {
+      for (const text of texts) {
+        let score = 0;
+        for (const t of tokens(text)) if (queryTokens.has(t)) score++;
+        if (score > 0 && !best.has(text)) best.set(text, [-score, svDist.get(sv)!, order++]);
       }
     }
+    if (best.size > MAX_PASSAGES) best = new Map([...best].sort(byRank).slice(0, MAX_PASSAGES));
   }
-
-  candidates.sort((a, b) => b[0] - a[0] || a[1] - b[1]);
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const [score, , text] of candidates) {
-    if (score <= 0 || out.length >= MAX_PASSAGES) break;
-    if (!seen.has(text)) {
-      seen.add(text);
-      out.push(text);
-    }
-  }
-  return out;
+  return [...best].sort(byRank).map(([text]) => text);
 }
 
 async function collectPreferences(

@@ -1341,6 +1341,7 @@ async def write(graph):
     )
     out["retrieval_overflow"] = await overflow(graph)
     out["retrieval_ppr_ties"] = await ppr_ties(graph)
+    out["retrieval_passage_ranking"] = await passage_ranking(graph)
     out["vault_names"] = await vault_names(graph)
     try:
         await graph.insert.facts(
@@ -1948,6 +1949,21 @@ async def ppr_ties(graph):
         await g.relations.create(f"thing:{a}", "LINKS", f"thing:{b}")
     ranked = await g.retrieve("Sol", strategy="ppr", max_nodes=4)
     return {"entities": [e.id for e in ranked.subgraph.entities], "context": ranked.context}
+
+
+async def passage_ranking(graph):
+    """Retrieve from twenty sources behind one entity by each source's own word and by a word all of them share.
+
+    @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+    @return (dict): the context of the tied query and of each ranked one.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_passages")
+    for i in range(20):
+        await g.insert.text(f"Ann collects word{i} items.", source_id=f"note-{i}")
+    return {
+        "tied": (await g.retrieve("Ann")).context,
+        "ranked": {word: (await g.retrieve(f"Ann {word}")).context for word in ("word3", "word4", "word9")},
+    }
 
 
 async def vault_names(graph):

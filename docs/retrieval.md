@@ -181,8 +181,11 @@ entity's changed properties read as they are now.
    proportion to their scores and weighting edges by their sources. The top
    `max_nodes` are kept.
 3. **Assemble.** Passages, relations, preferences, decisions, and entities are
-   written nearest or highest-ranked first. Passages take at most 60% of the
-   budget, and at most six of them. The context never exceeds `budget_tokens`.
+   written nearest or highest-ranked first. Passages are scored across every
+   source behind the collected entities: a chunk ranks by how many distinct
+   query words it holds, then by the nearest entity that cites its source. The
+   best six distinct chunks are kept, and they take at most 60% of the budget.
+   The context never exceeds `budget_tokens`.
    The first relation, preference, decision, or entity line that does not fit
    ends the context, so a farther line never takes the place of a nearer one.
    When even the first line does not fit, it is cut to the longest prefix that
@@ -193,6 +196,9 @@ entity's changed properties read as they are now.
 **Cost.** Seeding scores every entity, with no cap. It reads entities in
 id-ordered pages twice per query, once for the BM25 corpus statistics and once to
 score, and keeps only the best `k` in memory. Cost grows linearly with the graph.
+Passages read the chunks of every source behind the collected entities, a batch
+of source versions per query, and keep only the best six in memory. That cost
+grows linearly with the number of those sources.
 
 **Seeding limits.**
 
