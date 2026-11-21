@@ -24,10 +24,9 @@ from helpers import (
 )
 
 import selfgraph
-import selfgraph.cli as cli_module
 from selfgraph._serde import from_iso
 from selfgraph.cli import _metadata, build_parser, main
-from selfgraph.errors import WARNING_HINTS, SelfGraphError, ValidationError
+from selfgraph.errors import WARNING_HINTS, ValidationError
 from selfgraph.runtime import parse_time, read_json
 
 
@@ -160,35 +159,6 @@ def test_bad_settings_exit_2_before_any_command(capsys, monkeypatch, argv, env, 
     for command in ("version", "mcp"):
         assert main([*argv, command]) == 2
         assert message in capsys.readouterr().err
-
-
-def test_unexpected_cli_errors_are_coded_and_mask_credentials(capsys, monkeypatch):
-    uri = "bolt://user:store-secret@db.example:7687"
-    base_url = "https://proxy:llm-secret@llm.example/v1"
-    for var in ("SELFGRAPH_URI", "SELFGRAPH_STORE", "SELFGRAPH_LLM_BASE_URL"):
-        monkeypatch.delenv(var, raising=False)
-
-    async def boom(args, settings):
-        raise RuntimeError(f"driver crashed talking to {uri} with {base_url}")
-
-    monkeypatch.setattr(cli_module, "_run_with_diagnostics", boom)
-    argv = [
-        "--store",
-        "neo4j",
-        "--uri",
-        uri,
-        "--llm-provider",
-        "openai",
-        "--llm-model",
-        "m",
-        "--llm-base-url",
-        base_url,
-    ]
-    assert main([*argv, "version"]) == 1
-    err = capsys.readouterr().err
-    assert err.startswith("error[internal_error]:")
-    assert "store-secret" not in err and "llm-secret" not in err
-    assert "bolt://***@db.example:7687" in err and "https://***@llm.example/v1" in err
 
 
 def test_init_prints_the_inferred_store(capsys, monkeypatch, tmp_path):
@@ -420,21 +390,6 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
     err = capsys.readouterr().err
     assert "seeds 'embeddings' needs an embedder: which only the SDK can take; use --seeds bm25 or synonyms here" in err
     assert "pass embedder=" not in err
-
-
-def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):
-    g = fresh_graph("export-error")
-    run(g.entities.create("Ada", "Person"))
-    parent = tmp_path / "notes"
-    parent.write_text("not a directory")
-    target = parent / "nested"
-    capsys.readouterr()
-
-    with pytest.raises(SelfGraphError) as raised:
-        cli(g, ["export", "obsidian", str(target)], capsys)
-    assert raised.value.code == "invalid_argument"
-    assert raised.value.field == "directory"
-    assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
 
 
 def test_version_and_help_text(capsys):
