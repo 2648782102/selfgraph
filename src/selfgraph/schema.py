@@ -539,6 +539,8 @@ def canonicalize_types(facts: Extraction, schema: Schema | None) -> Extraction:
             prefix, _, name = target.partition(":")
             own = prefix == slug(normalize_text(canonical))
         for form in (etype, *forms.get(canonical, ())) if own else ():
+            if ":" in form:
+                continue
             alt = entity_id(form, name) if ent.id is None else _canonical_id(f"{form}:{name}")
             if alt != target:
                 moved.setdefault(alt, target)
