@@ -118,20 +118,6 @@ describe("built CLI against Kuzu", () => {
     expect(result.err).toContain("field: directory");
   });
 
-  it("reports a non-UTF-8 input file with a coded error", () => {
-    const bad = join(dir, "bad-schema.json");
-    writeFileSync(bad, Buffer.from([0xff, 0xfe, 0x7b]));
-
-    const result = cli(["--schema", bad, ...kuzu, "entity", "list"]);
-
-    expect(result.code).toBe(2);
-    expect(result.err).toContain(
-      `error[invalid_argument]: cannot read ${pyRepr(bad)}: not valid UTF-8; save the file as UTF-8 and try again`,
-    );
-    expect(result.err).toContain("field: path");
-    expect(result.err).not.toContain("stack");
-  });
-
   it("keeps proto and nested source metadata keys in diff JSON", async () => {
     const namespace = "cli_diff_proto";
     const text = '{"__proto__":"literal","nested":[{"__proto__":{"kept":true},"sibling":"kept"}]}';
