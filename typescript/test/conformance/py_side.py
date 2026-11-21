@@ -896,7 +896,13 @@ async def write(graph):
             CypherResult(rows=[{"x": value}])
         except SelfGraphError as exc:
             depth_errors.append([exc.code, exc.field, str(exc)])
-    out = {"result_depth_errors": depth_errors}
+    out = {"result_depth_errors": depth_errors, "entity_type_errors": []}
+    for bad_type in (":a", "a:b", "Person:"):
+        try:
+            ids.entity_id(bad_type, "X")
+            out["entity_type_errors"].append("accepted")
+        except ValidationError as exc:
+            out["entity_type_errors"].append([exc.code, exc.field, str(exc)])
     out["facts"] = to_jsonable(await graph.insert.facts(FACTS, source_id="spec"))
     out["text"] = to_jsonable(
         await graph.insert.text(TEXT, source_id="notes", metadata={"author": "conformance", "n": 1, "f": 0.5})

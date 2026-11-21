@@ -419,6 +419,7 @@ export function canonicalizeTypes(facts: ParsedExtraction, schema: ParsedSchema 
     const name = ent.id === null ? cleanText(ent.name) : target.slice(cut + 1);
     const own = ent.id === null || target.slice(0, cut) === slug(normalizeText(canonical));
     for (const form of own ? [etype, ...(forms.get(canonical) ?? [])] : []) {
+      if (form.includes(":")) continue;
       const alt = ent.id === null ? entityId(form, name) : canonicalId(`${form}:${name}`);
       if (alt !== target && !moved.has(alt)) moved.set(alt, target);
     }
