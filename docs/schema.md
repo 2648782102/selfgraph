@@ -278,8 +278,10 @@ known, and keep `llm` for what a schema cannot state.
 ### Ranking and retirement
 
 Facts are ranked by effective time (`event_time`, else when the version was
-written), then by higher revision, then by later `created_at`. So a `create`
-without `event_time` takes effect now, and on equal times the later write wins.
+written), and ties are broken by the relation's id, so the order is the same
+every time the same facts are reasserted. So a `create` without `event_time`
+takes effect now, and replaying the same facts keeps the same relation current
+instead of flipping it.
 
 A retired relation keeps its revision and gains four fields:
 
