@@ -3456,7 +3456,9 @@
   "has`tick": "`has``tick`",
   "_x9": "_x9",
   "9x": "`9x`",
-  "\u00dcnicode": "`\u00dcnicode`"
+  "\u00dcnicode": "`\u00dcnicode`",
+  "a\n": "`a\n`",
+  "Person\n": "`Person\n`"
  },
  "dumps_sorted": [
   [
