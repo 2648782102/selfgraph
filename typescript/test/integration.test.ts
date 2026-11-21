@@ -354,10 +354,11 @@ function suite(spec: StoreSpec) {
     );
   });
 
-  it.each([
+  const dottedCapitalI = [
     ["İ\u0327", "Person"],
     ["Ada", "İ\u0327"],
-  ])("finds an entity named with a dotted capital I and a cedilla by its id: %s / %s", async (name, type) => {
+  ];
+  it.each(dottedCapitalI)("finds a dotted capital I and cedilla entity by its id: %s / %s", async (name, type) => {
     const g = fresh();
     const e = await g.entities.create(name, type);
     expect((await g.entities.get(e.id))!.id).toBe(e.id);

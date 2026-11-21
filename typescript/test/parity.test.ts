@@ -72,11 +72,12 @@ describe("ids match Python byte for byte", () => {
     expect(profileId(raw)).toBe(profileId(canonical));
   });
 
-  it.each([
+  const dottedCapitalI = [
     ["Person", "İ\u0327"],
     ["İ\u0327", "Ada"],
     ["Company", "İ\u0327stanbul Holdings Ltd"],
-  ])("derives an id with a lowercased dotted capital I that canonicalizes to itself: %s / %s", (type, name) => {
+  ];
+  it.each(dottedCapitalI)("derives a dotted capital I id that is its own canonical id: %s / %s", (type, name) => {
     const eid = entityId(type, name);
     expect(eid).toBe(eid.normalize("NFC"));
     expect(canonicalEntityId(eid)).toBe(eid);
