@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { seedTier } from "../src/access.js";
 import { buildParser } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
 import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
@@ -581,6 +582,19 @@ describe("CLI settings", () => {
       expect(message).not.toContain("--");
       expect(surfaceHint(message)).toContain(surface);
     }
+  });
+
+  it("rewords the embedder hint for the CLI", () => {
+    let message = "";
+    try {
+      seedTier("embeddings", null, "max");
+    } catch (exc) {
+      message = (exc as Error).message;
+    }
+    expect(message).toBe("seeds 'embeddings' needs an embedder: pass embedder= to SelfGraph");
+    expect(surfaceHint(message)).toBe(
+      "seeds 'embeddings' needs an embedder: which only the SDK can take; use --seeds bm25 or synonyms here",
+    );
   });
 
   it("binds raw query parameters, warns when kuzu ignores a setting, and rejects a kuzu path for a server", async () => {
