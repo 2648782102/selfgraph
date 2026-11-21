@@ -9,6 +9,7 @@ from functools import partial
 from typing import Any
 
 from . import _ops, tiers
+from ._cypher_guard import check_cypher_limits
 from ._diff import graph_diff
 from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
@@ -300,7 +301,7 @@ class SelfGraph:
         await self.close()
 
     async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
-        """Run one raw Cypher statement directly against the store, as an unguarded escape hatch.
+        """Run one raw Cypher statement directly against the store, subject to size and nesting limits.
 
         This runs the query verbatim: it can write, it is not scoped to the namespace, and it
         bypasses id derivation, versioning, and provenance. Prefer the typed resources for managed
@@ -314,6 +315,7 @@ class SelfGraph:
         """
         if not isinstance(query, str):
             raise ValidationError(f"query must be a string, got {type_name(query)}")
+        check_cypher_limits(query)
         if not query.strip():
             raise ValidationError("query cannot be empty")
         _ops._require_json_mapping("params", params, safe_ints=False)
@@ -423,11 +425,11 @@ class SelfGraph:
         return report
 
     async def diff(self, since: datetime | str, until: datetime | str | None = None) -> GraphDiff:
-        """List stored changes in the known-time window (since, until], defaulting until to now.
+        """List the history stored in the known-time window (since, until], defaulting until to now.
 
         @param since (datetime | str): exclusive lower bound, naive times read as UTC.
         @param until (datetime | str | None): inclusive upper bound, or now.
-        @return (GraphDiff): additions, retirements, revisions, and entities created.
+        @return (GraphDiff): the change lists per kind: entities, relations, certifications, and history.
         """
         start = _ops.parse_time(since, "since")
         end = _ops.parse_time(until, "until")
