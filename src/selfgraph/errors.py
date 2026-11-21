@@ -17,7 +17,6 @@ __all__ = [
     "PromptTemplateError",
     "StoreError",
     "TransientError",
-    "InternalError",
 ]
 
 
@@ -37,7 +36,6 @@ ErrorCode = Literal[
     "invalid_cursor",
     "invalid_resolver_decision",
     "read_only_query",
-    "cypher_query_limit",
     "missing_package",
     "not_found",
     "already_exists",
@@ -57,7 +55,6 @@ ErrorCode = Literal[
     "write_too_large",
     "write_conflict",
     "store_busy",
-    "internal_error",
 ]
 HINTS: dict[ErrorCode, str] = {
     "invalid_argument": (
@@ -117,7 +114,6 @@ HINTS: dict[ErrorCode, str] = {
         "`run_cypher` runs a single read. Write through the typed tools instead. Do not reword the query to "
         "get a write past the guard."
     ),
-    "cypher_query_limit": "Shorten the Cypher statement or reduce its delimiter nesting before trying again.",
     "missing_package": (
         "An optional package is not installed. Run the install command in the message, or ask the user to."
     ),
@@ -178,10 +174,6 @@ HINTS: dict[ErrorCode, str] = {
         "deterministic and inserts are upserts, so a retry does not duplicate anything."
     ),
     "store_busy": "The server timed out or was too busy to take the query. Run the same call again after a moment.",
-    "internal_error": (
-        "An unexpected error reached the CLI or MCP boundary and was not mapped to a specific code. The message "
-        "keeps the original error with any credentials masked. Report it with the message if it persists."
-    ),
 }
 WARNING_HINTS: dict[str, str] = {
     "unknown_entity_type": (
@@ -391,10 +383,6 @@ class TransientError(StoreError):
     code: ErrorCode = "write_conflict"
 
 
-class InternalError(SelfGraphError):
-    code: ErrorCode = "internal_error"
-
-
 CLOSED_MESSAGE = "this SelfGraph is closed; create a new SelfGraph to keep using the store"
 LLM_HINT = "pass llm= to SelfGraph (or set SELFGRAPH_LLM_PROVIDER and SELFGRAPH_LLM_MODEL)"
 EMBEDDER_HINT = "pass embedder= to SelfGraph"
@@ -413,16 +401,6 @@ def needs_llm(what: str) -> ValidationError:
     @return (ValidationError): the error, with code llm_required.
     """
     return ValidationError(f"{what} needs an LLM: {LLM_HINT}", code="llm_required")
-
-
-def internal_error(exc: BaseException, *uris: str | None) -> InternalError:
-    """Wrap an unexpected error that reached a boundary as a coded InternalError with every URI's credentials masked.
-
-    @param exc (BaseException): the unmapped error.
-    @param uris (str | None): the configured URIs to mask, such as the store URI and the LLM base_url.
-    @return (InternalError): the coded error, safe to print.
-    """
-    return InternalError(redact_uris(f"{type(exc).__name__}: {exc}", *uris))
 
 
 def setting_hint(key: str) -> str:
@@ -576,18 +554,6 @@ def redact_uri(text: str, uri: str | None) -> str:
     at = uri[start + len(userinfo)]
     for form in (userinfo, repr(userinfo)[1:-1], json.dumps(userinfo, ensure_ascii=False)[1:-1]):
         text = text.replace(f"{form}{at}", f"***{at}")
-    return text
-
-
-def redact_uris(text: str, *uris: str | None) -> str:
-    """Mask the userinfo of each configured URI wherever a message shows it.
-
-    @param text (str): the message.
-    @param uris (str | None): the configured URIs, such as the store URI and the LLM base_url; None entries are skipped.
-    @return (str): the message with every URI's credentials replaced by ***.
-    """
-    for uri in uris:
-        text = redact_uri(text, uri)
     return text
 
 
