@@ -161,6 +161,7 @@ def _fail_after_the_store(**options):
 
 @pytest.mark.parametrize("in_loop", [False, True])
 def test_a_build_that_fails_after_the_store_releases_the_kuzu_lock(tmp_path, monkeypatch, in_loop):
+    pytest.importorskip("kuzu")
     monkeypatch.setattr(runtime, "SelfGraph", _fail_after_the_store)
     path = str(tmp_path / "g.kuzu")
 
@@ -173,6 +174,34 @@ def test_a_build_that_fails_after_the_store_releases_the_kuzu_lock(tmp_path, mon
         [sys.executable, "-c", f"import kuzu; kuzu.Database({path!r})"], capture_output=True, text=True, timeout=60
     )
     assert opened.returncode == 0, opened.stderr
+
+
+def test_a_build_that_fails_does_not_wait_for_a_query_another_graph_runs_on_the_path(tmp_path):
+    pytest.importorskip("kuzu")
+    path = str(tmp_path / "g.kuzu")
+    script = f"""
+import asyncio
+from selfgraph import KuzuStore, runtime
+from selfgraph.errors import ValidationError
+
+def fail(**options):
+    raise ValidationError("the LLM setup failed", code="invalid_setting")
+
+runtime.SelfGraph = fail
+
+async def main():
+    other = KuzuStore({path!r})
+    async with other._lock:
+        try:
+            runtime.build_graph(runtime.GraphSettings(store="kuzu", uri={path!r}))
+        except ValidationError as exc:
+            print(exc)
+    await other.close()
+
+asyncio.run(main())
+"""
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert (proc.returncode, proc.stdout.strip()) == (0, "the LLM setup failed"), proc.stderr
 
 
 @pytest.mark.parametrize("close_fails", [False, True])

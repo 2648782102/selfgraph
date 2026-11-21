@@ -372,10 +372,7 @@ export class SelfGraph {
 }
 
 /**
- * Construct a SelfGraph from settings; does not initialize the store.
- *
- * When a step after the store fails, the store is closed before the error is thrown, as in the Python SDK. The close
- * is not awaited, since this function is synchronous, and a close error is dropped so the build error is the one seen.
+ * Construct a SelfGraph from settings, closing the store when a later step fails; does not initialize the store.
  *
  * @param value (GraphSettings): the resolved store, LLM, and schema configuration.
  * @return (SelfGraph): the constructed graph.

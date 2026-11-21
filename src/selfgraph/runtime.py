@@ -651,10 +651,7 @@ def check_settings(settings: GraphSettings) -> GraphSettings:
 
 
 def build_graph(settings: GraphSettings) -> SelfGraph:
-    """Construct a SelfGraph from settings; does not call initialize.
-
-    When a step after the store fails, such as the LLM setup, the store is closed before the error is raised, so a
-    failed start does not keep an embedded store's file lock.
+    """Construct a SelfGraph from settings, closing the store when a later step fails; does not call initialize.
 
     @param settings (GraphSettings): the resolved store, LLM, and schema configuration.
     @return (SelfGraph): the constructed graph.
@@ -682,15 +679,16 @@ def build_graph(settings: GraphSettings) -> SelfGraph:
 
 
 def _close_unused(store: GraphStore) -> None:
-    """Close a store no call has used yet, before build_graph returns.
+    """Close a store before any query ran on it, synchronously, dropping an error from the close.
 
-    build_graph is synchronous, and the CLI and the MCP server call it from a running event loop, so the close runs to
-    completion on its own loop in a short-lived thread. An error from the close is dropped, so the caller sees the
-    error that stopped the build.
-
-    @param store (GraphStore): the store build_graph opened.
+    @param store (GraphStore): the store build_graph built.
     @return (None): nothing.
     """
+    discard = getattr(store, "_discard", None)
+    if discard is not None:
+        with suppress(Exception):
+            discard()
+        return
 
     def close() -> None:
         with suppress(Exception):
