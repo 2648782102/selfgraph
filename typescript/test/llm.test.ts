@@ -682,7 +682,7 @@ describe("LLM extraction through the AI SDK", () => {
       model: "m",
       base_url: "https://proxyuser:hunter2@llm.example/v1",
     });
-    expect(err?.message).toContain('LLM model "m" was not found for provider openai at https://***@llm.example/v1');
+    expect(err?.message).toContain("LLM model 'm' was not found for provider openai at https://***@llm.example/v1");
     expect(err?.message).not.toContain("hunter2");
     expect(err?.code).toBe("llm_model_not_found");
   });
