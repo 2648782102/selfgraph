@@ -125,7 +125,28 @@ class SelfGraph:
         extraction: tiers.ExtractionTier | None = None,
         seeds: tiers.SeedTier | None = None,
         embedder: Embedder | None = None,
+        **options: Any,
     ) -> None:
+        check_options(
+            "SelfGraph",
+            options,
+            [
+                "llm",
+                "instructions",
+                "prompts",
+                "extractor",
+                "namespace",
+                "schema",
+                "schema_mode",
+                "resolver",
+                "contradiction",
+                "level",
+                "max_tier",
+                "extraction",
+                "seeds",
+                "embedder",
+            ],
+        )
         _require_namespace(namespace)
         require_schema_mode(schema_mode)
         tiers.require_level("level", level)
@@ -335,6 +356,7 @@ class SelfGraph:
         known_at: datetime | str | None = None,
         seeds: tiers.SeedTier | None = None,
         skip_hubs: bool = False,
+        **options: Any,
     ) -> RetrievalResult:
         """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
@@ -354,6 +376,11 @@ class SelfGraph:
         @param skip_hubs (bool): do not walk through hubs, entities with at least 50 relations, other than seeds.
         @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
         """
+        check_options(
+            "retrieve",
+            options,
+            ["strategy", "depth", "k", "max_nodes", "budget_tokens", "as_of", "known_at", "seeds", "skip_hubs"],
+        )
         if not isinstance(query, str):
             raise ValidationError(f"query must be a string, got {type_name(query)}")
         if not query.strip():
@@ -389,6 +416,7 @@ class SelfGraph:
         as_of: datetime | str | None = None,
         known_at: datetime | str | None = None,
         depth: int = 3,
+        **options: Any,
     ) -> AnswerabilityReport:
         """Judge, without an LLM, whether the graph holds what a question asks about, before answering from it.
 
@@ -407,6 +435,7 @@ class SelfGraph:
         @param depth (int): the most hops between matched entities.
         @return (AnswerabilityReport): the verdict, each term's coverage, the missing terms, and the hub-only pairs.
         """
+        check_options("check_answerable", options, ["terms", "as_of", "known_at", "depth"])
         if not isinstance(question, str) or not question.strip():
             raise ValidationError("question must be a non-empty string")
         if terms is not None:
