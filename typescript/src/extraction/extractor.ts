@@ -25,7 +25,14 @@ import {
 import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
 import type { Extractor, LLMClient } from "../protocols.js";
 import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
-import { checkOptions, keysOf, rejectProtoKeys, requireCleanJson, requireOptionalText } from "../validate.js";
+import {
+  checkOptions,
+  keysOf,
+  rejectProtoKeys,
+  requireCleanJson,
+  requireOptionalText,
+  requireStr,
+} from "../validate.js";
 import { checkPrompts, effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
 const EntitiesOut = z.object({
@@ -202,9 +209,29 @@ export function assembleExtraction(
   const rejected = new Set<string>();
   const admit = (ent: RawEntity): boolean =>
     admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
+  const canonical = new Map<boolean, { type: string; names: Map<string, { position: number; ent: RawEntity }> }>();
+  const register = (key: string, ent: RawEntity): void => {
+    const org = ids.isOrgType(ent.type);
+    const type = ids.normalizeText(ent.type);
+    if (!canonical.has(org)) canonical.set(org, { type, names: new Map() });
+    const names = canonical.get(org)!.names;
+    const name = ids.canonicalName(type, ent.name);
+    if (!names.has(name)) names.set(name, { position: registry.size, ent });
+    registry.set(key, ent);
+  };
+  const byCanonicalName = (name: string): RawEntity | undefined => {
+    if (registry.size === 0) return undefined;
+    requireStr("entity name", name);
+    let best: { position: number; ent: RawEntity } | undefined;
+    for (const { type, names } of canonical.values()) {
+      const hit = names.get(ids.canonicalName(type, name));
+      if (hit && (best === undefined || hit.position < best.position)) best = hit;
+    }
+    return best?.ent;
+  };
   for (const ent of rawEntities) {
     const key = norm(ent.name);
-    if (!registry.has(key) && !isNoiseName(ent.name) && admit(ent)) registry.set(key, ent);
+    if (!registry.has(key) && !isNoiseName(ent.name) && admit(ent)) register(key, ent);
   }
 
   const resolve = (name: string | null | undefined): string | null => {
@@ -212,9 +239,7 @@ export function assembleExtraction(
     const key = norm(name);
     let ent: RawEntity | undefined;
     try {
-      ent =
-        registry.get(key) ??
-        [...registry.values()].find((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+      ent = registry.get(key) ?? byCanonicalName(name);
     } catch (error) {
       if (!(error instanceof ValidationError)) throw error;
       if (!rejected.has(key)) {
@@ -230,7 +255,7 @@ export function assembleExtraction(
         rejected.add(key);
         return null;
       }
-      registry.set(key, ent);
+      register(key, ent);
     }
     return ids.entityId(ent.type, ent.name);
   };

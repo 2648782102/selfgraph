@@ -356,20 +356,33 @@ class LLMExtractor(_WarningSink):
                 return False
             return True
 
+        canonical: dict[bool, tuple[str, dict[str, tuple[int, EntityInput]]]] = {}
+
+        def register(key: str, ent: EntityInput) -> None:
+            org = _ids._is_org_type(ent.type)
+            type_ = _ids.normalize_text(ent.type)
+            _, names = canonical.setdefault(org, (type_, {}))
+            names.setdefault(_ids._canonical_name(type_, ent.name), (len(registry), ent))
+            registry[key] = ent
+
+        def by_canonical_name(name: str) -> EntityInput | None:
+            if not registry:
+                return None
+            _ids._require_str("entity name", name)
+            hits = [h for type_, names in canonical.values() if (h := names.get(_ids._canonical_name(type_, name)))]
+            return min(hits, key=lambda h: h[0])[1] if hits else None
+
         for ent in raw_entities:
             key = _norm(ent.name)
             if key not in registry and not _is_noise_name(ent.name) and admit(ent):
-                registry[key] = ent
+                register(key, ent)
 
         def resolve(name: str | None) -> str | None:
             if name is None or not name.strip():
                 return None
             key = _norm(name)
             try:
-                ent = registry.get(key) or next(
-                    (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)),
-                    None,
-                )
+                ent = registry.get(key) or by_canonical_name(name)
             except ValidationError as exc:
                 if key not in rejected:
                     rejected.add(key)
@@ -382,7 +395,7 @@ class LLMExtractor(_WarningSink):
                 if not admit(ent):
                     rejected.add(key)
                     return None
-                registry[key] = ent
+                register(key, ent)
             return _ids.entity_id(ent.type, ent.name)
 
         relations: dict[str, RelationInput] = {}

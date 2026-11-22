@@ -1,4 +1,5 @@
 import logging
+import random
 import unicodedata
 
 import pytest
@@ -557,3 +558,167 @@ def test_custom_extractor_rejects_proto_properties():
     with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
         run(g.insert.text("Ann is a person."))
     assert run(g.entities.list()).items == []
+
+
+_RESOLVE_TYPES = ["Person", "Company", "Organization", "Org", "COMPANY", "Place", "Thing"]
+_RESOLVE_BASES = ["Acme", "Beta", "Café", "Straße", "Ünï", "Jane Doe"]
+_RESOLVE_PREFIXES = ["", "The ", "the "]
+_RESOLVE_SUFFIXES = ["", " Inc", " inc.", " Corp", " LLC", "!", " Ltd"]
+_RESOLVE_CASES = [str, str.upper, str.lower]
+_RESOLVE_FORMS = ["NFC", "NFD"]
+_FILLERS = 1000
+
+
+def _resolve_surface(rng):
+    name = rng.choice(_RESOLVE_PREFIXES) + rng.choice(_RESOLVE_BASES) + rng.choice(_RESOLVE_SUFFIXES)
+    return unicodedata.normalize(rng.choice(_RESOLVE_FORMS), rng.choice(_RESOLVE_CASES)(name))
+
+
+def _scan_resolve(registry, name):
+    key = name.strip().lower()
+    ent = registry.get(key) or next(
+        (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)), None
+    )
+    if ent is None:
+        ent = registry[key] = EntityInput(type="Thing", name=name.strip())
+    return _ids.entity_id(ent.type, ent.name)
+
+
+def _limit_derivations(monkeypatch, budget):
+    calls = 0
+
+    def counted(fn):
+        def wrapper(*args):
+            nonlocal calls
+            calls += 1
+            if calls > budget:
+                raise AssertionError(f"name resolution derived more than {budget} ids")
+            return fn(*args)
+
+        return wrapper
+
+    monkeypatch.setattr(_ids, "entity_id", counted(_ids.entity_id))
+    monkeypatch.setattr(_ids, "_canonical_name", counted(_ids._canonical_name))
+
+
+def _fillers():
+    return [EntityInput(type="Thing", name=f"Filler {i}") for i in range(_FILLERS)]
+
+
+def _assemble_names(monkeypatch, entities, names, sink=None):
+    _limit_derivations(monkeypatch, 4 * _FILLERS + 20 * len(names))
+    rels = [_RelOut(from_name=name, type=f"R{i}", to_name="Anchor") for i, name in enumerate(names)]
+    anchor = EntityInput(type="Person", name="Anchor")
+    return LLMExtractor._assemble([*_fillers(), *entities, anchor], rels, [], [], sink)
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_name_resolution_matches_the_linear_scan_on_random_name_sets(seed, monkeypatch):
+    rng = random.Random(seed)
+    entities = [
+        EntityInput(type=rng.choice(_RESOLVE_TYPES), name=_resolve_surface(rng), aliases=[_resolve_surface(rng)])
+        for _ in range(rng.randint(0, 14))
+    ]
+    names = [_resolve_surface(rng) for _ in range(40)]
+    registry = {}
+    for ent in [*entities, EntityInput(type="Person", name="Anchor")]:
+        registry.setdefault(ent.name.strip().lower(), ent)
+    expected = [_scan_resolve(registry, name) for name in names]
+    facts = _assemble_names(monkeypatch, entities, names)
+    assert [r.from_entity for r in facts.relations] == expected
+    assert [(e.type, e.name) for e in facts.entities[_FILLERS:]] == [(e.type, e.name) for e in registry.values()]
+
+
+@pytest.mark.parametrize(
+    ("entities", "name", "expected"),
+    [
+        ([("Organization", "Acme"), ("Company", "Acme Ltd")], "ACME Inc", "organization:acme"),
+        ([("Company", "Acme Ltd"), ("Organization", "Acme")], "ACME Inc", "company:acme"),
+        ([("Person", "Acme"), ("Company", "Acme")], "Acme Inc", "thing:acme-inc"),
+        ([("Person", "Acme!"), ("Company", "Acme Corp")], "Acme", "person:acme"),
+        ([("Person", "Acme!"), ("Company", "Acme Corp")], "The Acme Inc", "company:acme"),
+        ([("Person", "Acme!"), ("Company", "Acme Corp")], "ACME.", "person:acme"),
+        ([("Company", "Acme Corp"), ("Person", "Acme!")], "ACME.", "company:acme"),
+        ([("Person", "Robert")], "Bob", "thing:bob"),
+        ([("Person", "Bob"), ("Person", "Robert")], "BOB.", "person:bob"),
+        ([("Place", "Café")], "Café", "place:café"),
+        ([("Place", "Café")], "CAFÉ", "place:café"),
+        ([("COMPANY", "Acme Corp")], "ACME inc", "company:acme"),
+        ([("Person", "The Acme Inc")], "The Acme Inc!", "person:the-acme-inc"),
+        ([("Thing", "Acme Inc")], "ACME INC.", "thing:acme-inc"),
+        ([], "Acme Inc", "thing:acme-inc"),
+    ],
+)
+def test_name_resolution_pins_the_winner(entities, name, expected, monkeypatch):
+    registered = [EntityInput(type=t, name=n) for t, n in entities]
+    [rel] = _assemble_names(monkeypatch, registered, [name]).relations
+    assert rel.from_entity == expected
+
+
+@pytest.mark.parametrize("bob_first", [True, False])
+def test_name_resolution_ignores_aliases_that_name_another_entity(bob_first, monkeypatch):
+    bob = EntityInput(type="Person", name="Bob")
+    robert = EntityInput(type="Person", name="Robert", aliases=["Bob", "Rob"])
+    facts = _assemble_names(monkeypatch, [bob, robert] if bob_first else [robert, bob], ["BOB.", "ROB."])
+    assert [r.from_entity for r in facts.relations] == ["person:bob", "thing:rob"]
+
+
+def test_every_name_lookup_resolves_through_the_same_index(monkeypatch):
+    entities = [
+        EntityInput(type="Company", name="Acme Corp"),
+        EntityInput(type="Person", name="Jane"),
+        EntityInput(type="Place", name="Café"),
+    ]
+    acme, cafe = "ACME inc", "Café"
+    step = _StepOut(from_name=acme, type="USES", to_name=cafe)
+    _limit_derivations(monkeypatch, 4 * _FILLERS + 100)
+    facts = LLMExtractor._assemble(
+        [*_fillers(), *entities],
+        [_RelOut(from_name=acme, type="OWNS", to_name=cafe)],
+        [_PrefOut(subject_name=acme, key="venue", value_name=cafe, about_name=acme)],
+        [
+            _DecOut(
+                title="Pick a venue",
+                actor_name=acme,
+                outcome_name=cafe,
+                alternative_names=[cafe, acme, "Nowhere Inc"],
+                steps=[step],
+            )
+        ],
+    )
+    assert [(r.from_entity, r.to_entity) for r in facts.relations] == [("company:acme", "place:café")] * 2
+    [pref] = facts.preferences
+    assert (pref.subject_entity, pref.value_entity, pref.about_entity) == ("company:acme", "place:café", "company:acme")
+    [decision] = facts.decisions
+    assert (decision.actor_entity, decision.outcome_entity) == ("company:acme", "place:café")
+    assert decision.alternative_entities == ["place:café", "company:acme", "thing:nowhere-inc"]
+    assert [(e.type, e.name) for e in facts.entities[_FILLERS:]] == [
+        ("Company", "Acme Corp"),
+        ("Person", "Jane"),
+        ("Place", "Café"),
+        ("Thing", "Nowhere Inc"),
+    ]
+
+
+def test_name_resolution_drops_invalid_and_blank_names_with_one_warning(monkeypatch):
+    bad = "Bad\x00name"
+    sink = []
+    alone = [_RelOut(from_name=bad, type=f"R{i}", to_name="Jane") for i in range(2)]
+    assert LLMExtractor._assemble([], alone, [], [], sink).relations == []
+    assert [w.code for w in sink] == ["extraction_partial_failure"]
+    assert sink[0].message.startswith("dropped an extracted entity: ")
+
+    sink = []
+    facts = _assemble_names(monkeypatch, [], [bad, "  ", bad, "", "\t", "Gamma Inc"], sink)
+    assert [r.from_entity for r in facts.relations] == ["thing:gamma-inc"]
+    assert [w.code for w in sink] == ["extraction_partial_failure"]
+    assert sink[0].message.startswith("dropped an extracted entity: ")
+
+
+def test_name_resolution_work_grows_linearly_with_the_entity_count(monkeypatch):
+    n = 2000
+    entities = [EntityInput(type="Person", name=f"Person {i}") for i in range(n)]
+    rels = [_RelOut(from_name=f"Person {i}", type="KNOWS", to_name=f"Stranger {i}") for i in range(n)]
+    _limit_derivations(monkeypatch, 30 * n)
+    facts = LLMExtractor._assemble(entities, rels, [], [])
+    assert len(facts.entities) == 2 * n and len(facts.relations) == n

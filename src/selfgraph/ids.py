@@ -309,6 +309,15 @@ def slug(text: str) -> str:
     return _WS.sub("-", text.strip().lower())
 
 
+def _is_org_type(type: str) -> bool:
+    """Report whether an entity type gets organisation-style name canonicalisation.
+
+    @param type (str): the entity type.
+    @return (bool): True when the type is organisation-like.
+    """
+    return slug(normalize_text(type)) in _ORG_TYPES
+
+
 def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
 
@@ -318,7 +327,7 @@ def _canonical_name(type: str, name: str) -> str:
     """
     name = normalize_text(name)
     words = _PUNCT.sub(" ", name.strip().lower()).split()
-    if slug(type) in _ORG_TYPES:
+    if _is_org_type(type):
         if words and words[0] == "the":
             words = words[1:]
         while len(words) > 1 and words[-1] in _ENTITY_SUFFIXES:

@@ -2,12 +2,13 @@ import { createServer } from "node:http";
 
 import { APICallError, LoadAPIKeyError } from "@ai-sdk/provider";
 import { MockLanguageModelV4 } from "ai/test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { loadTokenizer } from "../src/chunking.js";
-import { assembleExtraction, LLMExtractor } from "../src/extraction/extractor.js";
+import { assembleExtraction, LLMExtractor, type RawEntity } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
+import * as idsModule from "../src/ids.js";
 import {
   buildLlmClient,
   ExtractionError,
@@ -108,6 +109,278 @@ function mockModel(
 }
 
 const open = freshGraphs(KUZU_SPEC, "llm");
+
+describe("extraction name resolution", () => {
+  const RESOLVE_TYPES = ["Person", "Company", "Organization", "Org", "COMPANY", "Place", "Thing"];
+  const RESOLVE_BASES = ["Acme", "Beta", "Café", "Straße", "Ünï", "Jane Doe"];
+  const RESOLVE_PREFIXES = ["", "The ", "the "];
+  const RESOLVE_SUFFIXES = ["", " Inc", " inc.", " Corp", " LLC", "!", " Ltd"];
+  const RESOLVE_CASES: Array<(text: string) => string> = [(t) => t, (t) => t.toUpperCase(), (t) => t.toLowerCase()];
+  const RESOLVE_FORMS = ["NFC", "NFD"];
+  const FILLERS = 1000;
+
+  const seeded = (seed: number): (() => number) => {
+    let state = seed + 1;
+    return () => {
+      state = (state * 1664525 + 1013904223) % 4294967296;
+      return state / 4294967296;
+    };
+  };
+
+  const pick = <T>(rng: () => number, items: T[]): T => items[Math.floor(rng() * items.length)]!;
+
+  const resolveSurface = (rng: () => number): string =>
+    pick(
+      rng,
+      RESOLVE_CASES,
+    )(pick(rng, RESOLVE_PREFIXES) + pick(rng, RESOLVE_BASES) + pick(rng, RESOLVE_SUFFIXES)).normalize(
+      pick(rng, RESOLVE_FORMS),
+    );
+
+  const scanResolve = (registry: Map<string, RawEntity>, name: string): string => {
+    const key = name.trim().toLowerCase();
+    let ent =
+      registry.get(key) ??
+      [...registry.values()].find((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+    if (ent === undefined) {
+      ent = { type: "Thing", name: name.trim() };
+      registry.set(key, ent);
+    }
+    return ids.entityId(ent.type, ent.name);
+  };
+
+  const limitDerivations = (budget: number): void => {
+    let calls = 0;
+    const guard =
+      (real: (type: string, name: string) => string) =>
+      (type: string, name: string): string => {
+        calls += 1;
+        if (calls > budget) throw new Error(`name resolution derived more than ${budget} ids`);
+        return real(type, name);
+      };
+    const guardedEntityId = guard(idsModule.entityId);
+    const guardedCanonicalName = guard(idsModule.canonicalName);
+    vi.spyOn(idsModule, "entityId").mockImplementation(guardedEntityId);
+    vi.spyOn(idsModule, "canonicalName").mockImplementation(guardedCanonicalName);
+  };
+
+  const fillers = (): RawEntity[] =>
+    Array.from({ length: FILLERS }, (_, i) => ({ type: "Thing", name: `Filler ${i}` }));
+
+  const assembleNames = (entities: RawEntity[], names: string[], warnings: InsertWarning[] = []) => {
+    limitDerivations(2.5 * FILLERS + 20 * names.length);
+    return assembleExtraction(
+      [...fillers(), ...entities, { type: "Person", name: "Anchor" }],
+      names.map((name, i) => ({ from_name: name, type: `R${i}`, to_name: "Anchor" })),
+      [],
+      [],
+      warnings,
+    );
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(Array.from({ length: 60 }, (_, seed) => seed))(
+    "matches the linear scan on random name sets (seed %i)",
+    (seed) => {
+      const rng = seeded(seed);
+      const entities = Array.from({ length: Math.floor(rng() * 15) }, () => ({
+        type: pick(rng, RESOLVE_TYPES),
+        name: resolveSurface(rng),
+        aliases: [resolveSurface(rng)],
+      }));
+      const names = Array.from({ length: 40 }, () => resolveSurface(rng));
+      const registry = new Map<string, RawEntity>();
+      for (const ent of [...entities, { type: "Person", name: "Anchor" }]) {
+        const key = ent.name.trim().toLowerCase();
+        if (!registry.has(key)) registry.set(key, ent);
+      }
+      const expected = names.map((name) => scanResolve(registry, name));
+      const facts = assembleNames(entities, names);
+      expect(facts.relations.map((r) => r.from_entity)).toEqual(expected);
+      expect(facts.entities.slice(FILLERS).map((e) => [e.type, e.name])).toEqual(
+        [...registry.values()].map((e) => [e.type, e.name]),
+      );
+    },
+  );
+
+  it.each([
+    [
+      [
+        ["Organization", "Acme"],
+        ["Company", "Acme Ltd"],
+      ],
+      "ACME Inc",
+      "organization:acme",
+    ],
+    [
+      [
+        ["Company", "Acme Ltd"],
+        ["Organization", "Acme"],
+      ],
+      "ACME Inc",
+      "company:acme",
+    ],
+    [
+      [
+        ["Person", "Acme"],
+        ["Company", "Acme"],
+      ],
+      "Acme Inc",
+      "thing:acme-inc",
+    ],
+    [
+      [
+        ["Person", "Acme!"],
+        ["Company", "Acme Corp"],
+      ],
+      "Acme",
+      "person:acme",
+    ],
+    [
+      [
+        ["Person", "Acme!"],
+        ["Company", "Acme Corp"],
+      ],
+      "The Acme Inc",
+      "company:acme",
+    ],
+    [
+      [
+        ["Person", "Acme!"],
+        ["Company", "Acme Corp"],
+      ],
+      "ACME.",
+      "person:acme",
+    ],
+    [
+      [
+        ["Company", "Acme Corp"],
+        ["Person", "Acme!"],
+      ],
+      "ACME.",
+      "company:acme",
+    ],
+    [[["Person", "Robert"]], "Bob", "thing:bob"],
+    [
+      [
+        ["Person", "Bob"],
+        ["Person", "Robert"],
+      ],
+      "BOB.",
+      "person:bob",
+    ],
+    [[["Place", "Café"]], "Café", "place:café"],
+    [[["Place", "Café"]], "CAFÉ", "place:café"],
+    [[["COMPANY", "Acme Corp"]], "ACME inc", "company:acme"],
+    [[["Person", "The Acme Inc"]], "The Acme Inc!", "person:the-acme-inc"],
+    [[["Thing", "Acme Inc"]], "ACME INC.", "thing:acme-inc"],
+    [[], "Acme Inc", "thing:acme-inc"],
+  ] as Array<[Array<[string, string]>, string, string]>)(
+    "pins the winner for %j and %s",
+    (entities, name, expected) => {
+      const facts = assembleNames(
+        entities.map(([type, entityName]) => ({ type, name: entityName })),
+        [name],
+      );
+      expect(facts.relations.map((r) => r.from_entity)).toEqual([expected]);
+    },
+  );
+
+  it.each([true, false])("ignores aliases that name another entity (bob first: %s)", (bobFirst) => {
+    const bob = { type: "Person", name: "Bob" };
+    const robert = { type: "Person", name: "Robert", aliases: ["Bob", "Rob"] };
+    const facts = assembleNames(bobFirst ? [bob, robert] : [robert, bob], ["BOB.", "ROB."]);
+    expect(facts.relations.map((r) => r.from_entity)).toEqual(["person:bob", "thing:rob"]);
+  });
+
+  it("resolves every kind of name lookup through the same index", () => {
+    const acme = "ACME inc";
+    const cafe = "Café";
+    limitDerivations(2.5 * FILLERS + 100);
+    const facts = assembleExtraction(
+      [
+        ...fillers(),
+        { type: "Company", name: "Acme Corp" },
+        { type: "Person", name: "Jane" },
+        { type: "Place", name: "Café" },
+      ],
+      [{ from_name: acme, type: "OWNS", to_name: cafe }],
+      [{ subject_name: acme, stance: "preference", key: "venue", value_name: cafe, about_name: acme }],
+      [
+        {
+          title: "Pick a venue",
+          actor_name: acme,
+          outcome_name: cafe,
+          alternative_names: [cafe, acme, "Nowhere Inc"],
+          steps: [{ from_name: acme, type: "USES", to_name: cafe }],
+        },
+      ],
+    );
+    expect(facts.relations.map((r) => [r.from_entity, r.to_entity])).toEqual([
+      ["company:acme", "place:café"],
+      ["company:acme", "place:café"],
+    ]);
+    expect(facts.preferences.map((p) => [p.subject_entity, p.value_entity, p.about_entity])).toEqual([
+      ["company:acme", "place:café", "company:acme"],
+    ]);
+    expect(facts.decisions.map((d) => [d.actor_entity, d.outcome_entity, d.alternative_entities])).toEqual([
+      ["company:acme", "place:café", ["place:café", "company:acme", "thing:nowhere-inc"]],
+    ]);
+    expect(facts.entities.slice(FILLERS).map((e) => [e.type, e.name])).toEqual([
+      ["Company", "Acme Corp"],
+      ["Person", "Jane"],
+      ["Place", "Café"],
+      ["Thing", "Nowhere Inc"],
+    ]);
+  });
+
+  it("drops invalid and blank names with one warning", () => {
+    const bad = "Bad\u0000name";
+    let warnings: InsertWarning[] = [];
+    const alone = [0, 1].map((i) => ({ from_name: bad, type: `R${i}`, to_name: "Jane" }));
+    expect(assembleExtraction([], alone, [], [], warnings).relations).toEqual([]);
+    expect(warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+    expect(warnings[0]!.message.startsWith("dropped an extracted entity: ")).toBe(true);
+
+    warnings = [];
+    const facts = assembleNames([], [bad, "  ", bad, "", "\t", "Gamma Inc"], warnings);
+    expect(facts.relations.map((r) => r.from_entity)).toEqual(["thing:gamma-inc"]);
+    expect(warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+    expect(warnings[0]!.message.startsWith("dropped an extracted entity: ")).toBe(true);
+  });
+
+  it("reads each entity a bounded number of times however many names it resolves", () => {
+    const n = 2000;
+    const budget = 30 * n;
+    let reads = 0;
+    const read = (value: string): string => {
+      reads += 1;
+      if (reads > budget)
+        throw new Error(`name resolution read entity fields more than ${budget} times for ${n} entities`);
+      return value;
+    };
+    const entities = Array.from({ length: n }, (_, i) => ({
+      get type() {
+        return read("Person");
+      },
+      get name() {
+        return read(`Person ${i}`);
+      },
+    }));
+    const relations = Array.from({ length: n }, (_, i) => ({
+      from_name: `Person ${i}`,
+      type: "KNOWS",
+      to_name: `Stranger ${i}`,
+    }));
+    const facts = assembleExtraction(entities, relations, [], []);
+    expect(facts.entities).toHaveLength(2 * n);
+    expect(facts.relations).toHaveLength(n);
+    expect(reads).toBeLessThanOrEqual(budget);
+  });
+});
 
 describe("LLM extraction through the AI SDK", () => {
   it.each([

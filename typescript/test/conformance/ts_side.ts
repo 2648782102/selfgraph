@@ -422,6 +422,32 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
   return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
 }
 
+const RESOLVED_NAME_ENTITIES = [
+  { type: "Person", name: "Acme!" },
+  { type: "Company", name: "Acme Corp" },
+  { type: "Organization", name: "Beta" },
+  { type: "Company", name: "Beta Ltd" },
+  { type: "Place", name: "Café" },
+  { type: "Person", name: "Anchor" },
+];
+
+const RESOLVED_NAMES = ["ACME.", "The Acme Inc", "Acme", "Beta Inc", "The Beta", "Café", "CAFÉ", "Gamma Inc", "gamma"];
+
+/**
+ * Resolve surface-variant names against registered entities, where ties and type classes decide the winner.
+ *
+ * @return (unknown): the assembled facts.
+ */
+function resolvedExtractedNames(): unknown {
+  const extraction = assembleExtraction(
+    RESOLVED_NAME_ENTITIES,
+    RESOLVED_NAMES.map((name, i) => ({ from_name: name, type: `R${i}`, to_name: "Anchor" })),
+    [],
+    [],
+  );
+  return toJsonable(extraction);
+}
+
 /**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
@@ -449,6 +475,7 @@ export function schemaWarnings(): {
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
+  resolved_extracted_names: unknown;
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
   const terms = Schema.parse(TERMS_SPEC);
@@ -599,6 +626,7 @@ export function schemaWarnings(): {
       [...expandTokens(tokens(q), subSchema, tokens)].sort(comparePy),
     ),
     repeated_extracted_relations: repeatedExtractedRelations(),
+    resolved_extracted_names: resolvedExtractedNames(),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);
       return parsed === null ? null : jsonIso(parsed);

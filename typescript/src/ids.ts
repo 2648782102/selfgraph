@@ -126,10 +126,27 @@ export function slug(text: string): string {
   return pyCollapseWs(pyStrip(text).toLowerCase(), "-");
 }
 
-function canonicalName(type: string, rawName: string): string {
+/**
+ * Report whether an entity type gets organisation-style name canonicalisation.
+ *
+ * @param type (string): the entity type.
+ * @return (boolean): true when the type is organisation-like.
+ */
+export function isOrgType(type: string): boolean {
+  return ORG_TYPES.has(slug(normalizeText(type)));
+}
+
+/**
+ * Canonicalise an entity name so cross-document surface variants collapse.
+ *
+ * @param type (string): the entity type, which scopes suffix and article stripping.
+ * @param rawName (string): the raw entity name.
+ * @return (string): the canonical hyphenated form.
+ */
+export function canonicalName(type: string, rawName: string): string {
   const name = normalizeText(rawName);
   let words = pySplit(pyStrip(name).toLowerCase().replace(PUNCT, " "));
-  if (ORG_TYPES.has(slug(type))) {
+  if (isOrgType(type)) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);
   }
