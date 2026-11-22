@@ -122,6 +122,9 @@ strict yes/no question, highest similarity first, at most `max_questions` times
 per candidate. It merges on the first yes, with reason `llm` and the similarity
 as confidence. It also merges within one insert.
 
+The question has one line per mention. Line breaks and control characters in
+types, names, and aliases are escaped there, so stored text cannot add a line.
+
 Below the band nothing is asked, so the LLM never merges an entity without a
 lexical candidate. Pairs that fail the [word check](#names-that-never-merge-by-similarity)
 are never asked either. `Bill Gates` and `William Gates` score 0.81, inside the

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from . import _ops
 from . import ids as _ids
 from ._maintenance import scan_live_merges
+from ._payload import context_payload
 from ._serde import (
     L_ENTITY,
     L_EVIDENCE,
@@ -431,7 +432,7 @@ def _question(candidate: EntityInput, ent: Entity) -> str:
 
     def describe(type_: str, name: str, aliases: Sequence[str]) -> str:
         extra = f" (also known as {', '.join(aliases)})" if aliases else ""
-        return f"{type_} {name!r}{extra}"
+        return context_payload(f"{type_} {name!r}{extra}")
 
     return (
         f"Mention A: {describe(candidate.type, candidate.name, candidate.aliases)}\n"

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from . import _ops
 from ._maintenance import scan_entities, scan_relations
 from ._ops import AsOf, _paged
+from ._payload import context_payload
 from ._serde import (
     L_CHUNK,
     L_ENTITY,
@@ -840,29 +841,6 @@ async def _collect_preferences(
     return sorted((p for p in preferences if p.subject_entity in order), key=lambda p: order[p.subject_entity])
 
 
-def _context_payload(text: str, *, source: bool = False) -> str:
-    """Contain stored content before admitting it to the context's SDK-owned headers.
-
-    @param text (str): a source passage or assembled graph record, never its trust header.
-    @param source (bool): preserve passage lines and label each as source data.
-    @return (str): display-safe content with no unlabelled physical lines.
-    """
-    rendered = [
-        "".join(
-            f"\\u{ord(c):04x}"
-            if (ord(c) < 32 and c != "\t")
-            or 127 <= ord(c) <= 159
-            or ord(c) in (0x061C, 0x200E, 0x200F)
-            or 0x202A <= ord(c) <= 0x202E
-            or 0x2066 <= ord(c) <= 0x2069
-            else c
-            for c in row
-        )
-        for row in re.split(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", text)
-    ]
-    return "\n".join("SOURCE | " + row for row in rendered) if source else "\\n".join(rendered)
-
-
 def _assemble(
     passages,
     entities,
@@ -898,9 +876,7 @@ def _assemble(
 
     def add(payload: str, cap: int, header: str = "GRAPH") -> bool:
         nonlocal used, full, rounding, boundary
-        line = (
-            _context_payload(payload, source=True) if header == "SOURCE" else f"{header} | {_context_payload(payload)}"
-        )
+        line = context_payload(payload, source=True) if header == "SOURCE" else f"{header} | {context_payload(payload)}"
         if not first:
             first.append(line)
             rounding = count_tokens("")
