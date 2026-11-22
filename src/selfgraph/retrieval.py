@@ -157,7 +157,7 @@ def _fold(text: str) -> str:
     @param text (str): the text to fold.
     @return (str): the NFC-normalized, casefolded text.
     """
-    return normalize_text(text).casefold()
+    return normalize_text(normalize_text(text).casefold())
 
 
 def _token_list(text: str) -> list[str]:

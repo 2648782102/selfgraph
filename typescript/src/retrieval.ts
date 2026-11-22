@@ -84,7 +84,7 @@ export const RETRIEVE_DEFAULTS = { strategy: "bfs", depth: 3, k: 20, max_nodes: 
  * @return (string): the folded text.
  */
 export function fold(text: string): string {
-  return casefold(normalizeText(text));
+  return normalizeText(casefold(normalizeText(text)));
 }
 
 /**

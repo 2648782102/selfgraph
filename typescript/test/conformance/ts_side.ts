@@ -446,6 +446,7 @@ export function schemaWarnings(): {
   shared_term_forms: unknown;
   shared_synonym_term_forms: unknown;
   shared_terms: string[][];
+  greek_tokens: string[][];
   datetime_errors: string[];
   iso_times: string[];
   terms_subtypes: unknown[];
@@ -587,6 +588,9 @@ export function schemaWarnings(): {
         kind,
         Object.fromEntries(named),
       ]),
+    ),
+    greek_tokens: ["μαΐου", "ΜΑΪ́ΟΥ", "αΰπνία", "ΑΫ́ΠΝΊΑ", "ŉ ǰ ΐ"].flatMap((text) =>
+      ["NFC", "NFD"].map((form) => [...tokens(text.normalize(form))].sort(comparePy)),
     ),
     shared_terms: ["employment state", "project state", "status"].map((q) =>
       [...expandTokens(tokens(q), sharedSchema, tokens)].sort(comparePy),
