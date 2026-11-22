@@ -265,12 +265,11 @@ class Schema(TopInputModel):
         for i, relation in enumerate(self.relations):
             try:
                 rtype = normalize_rel_type(relation.type)
-            except ValidationError:
-                rtype = None
+            except ValidationError as exc:
+                raise ValidationError(str(exc), code=exc.code, field=f"relations[{i}].type") from None
             if rtype in types:
                 raise ValueError(f"relations[{i}].type: duplicate relation type {relation.type!r}")
-            if rtype is not None:
-                types[rtype] = i
+            types[rtype] = i
             for side, end in (("from", relation.from_), ("to", relation.to)):
                 at = f"relations[{i}].{side}"
                 if self.entities:
