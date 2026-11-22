@@ -1034,6 +1034,25 @@ async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
     return decode_entity(props) if props else None
 
 
+async def preserve_entity_writes(runner: Any, ns: str, eid: str, fields: Mapping[str, Any]) -> None:
+    """Keep explicitly written fields out of live merges' removal sets."""
+    rows = await _nodes_where(runner, ns, L_MERGE, "survivor_id", [eid])
+    for row in rows:
+        if row.get("reverted_at") is not None:
+            continue
+        props = dict(row)
+        for key, values in (
+            ("aliases", [_clean_text(a) for a in fields.get("aliases", ())]),
+            ("properties", fields.get("properties", {})),
+            ("external_ids", fields.get("external_ids", {})),
+        ):
+            column = f"added_{key}_json"
+            props[column] = _dumps([v for v in _loads(row.get(column), []) if v not in values])
+        if props != row:
+            await runner.lock_node(ns, L_MERGE, row["id"])
+            await runner.upsert_node(ns, L_MERGE, row["id"], props)
+
+
 async def upsert_entities(
     runner: Any,
     ns: str,
@@ -1263,6 +1282,7 @@ async def update_entity(
         subject = EntityInput(id=eid, type=new_type, name=new_name, properties=properties)
         stored = EntityInput(id=eid, type=existing.type, name=existing.name, properties=existing.properties)
         await schema_check(runner, Extraction(entities=[subject]), Extraction(entities=[stored]))
+    await preserve_entity_writes(runner, ns, eid, fields)
     if (
         new_type == existing.type
         and new_name == existing.name

@@ -1430,3 +1430,67 @@ def test_unmerging_one_merge_keeps_the_relation_another_live_merge_rewrote_onto(
     assert ends() == [(BOB_ID, xena), (ROBERT_ID, xena)]
     run(g.entities.unmerge(merges[bobby].id))
     assert ends() == [(BOB_ID, xena), (bobby, xena)]
+
+
+@pytest.mark.parametrize("write", ["insert", "update"])
+@pytest.mark.parametrize("value", [1, 2])
+def test_issue_386_unmerge_keeps_survivor_writes(write, value):
+    g = fresh_graph("res", resolver="exact")
+    _seed(g, ROBERT)
+    result = run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {
+                        **BOB,
+                        "aliases": ["Bobby", "Rob"],
+                        "properties": {"k": 1, "merge_only": 1},
+                        "external_ids": {"a": "1", "b": "2"},
+                    }
+                ]
+            },
+            resolver="default",
+        )
+    )
+    fields = {"aliases": ["Bobby"], "properties": {"k": value}, "external_ids": {"a": "1"}}
+    if write == "insert":
+        run(g.insert.facts({"entities": [{**ROBERT, **fields}]}))
+    else:
+        run(g.entities.update(ROBERT_ID, **fields))
+    run(g.entities.unmerge(result.merges[0].id))
+    survivor = run(g.entities.get(ROBERT_ID))
+    assert survivor.aliases == ["Bob", "Bobby"]
+    assert survivor.properties == {"k": value}
+    assert survivor.external_ids == {"a": "1"}
+
+
+@pytest.mark.parametrize("write", ["insert", "update"])
+def test_issue_386_unmerge_keeps_decision_references(write):
+    g = fresh_graph("res", resolver="exact")
+    _seed(g, ROBERT, XENA, {"type": "Person", "name": "Ada"})
+    result = run(
+        g.insert.facts(
+            {
+                "entities": [BOB],
+                "decisions": [
+                    {
+                        "id": "decision:pick",
+                        "title": "Pick",
+                        "outcome_entity": BOB_ID,
+                        "alternative_entities": [BOB_ID, XENA_ID],
+                    }
+                ],
+            },
+            resolver="default",
+        )
+    )
+    fields = {"outcome_entity": ADA, "alternative_entities": [XENA_ID], "summary": "later"}
+    if write == "insert":
+        run(g.insert.facts({"decisions": [{"id": "decision:pick", "title": "Pick", **fields}]}))
+    else:
+        run(g.decisions.update("decision:pick", **fields))
+    run(g.entities.unmerge(result.merges[0].id))
+    decision = run(g.decisions.get("decision:pick"))
+    assert decision.outcome_entity == ADA
+    assert decision.alternative_entities == [XENA_ID]
+    assert decision.summary == "later"

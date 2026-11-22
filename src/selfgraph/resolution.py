@@ -1556,6 +1556,11 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         outcome = await end(original.outcome_entity, rewritten.outcome_entity)
         steps = [restored.get(s, s) for s in rewritten.steps]
         current = await _ops.get_trace(runner, ns, rw.id)
+        if current is not None and not rw.existed:
+            if current.actor_entity != rewritten.actor_entity:
+                actor = current.actor_entity
+            if current.outcome_entity != rewritten.outcome_entity:
+                outcome = current.outcome_entity
         step_inputs = original.steps
         if current is not None and not rw.existed:
             current_steps = [restored.get(s.relation_id, s.relation_id) for s in current.steps]
@@ -1584,6 +1589,8 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         alternatives = [
             await end(o, r) for o, r in zip(original.alternative_entities, rewritten.alternative_entities, strict=True)
         ]
+        if current is not None and not rw.existed and current.alternative_entities != rewritten.alternative_entities:
+            alternatives = list(current.alternative_entities)
         restored_steps = []
         for s in step_inputs:
             if s in dropped_sibling_ids and s not in orig_restored:

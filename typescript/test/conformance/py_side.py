@@ -1181,7 +1181,7 @@ async def write(graph):
     original_step = ids.relation_id("person:bob", "USES", "tool:hammer")
     edited_merge = await edited_graph.insert.facts(
         {
-            "entities": [{"type": "Person", "name": "Bob"}],
+            "entities": [{"type": "Person", "name": "Bob", "aliases": ["Bobby"], "properties": {"k": 1}}],
             "relations": [
                 {"from_entity": "person:bob", "type": "USES", "to_entity": "tool:hammer"},
                 {"from_entity": "person:ada", "type": "CHECKED", "to_entity": "tool:hammer"},
@@ -1193,12 +1193,22 @@ async def write(graph):
         ids.relation_id("person:ada", "CHECKED", "tool:hammer"),
         ids.relation_id("person:robert", "USES", "tool:hammer"),
     ]
-    await edited_graph.decisions.update(edited_merge.decisions[0].id, steps=edited_steps)
+    await edited_graph.decisions.update(
+        edited_merge.decisions[0].id,
+        steps=edited_steps,
+        outcome_entity="person:ada",
+        alternative_entities=["tool:hammer"],
+    )
+    await edited_graph.entities.update("person:robert", aliases=["Bobby"], properties={"k": 2})
     edited_undo = await edited_graph.entities.unmerge(edited_merge.merges[0].id)
     edited_read = await edited_graph.decisions.get(ids.decision_id("person:bob", "Pick"))
     out["unmerge_edited_steps"] = {
         "returned": [s.relation_id for s in edited_undo.decisions[0].steps],
         "stored": [s.relation_id for s in edited_read.steps],
+        "outcome": edited_read.outcome_entity,
+        "alternatives": edited_read.alternative_entities,
+        "aliases": edited_undo.survivor.aliases,
+        "properties": edited_undo.survivor.properties,
     }
     out["repeated_merges"] = {}
     first = {
