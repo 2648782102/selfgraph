@@ -12,6 +12,7 @@ import {
   conformanceStore,
   dump,
   exitCodes,
+  kuzuSchemeErrors,
   kuzuStatements,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
@@ -26,7 +27,16 @@ const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url
 const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(
-  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation" | "exit_codes" | "kuzu_statements",
+  cmd:
+    | "write"
+    | "dump"
+    | "schema"
+    | "supersede"
+    | "unmerge"
+    | "kuzu_isolation"
+    | "exit_codes"
+    | "kuzu_statements"
+    | "kuzu_scheme_errors",
   store: string,
   ns: string,
 ): unknown {
@@ -136,6 +146,10 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     await shared.close();
     expect(result.slice(0, 4)).toEqual([true, true, true, true]);
     expect(py("kuzu_isolation", "-", "-")).toEqual(result);
+  });
+
+  it.skipIf(!live.get("kuzu"))("refuses a server URI with the same code, field and store name in both languages", () => {
+    expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
   });
 
   it("gives every error code the same CLI exit code in both languages", () => {
