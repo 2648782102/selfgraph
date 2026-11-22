@@ -2822,7 +2822,9 @@ export async function upsertRelations(
       if (
         eventTime != null &&
         toIso(prev.event_time) !== toIso(eventTime) &&
-        (prev.is_current || (!reassert && epochMicros(effective) < epochMicros(effectiveTime(prev))))
+        (prev.is_current ||
+          (!reassert && epochMicros(effective) < epochMicros(effectiveTime(prev))) ||
+          toIso(effective) === toIso(prev.invalidated_at))
       )
         moved.add(rid);
       if (unchanged && !reassert) {

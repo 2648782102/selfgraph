@@ -2665,7 +2665,11 @@ async def upsert_relations(
             if (
                 event_time is not None
                 and to_iso(prev.event_time) != to_iso(event_time)
-                and (prev.is_current or (not reassert and effective < effective_time(prev)))
+                and (
+                    prev.is_current
+                    or (not reassert and effective < effective_time(prev))
+                    or effective == prev.invalidated_at
+                )
             ):
                 moved[rid] = None
             if unchanged and not reassert:
