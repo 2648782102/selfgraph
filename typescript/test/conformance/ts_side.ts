@@ -6,6 +6,7 @@ import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
   FalkorDBStore,
+  fromNeo4jOntology,
   fromTables,
   ids,
   KuzuStore,
@@ -463,6 +464,7 @@ export function schemaWarnings(): {
   schema_types: string[];
   alias_errors: string[];
   consistency_errors: Array<{ code: string; field: string | null; message: string }>;
+  neo4j_description_errors: Array<{ code: string; field: string | null; message: string }>;
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
   endpoint_types: unknown[];
@@ -487,6 +489,22 @@ export function schemaWarnings(): {
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
   const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  const neo4jDescriptionErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  for (const source of ["node_types", "relationship_types"]) {
+    for (const propertyDescription of [false, true]) {
+      for (const description of [false, 0, {}, []]) {
+        const body: Record<string, unknown> = { label: source === "node_types" ? "Person" : "KNOWS" };
+        if (propertyDescription) body.properties = [{ name: "note", description }];
+        else body.description = description;
+        try {
+          fromNeo4jOntology({ [source]: [body] });
+        } catch (exc) {
+          if (!(exc instanceof ValidationError)) throw exc;
+          neo4jDescriptionErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+        }
+      }
+    }
+  }
   for (const spec of [
     { entities: [{ name: "Person" }, { name: "Person" }] },
     { entities: [{ name: "Employee", parent: "Persn" }] },
@@ -532,6 +550,7 @@ export function schemaWarnings(): {
       ).map((w) => ({ code: w.code, message: w.message })),
     ),
     consistency_errors: consistencyErrors,
+    neo4j_description_errors: neo4jDescriptionErrors,
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
       {
