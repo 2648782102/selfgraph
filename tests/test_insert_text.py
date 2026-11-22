@@ -595,3 +595,31 @@ def test_custom_extractor_rejects_proto_properties():
     with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
         run(g.insert.text("Ann is a person."))
     assert run(g.entities.list()).items == []
+
+
+@pytest.mark.parametrize(
+    "relations", [None, [_RelOut.model_construct(from_name="Ann", type="KNOWS", to_name="Bob", event_time=2024)]]
+)
+def test_extraction_revalidates_output_model_instances(relations):
+    llm = FakeLLM({"_RelationsOut": _RelationsOut.model_construct(relations=relations)})
+    g = fresh_graph("invalid-instance", llm=llm)
+    with pytest.raises(ExtractionError) as caught:
+        run(g.insert.text("Ann knows Bob.", source_id="s"))
+    field = "relations" if relations is None else "relations[0].event_time"
+    assert caught.value.code == "invalid_llm_output"
+    assert str(caught.value).startswith(f"LLM client returned an invalid result for the relations pass: {field}:")
+    assert run(g.entities.list()).items == []
+    assert run(g.relations.list()).items == []
+
+
+def test_extraction_revalidates_raw_items_inside_output_model():
+    llm = FakeLLM(
+        {
+            "_RelationsOut": _RelationsOut.model_construct(
+                relations=[{"from_name": "Ann", "type": "KNOWS", "to_name": "Bob"}]
+            )
+        }
+    )
+    g = fresh_graph("raw-instance", llm=llm)
+    result = run(g.insert.text("Ann knows Bob.", source_id="s"))
+    assert [(r.from_entity, r.type, r.to_entity) for r in result.relations] == [("thing:ann", "KNOWS", "thing:bob")]

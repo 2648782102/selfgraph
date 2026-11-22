@@ -177,7 +177,7 @@ def _checked_output(result: object, schema: type[BaseModel], kind: str) -> BaseM
     @return (BaseModel): the validated output.
     """
     if isinstance(result, schema):
-        return result
+        result = result.model_dump(warnings=False)
     head = f"LLM client returned an invalid result for the {kind} pass"
     if (isinstance(result, Mapping) and kind not in result) or (
         hasattr(result, "__dict__") and not hasattr(result, kind)

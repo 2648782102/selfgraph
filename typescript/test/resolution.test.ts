@@ -6,6 +6,7 @@ import {
   decisionId,
   EntityInput,
   type Extraction,
+  ExtractionError,
   entityId,
   type LLMClient,
   LLMResolver,
@@ -1569,6 +1570,21 @@ function suite(spec: StoreSpec) {
     await expect(decide("Ada", { target_id: "person:nobody", confidence: 1, reason: "w" })).rejects.toThrow(
       /not one of the compatible entities/,
     );
+  });
+
+  it.each([null, { same: "false" }, { same: 1 }])("rejects invalid resolver replies: %j", async (reply) => {
+    const llm = { generate: async <T>() => reply as T };
+    const g = open({ llm, resolver: "llm" });
+    await seed(g, { type: "Person", name: "John Smith" });
+    const result = g.insert.facts({ entities: [{ type: "Person", name: "Jon Smyth" }] });
+    await expect(result).rejects.toBeInstanceOf(ExtractionError);
+    await expect(result).rejects.toMatchObject({
+      code: "invalid_llm_output",
+      field: "same",
+      message: "LLM client returned an invalid result for the resolver: same must be a boolean",
+    });
+    expect((await g.entities.list()).items.map((e) => e.id)).toEqual([entityId("Person", "John Smith")]);
+    expect((await g.entities.merges(entityId("Person", "John Smith"))).items).toEqual([]);
   });
 
   it("asks the LLM only inside the band", async () => {
