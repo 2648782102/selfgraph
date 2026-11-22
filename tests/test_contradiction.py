@@ -131,6 +131,23 @@ def test_supersede_retires_the_older_relation_in_place():
     assert run(collect(g.relations.iterate(include_invalidated=True))) == [r.id for r in listed]
 
 
+@pytest.mark.parametrize("flag", ["false", "no", 0, 1])
+def test_list_and_versions_flags_must_be_booleans(flag):
+    g = graph(contradiction="supersede")
+    insert(g, works_at("acme", 2020))
+    insert(g, works_at("globex", 2023))
+    kind = type(flag).__name__.replace("str", "string").replace("int", "number")
+    with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$"):
+        run(g.relations.list(include_invalidated=flag))
+    with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$"):
+        run(collect(g.relations.iterate(include_invalidated=flag)))
+    with pytest.raises(ValidationError, match=rf"^newest_first must be a boolean, got {kind}$"):
+        run(g.relations.versions(ACME, newest_first=flag))
+    with pytest.raises(ValidationError, match=rf"^newest_first must be a boolean, got {kind}$"):
+        run(g.preferences.versions("preference:missing", newest_first=flag))
+    assert [r.id for r in run(g.relations.list(include_invalidated=False)).items] == [GLOBEX]
+
+
 def test_supersede_resolves_conflicts_within_a_batch_in_input_order():
     g = graph(contradiction="supersede")
     result = insert(g, works_at("acme", 2020), works_at("globex", 2023))
