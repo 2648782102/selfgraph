@@ -18,8 +18,7 @@ def test_a_document_past_the_depth_limit_raises_instead_of_returning_a_value():
 
 
 def test_the_depth_limit_matches_the_typed_api():
-    # require_clean_json rejects depth 66 and accepts 65, so parse_json must agree
-    # rather than keeping a second, differently-rounded rule.
+    """The boundary is the one require_clean_json already enforces: 65 accepted, 66 rejected."""
     assert parse_json(nested(65)) == json.loads(nested(65))
     with pytest.raises(ValidationError):
         parse_json(nested(66))
