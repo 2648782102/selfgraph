@@ -63,6 +63,23 @@ it("keeps relation update history within the Kuzu buffer pool", async () => {
   }
 });
 
+it("names the store that matches the scheme", () => {
+  const messageFor = (uri: string) => {
+    try {
+      new KuzuStore(uri);
+    } catch (error) {
+      return String(error);
+    }
+    throw new Error(`${uri} was accepted`);
+  };
+  expect(messageFor("bolt://u:hunter2@h:1")).toContain("Neo4jStore");
+  expect(messageFor("memgraph://h:1")).toContain("Neo4jStore");
+  expect(messageFor("redis://h:1")).toContain("FalkorDBStore");
+  expect(messageFor("falkors://h:1")).toContain("FalkorDBStore");
+  expect(messageFor("hydradb://h:1")).toContain("HydraDBStore");
+  expect(messageFor("https://u:hunter2@h:1")).toContain("a server store");
+});
+
 describe("two KuzuStore instances over one database", () => {
   afterEach(async () => {
     await Promise.all(opened.splice(0).map((s) => s.close().catch(() => undefined)));

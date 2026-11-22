@@ -795,6 +795,31 @@ export async function kuzuStatements(path: string): Promise<{ outcomes: unknown[
   return { outcomes, ids };
 }
 
+/**
+ * The error each server URI raises from KuzuStore, as code, field, and message.
+ *
+ * @return (Array<[string | undefined, string | undefined, string] | "no error">): one entry per URI.
+ */
+export function kuzuSchemeErrors(): Array<[string | undefined, string | undefined, string] | "no error"> {
+  const uris = [
+    "bolt://u:hunter2@h:1",
+    "memgraph://h:1",
+    "redis://h:1",
+    "falkors://h:1",
+    "hydradb://h:1",
+    "https://u:hunter2@h:1",
+  ];
+  return uris.map((uri) => {
+    try {
+      new KuzuStore(uri);
+      return "no error";
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      return [exc.code, exc.field, exc.message];
+    }
+  });
+}
+
 const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
   ["list_entities", { limit: "5" }],
   ["list_entities", { limit: true }],

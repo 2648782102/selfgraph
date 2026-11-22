@@ -2442,6 +2442,27 @@ async def main():
         await graph.close()
         json.dump({"outcomes": outcomes, "ids": ids}, sys.stdout, ensure_ascii=False)
         return
+    if cmd == "kuzu_scheme_errors":
+        from selfgraph import KuzuStore as LocalKuzuStore
+
+        uris = [
+            "bolt://u:hunter2@h:1",
+            "memgraph://h:1",
+            "redis://h:1",
+            "falkors://h:1",
+            "hydradb://h:1",
+            "https://u:hunter2@h:1",
+        ]
+        errors = []
+        for uri in uris:
+            try:
+                LocalKuzuStore(uri)
+            except SelfGraphError as exc:
+                errors.append([exc.code, exc.field, str(exc)])
+            else:
+                errors.append("no error")
+        json.dump(errors, sys.stdout, ensure_ascii=False)
+        return
     if cmd == "schema":
         json.dump(schema_warnings(), sys.stdout, sort_keys=True, ensure_ascii=False)
         return
