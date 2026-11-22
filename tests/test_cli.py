@@ -1,7 +1,7 @@
 import argparse
 import io
-import os
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -485,12 +485,21 @@ def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
 
 def test_a_non_utf8_stdin_schema_reports_a_coded_error_under_surrogateescape():
     pytest.importorskip("kuzu")
-    # The locale chooses how sys.stdin decodes; under surrogateescape invalid
-    # bytes would arrive as lone surrogates instead of raising, so stdin must be
-    # read as strict UTF-8 regardless of that setting.
     env = {**os.environ, "PYTHONIOENCODING": "utf-8:surrogateescape"}
     result = subprocess.run(
-        [sys.executable, "-m", "selfgraph.cli", "--store", "kuzu", "--uri", ":memory:", "--schema", "-", "entity", "list"],
+        [
+            sys.executable,
+            "-m",
+            "selfgraph.cli",
+            "--store",
+            "kuzu",
+            "--uri",
+            ":memory:",
+            "--schema",
+            "-",
+            "entity",
+            "list",
+        ],
         input=b"\xff\xfe{",
         capture_output=True,
         env=env,
@@ -500,6 +509,7 @@ def test_a_non_utf8_stdin_schema_reports_a_coded_error_under_surrogateescape():
     assert "error[invalid_argument]: cannot read '-': not valid UTF-8" in err
     assert "field: path" in err
     assert "Traceback" not in err
+
 
 def test_version_and_help_text(capsys):
     for flag in ("--version", "-V"):
