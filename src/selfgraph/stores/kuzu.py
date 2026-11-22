@@ -107,6 +107,18 @@ _DEFAULT_CHECKPOINT_THRESHOLD = 16 * 1024**2
 _CHECKPOINT_POOL_DIVISOR = 1024
 _NOW = "RETURN current_timestamp()"
 _CLOCK_TICK = 0.02
+_MULTI_STATEMENT = "Kuzu runs one statement per query; pass one statement, not several joined by ';'"
+
+
+def _non_empty_statements(query: str) -> int:
+    """Count the ';'-separated statements in a query, ignoring semicolons inside string literals and comments.
+
+    @param query (str): the raw Cypher query.
+    @return (int): the number of statements that hold a non-whitespace token outside literals and comments.
+    """
+    from .._cypher_guard import blank_lexical_tokens
+
+    return sum(1 for part in blank_lexical_tokens(query).split(";") if part.replace("\x00", "").split())
 
 
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
@@ -285,44 +297,97 @@ class KuzuStore(AutoCommitStore):
         self._statements = 0
         self._raw = False
 
+    async def _in_thread(self, fn: Any, conn: Any, token: Future[None], state: dict[str, bool]) -> Any:
+        """Run a Kuzu call in a worker thread, holding the path lock until the thread leaves the native call.
+
+        Cancelling the await returns at once, but releasing the path lock while the worker is still inside the
+        native call would let close() or a reconnect free the connection under it and crash the process. So on
+        cancellation the lock token's release is handed to the worker's done callback and the caller re-raises
+        immediately; close() and a reconnect wait on the token and never free a live connection. interrupt() is a
+        best effort, since on some platforms it does not stop an in-flight statement; there the worker runs on.
+
+        @param fn (Any): the no-argument callable to run on conn.
+        @param conn (Any): the connection fn runs on, interrupted on cancellation.
+        @param token (Future[None]): the path-lock token, released by the worker when the caller is cancelled.
+        @param state (dict[str, bool]): set state["deferred"] so the caller leaves the token to the worker.
+        @return (Any): the callable's result.
+        """
+        work = asyncio.get_running_loop().run_in_executor(None, fn)
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            try:
+                conn.interrupt()
+            except Exception:  # noqa: BLE001
+                pass
+            state["deferred"] = True
+
+            def _release(done: Any, _t: Future[None] = token) -> None:
+                """Consume the finished worker's result, then release the path lock to the next waiter.
+
+                @param done (Any): the finished worker future.
+                @param _t (Future[None]): the path-lock token to release.
+                @return (None): nothing.
+                """
+                if not done.cancelled():
+                    done.exception()
+                _t.set_result(None)
+
+            work.add_done_callback(_release)
+            raise
+
     async def _run(self, query: str, params: Mapping[str, Any] | None = None, *, raw: bool = False) -> CypherResult:
-        def _exec():
-            qr = self._conn.execute(query, parameters=dict(params or {}))
+        def _exec(conn: Any) -> tuple[list[str], list[dict]]:
+            qr = conn.execute(query, parameters=dict(params or {}))
             if isinstance(qr, list):
-                raise StoreError("Kuzu runs one statement per query; pass one statement, not several joined by ';'")
+                raise StoreError(_MULTI_STATEMENT)
             columns = qr.get_column_names()
             rows = []
             while qr.has_next():
                 rows.append({k: _normalize(v) for k, v in zip(columns, qr.get_next(), strict=False)})
             return columns, rows
 
-        async with self._lock:
+        previous, token = self._lock._join()
+        try:
+            await asyncio.shield(asyncio.wrap_future(previous))
+        except BaseException:
+            previous.add_done_callback(lambda _done, _t=token: _t.set_result(None))
+            raise
+        state = {"deferred": False}
+        try:
             self._require_open()
             self._statements += 1
-            try:
-                if self._statements > _RECONNECT_EVERY:
-                    self._statements = 1
-                    if not (self._raw and await asyncio.to_thread(self._in_transaction)):
-                        self._conn = self._connect()
-                        self._raw = False
-                self._raw = self._raw or raw
-                columns, rows = await asyncio.to_thread(_exec)
-                return CypherResult(columns=columns, rows=rows)
-            except SelfGraphError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise _kuzu_error(exc, "Kuzu query failed") from exc
+            if self._statements > _RECONNECT_EVERY:
+                self._statements = 1
+                old = self._conn
+                if not (self._raw and await self._in_thread(lambda: self._in_transaction(old), old, token, state)):
+                    self._conn = self._connect()
+                    self._raw = False
+            self._raw = self._raw or raw
+            conn = self._conn
+            columns, rows = await self._in_thread(lambda: _exec(conn), conn, token, state)
+            return CypherResult(columns=columns, rows=rows)
+        except SelfGraphError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _kuzu_error(exc, "Kuzu query failed") from exc
+        finally:
+            if not state["deferred"]:
+                token.set_result(None)
 
-    def _in_transaction(self) -> bool:
+    def _in_transaction(self, conn: Any) -> bool:
         """Report whether a raw statement left a transaction open, as two current_timestamp() reads a tick apart match.
 
+        @param conn (Any): the connection to probe.
         @return (bool): True when a transaction is open.
         """
-        first = self._conn.execute(_NOW).get_next()
+        first = conn.execute(_NOW).get_next()
         time.sleep(_CLOCK_TICK)
-        return self._conn.execute(_NOW).get_next() == first
+        return conn.execute(_NOW).get_next() == first
 
     async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
+        if _non_empty_statements(query) > 1:
+            raise StoreError(_MULTI_STATEMENT)
         return await self._run(query, params, raw=True)
 
     async def initialize(self) -> None:

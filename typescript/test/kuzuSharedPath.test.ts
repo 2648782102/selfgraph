@@ -68,6 +68,25 @@ describe("two KuzuStore instances over one database", () => {
     await Promise.all(opened.splice(0).map((s) => s.close().catch(() => undefined)));
   });
 
+  it("reject a multi-statement run_cypher before running, so no write commits", async () => {
+    const path = tempKuzu("selfgraph-multi-");
+    const s = store(path);
+    const g = new SelfGraph(s, { namespace: uniqueNs("multi") });
+    await g.initialize();
+    await g.entities.create("A", "T", { id: "t:a" });
+    await g.entities.create("B", "T", { id: "t:b" });
+    const ids = async () => (await s.runCypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows.map((r) => r.id);
+    expect(await ids()).toEqual(["t:a", "t:b"]);
+    for (const query of ["RETURN 1 AS a; MATCH (n:N) DETACH DELETE n", "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})"]) {
+      await expect(s.runCypher(query)).rejects.toThrow(/one statement/);
+      await expect(s.runCypher(query)).rejects.toMatchObject({ code: "query_failed" });
+    }
+    expect(await ids()).toEqual(["t:a", "t:b"]);
+    expect((await s.runCypher("RETURN 'a; b' AS s")).rows).toEqual([{ s: "a; b" }]);
+    expect((await s.runCypher("MATCH (n:N) RETURN count(*) AS c ; // trailing")).rows).toEqual([{ c: 2 }]);
+    await g.close();
+  });
+
   it("serialize their writes, so max_count holds", async () => {
     expect(await twoClients(tempKuzu("selfgraph-shared-"))).toBe(1);
   });

@@ -659,6 +659,13 @@ FACTS_TYPE_CASES = [
     {"preferences": [{**_LIKES, "event_time": "9999-12-31T23:59:59-05:00"}]},
 ]
 
+STATEMENT_QUERIES = [
+    "RETURN 1 AS a; MATCH (n:N) DETACH DELETE n",
+    "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})",
+    "RETURN 'a; b' AS s",
+    "MATCH (n:N) RETURN count(*) AS c ; // trailing",
+]
+
 MCP_ARGUMENT_CASES = [
     ["list_entities", {"limit": "5"}],
     ["list_entities", {"limit": True}],
@@ -2367,6 +2374,26 @@ async def main():
                 result.append("no error")
         await first.close()
         json.dump(result, sys.stdout)
+        return
+    if cmd == "kuzu_statements":
+        import tempfile
+
+        from selfgraph import KuzuStore
+
+        store = KuzuStore(os.path.join(tempfile.mkdtemp(prefix="sg-conf-stmt-"), "g.kuzu"))
+        graph = SelfGraph(store=store, namespace="c")
+        await graph.initialize()
+        await graph.entities.create("A", "T", id="t:a")
+        await graph.entities.create("B", "T", id="t:b")
+        outcomes = []
+        for query in STATEMENT_QUERIES:
+            try:
+                outcomes.append({"rows": (await store.run_cypher(query)).rows})
+            except SelfGraphError as exc:
+                outcomes.append({"error": str(exc), "code": exc.code})
+        ids = [r["id"] for r in (await store.run_cypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows]
+        await graph.close()
+        json.dump({"outcomes": outcomes, "ids": ids}, sys.stdout, ensure_ascii=False)
         return
     if cmd == "schema":
         json.dump(schema_warnings(), sys.stdout, sort_keys=True, ensure_ascii=False)
