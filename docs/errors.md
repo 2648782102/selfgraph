@@ -235,6 +235,10 @@ duplicate anything.
 The server timed out or was too busy to take the query. Run the same call again
 after a moment.
 
+#### `invalid_stored_data`
+
+A stored node or edge is malformed. Repair the document identified by the message in its namespace before reading it again.
+
 #### `graph_closed`
 
 The SelfGraph was closed. Create a new SelfGraph.

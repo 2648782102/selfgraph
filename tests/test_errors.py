@@ -22,6 +22,7 @@ from selfgraph import (
     StoreError,
     TransientError,
 )
+from selfgraph._serde import decode_entity
 from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason, internal_error
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
@@ -219,6 +220,7 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "invalid_prompt_template": lambda: SelfGraph(
             store=g.store, prompts={"entities": {"version": "v1", "system": "s", "user": "no placeholder"}}
         ),
+        "invalid_stored_data": lambda: decode_entity({"id": "person:broken", "ns": "codes"}),
         "query_failed": lambda: g.run_cypher("RETURN ("),
         "graph_closed": lambda: closed_graph.entities.list(),
         "store_closed": lambda: SelfGraph(store=closed_store).entities.list(),

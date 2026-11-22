@@ -26,6 +26,7 @@ import { tokens } from "../../src/retrieval.js";
 import { parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
+import { parseDoc } from "../../src/stores/docRows.js";
 import { expandTokens, schemaForms } from "../../src/terms.js";
 import { parseTime } from "../../src/validate.js";
 import { STORE_SPECS } from "../helpers.js";
@@ -953,6 +954,23 @@ async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknow
 
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
+  const storedErrors: unknown[] = [];
+  for (const doc of ["x", "{}", "[]", "null"]) {
+    try {
+      parseDoc({ doc, stored_id: "person:ada", stored_ns: "conformance" });
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      storedErrors.push([exc.code, exc.field, exc.message, exc.hint]);
+    }
+  }
+  out.stored_errors = storedErrors;
+  try {
+    await graph.relations.certify("relation:missing", { by: "a\ud83dlonely" });
+  } catch (exc) {
+    if (!(exc instanceof SelfGraphError)) throw exc;
+    out.surrogate_error = [exc.code, exc.field, exc.message, exc.hint];
+  }
+
   const { checkResultDepth } = await import("../../src/models.js");
   const depthErrors: unknown[] = [];
   for (const kind of ["list", "map"]) {

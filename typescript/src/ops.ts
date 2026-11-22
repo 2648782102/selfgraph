@@ -3351,6 +3351,9 @@ export async function certifyRelation(
   if (by !== null && (typeof by !== "string" || !pyStrip(by))) {
     throw new ValidationError("certified_by must be a non-empty string");
   }
+  if (by !== null && hasSurrogate(by)) {
+    throw new ValidationError("certified_by cannot contain unpaired surrogate characters", { field: "by" });
+  }
   let edge = await runner.getCurrentEdge(ns, rid);
   if (edge !== null) {
     for (const eid of relationLockIds(caps, [[edge.type, edge.from_id, edge.to_id]])) {

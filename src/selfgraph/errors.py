@@ -47,6 +47,7 @@ ErrorCode = Literal[
     "invalid_llm_output",
     "invalid_prompt_template",
     "query_failed",
+    "invalid_stored_data",
     "graph_closed",
     "store_closed",
     "store_unreachable",
@@ -146,6 +147,10 @@ HINTS: dict[ErrorCode, str] = {
     ),
     "query_failed": (
         "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself."
+    ),
+    "invalid_stored_data": (
+        "A stored node or edge is malformed. Repair the document identified by the message in its namespace "
+        "before reading it again."
     ),
     "graph_closed": "The SelfGraph was closed. Create a new SelfGraph.",
     "store_closed": (
@@ -385,6 +390,15 @@ class PromptTemplateError(SelfGraphError):
 
 class StoreError(SelfGraphError):
     code: ErrorCode = "query_failed"
+
+
+def stored_data_error(props: dict) -> StoreError:
+    """Identify a malformed stored record without exposing its contents."""
+    return StoreError(
+        f"stored document {props.get('id')!r} in namespace {props.get('ns')!r} is malformed",
+        code="invalid_stored_data",
+        field="doc",
+    )
 
 
 class TransientError(StoreError):

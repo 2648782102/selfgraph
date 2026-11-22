@@ -904,6 +904,19 @@ async def write(graph):
         except SelfGraphError as exc:
             depth_errors.append([exc.code, exc.field, str(exc)])
     out = {"result_depth_errors": depth_errors, "entity_type_errors": []}
+    from selfgraph.stores._docrows import parse_doc
+
+    out["stored_errors"] = []
+    for doc in ("x", "{}", "[]", "null"):
+        try:
+            parse_doc({"doc": doc, "stored_id": "person:ada", "stored_ns": "conformance"})
+        except SelfGraphError as exc:
+            out["stored_errors"].append([exc.code, exc.field, str(exc), exc.hint])
+    try:
+        await graph.relations.certify("relation:missing", by="a\ud83dlonely")
+    except SelfGraphError as exc:
+        out["surrogate_error"] = [exc.code, exc.field, str(exc), exc.hint]
+
     for bad_type in (":a", "a:b", "Person:"):
         try:
             ids.entity_id(bad_type, "X")

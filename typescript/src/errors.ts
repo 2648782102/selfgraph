@@ -46,6 +46,8 @@ export const HINTS = {
     "A prompt template is malformed. Keep `{text}` in the user template and use no placeholder other than `{text}` and `{instructions}`.",
   query_failed:
     "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself.",
+  invalid_stored_data:
+    "A stored node or edge is malformed. Repair the document identified by the message in its namespace before reading it again.",
   graph_closed: "The SelfGraph was closed. Create a new SelfGraph.",
   store_closed: "The store was closed, and closing a graph closes its store. Create a new store for each SelfGraph.",
   store_unreachable:
@@ -257,6 +259,14 @@ export class PromptTemplateError extends SelfGraphError {
 
 export class StoreError extends SelfGraphError {
   static override readonly code: ErrorCode = "query_failed";
+}
+
+/** Identify a malformed stored record without exposing its contents. */
+export function storedDataError(props: Record<string, unknown>): StoreError {
+  return new StoreError(
+    `stored document ${pyRepr(props.id ?? null)} in namespace ${pyRepr(props.ns ?? null)} is malformed`,
+    { code: "invalid_stored_data", field: "doc" },
+  );
 }
 
 export class TransientError extends StoreError {

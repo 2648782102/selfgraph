@@ -4,7 +4,7 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import type { Driver, Session } from "neo4j-driver";
 
 import { errorMessage, OTHER_ENGINE_HINT, SelfGraphError, StoreError, TOKEN_HINT } from "../errors.js";
-import { comparePy, pyJsonDumps, pyStr, utf8 } from "../internal/py.js";
+import { comparePy, pyJsonDumps, pyRepr, pyStr, utf8 } from "../internal/py.js";
 import { L_ENTITY, L_EVIDENCE, L_MERGE } from "../labels.js";
 import type { CypherResult } from "../models.js";
 import { batches } from "../ops.js";
@@ -22,6 +22,7 @@ import {
 } from "../protocols.js";
 import { matchKeys } from "../resolution.js";
 import { decodeEntity } from "../serde.js";
+import { hasSurrogate } from "../validate.js";
 import {
   type BoltStoreOptions,
   boltFailure,
@@ -72,6 +73,12 @@ const OTHER_ENGINE_MARKERS = [
 function writeSize(row: Props): number {
   let size = 0;
   for (const [key, value] of Object.entries(row)) {
+    if (hasSurrogate(key) || (typeof value === "string" && hasSurrogate(value))) {
+      throw new StoreError(`HydraDB write field ${pyRepr(key)} cannot contain unpaired surrogate characters`, {
+        code: "invalid_argument",
+        field: key,
+      });
+    }
     size += utf8(key).length + (typeof value === "string" ? utf8(value).length : 9);
   }
   return size;
@@ -617,7 +624,11 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async getNode(ns: string, label: string, id: string): Promise<Props | null> {
     const iid = surrogateKey(ns, id);
-    const res = await this._run(`MATCH (n:${label} {id: $iid}) RETURN n.doc AS doc`, { iid }, [iid]);
+    const res = await this._run(
+      `MATCH (n:${label} {id: $iid}) RETURN n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns`,
+      { iid },
+      [iid],
+    );
     return firstDoc(res.rows);
   }
 
@@ -781,7 +792,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     const found = new Map<string, Props>();
     for (const batch of batches([...iids.values()].sort(compareKeys), SEEK_BATCH)) {
       const res = await this._run(
-        `MATCH (n:${L_ENTITY}) WHERE n.id IN $iids AND ${same("n", "ns", "ns")} RETURN n.id AS iid, n.doc AS doc`,
+        `MATCH (n:${L_ENTITY}) WHERE n.id IN $iids AND ${same("n", "ns", "ns")} RETURN n.id AS iid, n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns`,
         { iids: batch, ns },
       );
       for (const r of res.rows) {
@@ -828,7 +839,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       whereAfter(`n.\`${key}\``, id_gt, where, params);
       const res = await this._run(
         `MATCH (n:${label}) WHERE ${where.join(" AND ")} ` +
-          `RETURN n.doc AS doc ORDER BY n.\`${key}\` SKIP $skip LIMIT $limit`,
+          `RETURN n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns ORDER BY n.\`${key}\` SKIP $skip LIMIT $limit`,
         params,
         [labelKey(label)],
       );
@@ -858,7 +869,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     whereAfter("n.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${pattern}) WHERE ${where.join(" AND ")} ` +
-        "RETURN n.doc AS doc, n.`sid` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
+        "RETURN n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns, n.`sid` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
       params,
       (params.iids as bigint[] | undefined) ?? [labelKey(label)],
     );
@@ -974,7 +985,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
-      `${READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et`,
+      `${READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et`,
       { ns, sid: id },
       [sidKey(ns, id)],
     );
@@ -984,7 +995,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
 
   async listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]> {
     const res = await this._run(
-      `${READ_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
+      `${READ_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
       { ns, sid: id },
       [sidKey(ns, id)],
     );
@@ -1016,7 +1027,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
       .join("");
     const res = await this._run(
       `${READ_EDGES} AND NOT (NOT r.sid IN $sids)${where} ` +
-        "RETURN r.sid AS sid, r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
+        "RETURN r.sid AS sid, r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et",
       { ns, sids: ids, ...labels },
       ids.map((sid) => sidKey(ns, sid)),
     );
@@ -1116,7 +1127,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     whereAfter("r.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (${apat})-[r:${EDGE}]->(${bpat}) WHERE ${where.join(" AND ")} ` +
-        "RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob, r.revision AS __rev " +
+        "RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`sid` AS __ob, r.revision AS __rev " +
         "ORDER BY __ob, __rev, fa, tb, et SKIP $skip LIMIT $limit",
       params,
     );
@@ -1132,7 +1143,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
   ): Promise<Props[]> {
     const res = await this._run(
       `MATCH (p:${parentLabel} {id: $iid})-[r:${EDGE}]->(c:${childLabel}) ` +
-        `WHERE ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} RETURN c.doc AS doc`,
+        `WHERE ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} RETURN c.doc AS doc, c.sid AS stored_id, c.ns AS stored_ns`,
       { iid: surrogateKey(ns, parentId), ns, et: edgeType },
     );
     return docs(res.rows);
@@ -1159,7 +1170,7 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
     for (const batch of batches(parentIds, SEEK_BATCH)) {
       const res = await this._run(
         `MATCH (p:${parentLabel})-[r:${EDGE}]->(c:${childLabel}) WHERE p.id IN $iids ` +
-          `AND ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} RETURN p.sid AS parent, c.doc AS doc`,
+          `AND ${same("r", "ns", "ns")} AND ${same("r", "etype", "et")} RETURN p.sid AS parent, c.doc AS doc, c.sid AS stored_id, c.ns AS stored_ns`,
         { iids: batch.map((i) => surrogateKey(ns, i)), ns, et: edgeType },
       );
       for (const row of res.rows) {
