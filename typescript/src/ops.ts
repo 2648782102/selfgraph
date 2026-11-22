@@ -941,6 +941,32 @@ export async function getEntity(runner: Runner, ns: string, eid: string): Promis
   return props ? decodeEntity(props) : null;
 }
 
+/** Keep explicitly written fields out of live merges' removal sets. */
+export async function preserveEntityWrites(
+  runner: Runner,
+  ns: string,
+  eid: string,
+  fields: UpdateEntityFields,
+): Promise<void> {
+  const rows = await nodesWhere(runner, ns, L_MERGE, "survivor_id", [eid]);
+  for (const row of rows) {
+    if (row.reverted_at != null) continue;
+    const props = { ...row };
+    for (const [key, values] of [
+      ["aliases", (fields.aliases ?? []).map(cleanText)],
+      ["properties", Object.keys(fields.properties ?? {})],
+      ["external_ids", Object.keys(fields.external_ids ?? {})],
+    ] as const) {
+      const column = `added_${key}_json`;
+      props[column] = dumps(loads<string[]>(row[column], []).filter((v) => !values.includes(v)));
+    }
+    if (!deepEqual(props, row)) {
+      await runner.lockNode(ns, L_MERGE, row.id as string);
+      await runner.upsertNode(ns, L_MERGE, row.id as string, props);
+    }
+  }
+}
+
 /**
  * Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
  *
@@ -1174,6 +1200,7 @@ export async function updateEntity(
       relations: [],
     },
   );
+  await preserveEntityWrites(runner, ns, eid, fields);
   if (
     type === existing.type &&
     name === existing.name &&

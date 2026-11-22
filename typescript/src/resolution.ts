@@ -1684,11 +1684,17 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   for (const rw of decisionRws) {
     const original = parseOrThrow(DecisionTraceInput, rw.original, "decision");
     const rewritten = parseOrThrow(DecisionTraceInput, rw.rewritten, "decision");
-    const actor = await end(original.actor_entity, rewritten.actor_entity);
-    const outcome = await end(original.outcome_entity, rewritten.outcome_entity);
+    const current = await ops.getTrace(runner, ns, rw.id);
+    const actor =
+      current !== null && !rw.existed && current.actor_entity !== rewritten.actor_entity
+        ? current.actor_entity
+        : await end(original.actor_entity, rewritten.actor_entity);
+    const outcome =
+      current !== null && !rw.existed && current.outcome_entity !== rewritten.outcome_entity
+        ? current.outcome_entity
+        : await end(original.outcome_entity, rewritten.outcome_entity);
     if ((actor !== null && !(await exists(actor))) || (outcome !== null && !(await exists(outcome)))) continue;
     const steps = rewritten.steps.map((s) => restored.get(s) ?? s);
-    const current = await ops.getTrace(runner, ns, rw.id);
     const currentSteps =
       current !== null && !rw.existed ? current.steps.map((s) => restored.get(s.relation_id) ?? s.relation_id) : steps;
     const stepInputs = deepEqual(currentSteps, steps) ? original.steps : currentSteps;
@@ -1704,6 +1710,9 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     for (const [i, o] of original.alternative_entities.entries()) {
       const alternative = await end(o, rewritten.alternative_entities[i]!);
       if (await exists(alternative)) alternatives.push(alternative);
+    }
+    if (current !== null && !rw.existed && !deepEqual(current.alternative_entities, rewritten.alternative_entities)) {
+      alternatives.splice(0, alternatives.length, ...current.alternative_entities);
     }
     const restoredSteps: string[] = [];
     for (const s of stepInputs) {

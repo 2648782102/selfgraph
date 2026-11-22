@@ -130,6 +130,70 @@ function suite(spec: StoreSpec) {
   const ids = async (g: SelfGraph) => (await g.entities.list({ limit: 1000 })).items.map((e) => e.id).sort();
   const seed = (g: SelfGraph, ...entities: Extraction["entities"] & object[]) => g.insert.facts({ entities });
 
+  it.each([
+    ["insert", 1],
+    ["insert", 2],
+    ["update", 1],
+    ["update", 2],
+  ] as const)("issue 386 preserves survivor writes via %s with %s", async (write, value) => {
+    const g = open({ resolver: "exact" });
+    await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });
+    const result = await g.insert.facts(
+      {
+        entities: [
+          {
+            type: "Person",
+            name: "Bob",
+            aliases: ["Bobby", "Rob"],
+            properties: { k: 1, merge_only: 1 },
+            external_ids: { a: "1", b: "2" },
+          },
+        ],
+      },
+      { resolver: "default" },
+    );
+    const fields = { aliases: ["Bobby"], properties: { k: value }, external_ids: { a: "1" } };
+    if (write === "insert") await g.insert.facts({ entities: [{ type: "Person", name: "Robert", ...fields }] });
+    else await g.entities.update("person:robert", fields);
+    await g.entities.unmerge(result.merges[0]!.id);
+    const survivor = await g.entities.get("person:robert");
+    expect(survivor?.aliases).toEqual(["Bob", "Bobby"]);
+    expect(survivor?.properties).toEqual({ k: value });
+    expect(survivor?.external_ids).toEqual({ a: "1" });
+  });
+
+  it.each(["insert", "update"])("issue 386 preserves decision references via %s", async (write) => {
+    const g = open({ resolver: "exact" });
+    await seed(
+      g,
+      { type: "Person", name: "Robert", aliases: ["Bob"] },
+      { type: "Person", name: "Xena" },
+      { type: "Person", name: "Ada" },
+    );
+    const result = await g.insert.facts(
+      {
+        entities: [{ type: "Person", name: "Bob" }],
+        decisions: [
+          {
+            id: "decision:pick",
+            title: "Pick",
+            outcome_entity: "person:bob",
+            alternative_entities: ["person:bob", "person:xena"],
+          },
+        ],
+      },
+      { resolver: "default" },
+    );
+    const fields = { outcome_entity: "person:ada", alternative_entities: ["person:xena"], summary: "later" };
+    if (write === "insert") await g.insert.facts({ decisions: [{ id: "decision:pick", title: "Pick", ...fields }] });
+    else await g.decisions.update("decision:pick", fields);
+    await g.entities.unmerge(result.merges[0]!.id);
+    const decision = await g.decisions.get("decision:pick");
+    expect(decision?.outcome_entity).toBe("person:ada");
+    expect(decision?.alternative_entities).toEqual(["person:xena"]);
+    expect(decision?.summary).toBe("later");
+  });
+
   it("leaves exact mode unchanged", async () => {
     const g = open({ resolver: "exact" });
     await seed(g, { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } });

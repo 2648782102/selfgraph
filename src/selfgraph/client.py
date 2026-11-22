@@ -18,7 +18,7 @@ from .contradiction import judge_contradictions
 from .errors import CLOSED_MESSAGE, EMBEDDER_HINT, StoreError, TransientError, ValidationError, needs_llm
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace, decision_id, type_name
+from .ids import _require_namespace, decision_id, entity_id, type_name
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
@@ -657,6 +657,17 @@ class SelfGraph:
                     event_time=default_event_time,
                 )
 
+            for ent in canonical.entities:
+                await _ops.preserve_entity_writes(
+                    tx,
+                    ns,
+                    ent.id or entity_id(ent.type, ent.name),
+                    {
+                        "aliases": [*ent.aliases, ent.name],
+                        "properties": ent.properties,
+                        "external_ids": ent.external_ids,
+                    },
+                )
             entities = await _ops.upsert_entities(
                 tx,
                 ns,

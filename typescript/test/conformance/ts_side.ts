@@ -734,7 +734,7 @@ export function conformanceStore(name: string, kuzuPath: string): GraphStore {
     return new FalkorDBStore("localhost", Number(process.env.SG_FALKOR_PORT ?? 6380), {
       graph: "selfgraph_conformance",
     });
-  if (name === "kuzu") return new KuzuStore(kuzuPath);
+  if (name === "kuzu") return new KuzuStore(kuzuPath, { buffer_pool_size: 128 << 20 });
   return STORE_SPECS.find((s) => s.name === name)!.make();
 }
 
@@ -1231,7 +1231,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   });
   const originalStep = ids.relationId("person:bob", "USES", "tool:hammer");
   const editedMerge = await editedGraph.insert.facts({
-    entities: [{ type: "Person", name: "Bob" }],
+    entities: [{ type: "Person", name: "Bob", aliases: ["Bobby"], properties: { k: 1 } }],
     relations: [
       { from_entity: "person:bob", type: "USES", to_entity: "tool:hammer" },
       { from_entity: "person:ada", type: "CHECKED", to_entity: "tool:hammer" },
@@ -1242,12 +1242,21 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     ids.relationId("person:ada", "CHECKED", "tool:hammer"),
     ids.relationId("person:robert", "USES", "tool:hammer"),
   ];
-  await editedGraph.decisions.update(editedMerge.decisions[0]!.id, { steps: editedSteps });
+  await editedGraph.decisions.update(editedMerge.decisions[0]!.id, {
+    steps: editedSteps,
+    outcome_entity: "person:ada",
+    alternative_entities: ["tool:hammer"],
+  });
+  await editedGraph.entities.update("person:robert", { aliases: ["Bobby"], properties: { k: 2 } });
   const editedUndo = await editedGraph.entities.unmerge(editedMerge.merges[0]!.id);
   const editedRead = (await editedGraph.decisions.get(ids.decisionId("person:bob", "Pick")))!;
   out.unmerge_edited_steps = {
     returned: editedUndo.decisions[0]!.steps.map((s) => s.relation_id),
     stored: editedRead.steps.map((s) => s.relation_id),
+    outcome: editedRead.outcome_entity,
+    alternatives: editedRead.alternative_entities,
+    aliases: editedUndo.survivor!.aliases,
+    properties: editedUndo.survivor!.properties,
   };
   const repeatedMerges: Record<string, unknown> = {};
   const first = {

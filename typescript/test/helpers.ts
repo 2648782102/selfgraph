@@ -80,7 +80,7 @@ export const STORE_SPECS: StoreSpec[] = [
   {
     name: "kuzu",
     transactional: false,
-    make: () => new KuzuStore(KUZU_PATH),
+    make: () => new KuzuStore(KUZU_PATH, { buffer_pool_size: 128 << 20 }),
   },
   {
     name: "hydradb",

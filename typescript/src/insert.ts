@@ -264,6 +264,13 @@ export class Insert {
         });
       }
 
+      for (const ent of canonical.entities) {
+        await ops.preserveEntityWrites(tx, ns, ent.id || ids.entityId(ent.type, ent.name), {
+          aliases: [...ent.aliases, ent.name],
+          properties: ent.properties,
+          external_ids: ent.external_ids,
+        });
+      }
       const entities = await ops.upsertEntities(
         tx,
         ns,
