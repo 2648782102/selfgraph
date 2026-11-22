@@ -19,6 +19,7 @@ from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, pa
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
 from .client import SelfGraph
 from .errors import (
+    MALFORMED_USERINFO_ESCAPE,
     STORE_KUZU_HINT,
     NotFoundError,
     StoreError,
@@ -391,6 +392,38 @@ def _falkor_address(uri: str) -> tuple[Any, int | None, bool]:
     return parsed, port, scheme in ("rediss", "falkors")
 
 
+def _url_unquote(text: str) -> str:
+    """Decode the percent escapes of a URL user or password, rejecting a malformed escape as the TypeScript SDK does.
+
+    @param text (str): the user or password as written in the URL.
+    @return (str): the decoded text; raises ValidationError for a % not followed by two hex digits or escapes that
+        are not UTF-8, without quoting the text.
+    """
+    from urllib.parse import unquote
+
+    if re.search(r"%(?![0-9A-Fa-f]{2})", text):
+        raise ValidationError(MALFORMED_USERINFO_ESCAPE, code="invalid_setting", field="uri")
+    try:
+        return unquote(text, errors="strict")
+    except UnicodeDecodeError:
+        raise ValidationError(MALFORMED_USERINFO_ESCAPE, code="invalid_setting", field="uri") from None
+
+
+def _falkor_credentials(uri: str, auth: Any) -> tuple[str | None, str | None]:
+    """The user name and password a FalkorDB store logs in with: auth, else the URL's, percent-decoded.
+
+    @param uri (str): the address.
+    @param auth (Any): the auth setting.
+    @return (tuple[str | None, str | None]): the user name and password, None when empty.
+    """
+    parsed, _, _ = _falkor_address(uri)
+    if auth:
+        username, password = parse_auth(auth, None)
+    else:
+        username, password = _url_unquote(parsed.username or ""), _url_unquote(parsed.password or "")
+    return username or None, password or None
+
+
 def _falkor_store(uri: str, settings: GraphSettings) -> GraphStore:
     """A FalkorDB store from host:port or a redis:// style URL; auth, else the URL credentials, logs in.
 
@@ -398,16 +431,10 @@ def _falkor_store(uri: str, settings: GraphSettings) -> GraphStore:
     @param settings (GraphSettings): the resolved auth and database settings.
     @return (GraphStore): the store.
     """
-    from urllib.parse import unquote
-
     from .stores.falkordb import FalkorDBStore
 
     parsed, port, tls = _falkor_address(uri)
-    if settings.auth:
-        username, password = parse_auth(settings.auth, None)
-    else:
-        username = unquote(parsed.username) if parsed.username else None
-        password = unquote(parsed.password) if parsed.password else None
+    username, password = _falkor_credentials(uri, settings.auth)
     credentials: dict[str, Any] = {k: v for k, v in (("username", username), ("password", password)) if v}
     if tls:
         credentials["ssl"] = True

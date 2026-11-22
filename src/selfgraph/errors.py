@@ -506,6 +506,10 @@ UNENCODED_USERINFO = (
     "the store URI has an unencoded character in its user or password; "
     "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)"
 )
+MALFORMED_USERINFO_ESCAPE = (
+    "the store URI has a malformed percent escape in its user or password; "
+    "write a literal % as %25 and percent-encode other characters as UTF-8"
+)
 
 
 def _uri_authority(uri: str) -> tuple[str, str]:
