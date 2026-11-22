@@ -32,6 +32,44 @@ from selfgraph.extraction.extractor import (
 from selfgraph.extraction.prompts import render
 
 
+def test_replace_source_preserves_facts_when_one_chunk_call_fails():
+    llm = extracting_llm([("Person", "Jane"), ("Company", "Acme"), ("Company", "Globex")])
+    calls = 0
+    phase = "initial"
+
+    def relations(system, user):
+        nonlocal calls
+        calls += 1
+        if phase == "partial" and calls == 2:
+            raise TimeoutError("provider timed out")
+        target = "Globex" if phase == "initial" and calls == 2 else "Acme"
+        return _RelationsOut(relations=[_RelOut(from_name="Jane", type="WORKS_AT", to_name=target)])
+
+    llm.responses["_RelationsOut"] = relations
+    g = fresh_graph("replace-partial", llm=llm, resolver="exact")
+    text = "Jane works at Acme and Globex." + " context" * 650
+    assert len(chunk_text(text)) == 2
+    first = run(g.insert.text(text, source_id="doc", replace_source=True))
+    prior = {r.id for r in first.relations}
+    assert len(prior) == 2
+    phase = "partial"
+    calls = 0
+    result = run(g.insert.text(text + " Updated.", source_id="doc", replace_source=True))
+    assert calls == 2
+    assert [w.code for w in result.warnings] == ["extraction_partial_failure"]
+    assert result.source_diff.retired == []
+    assert set(result.source_diff.kept) == {r.id for r in result.relations}
+    assert {r.id for r in run(g.relations.list()).items} == prior
+    assert all(r.is_current for r in run(g.relations.list(include_invalidated=True)).items)
+    phase = "complete"
+    calls = 0
+    complete = run(g.insert.text(text + " Removed Globex.", source_id="doc", replace_source=True))
+    assert calls == 2
+    assert set(complete.source_diff.retired) == prior - {r.id for r in complete.relations}
+    assert [w.code for w in complete.warnings] == ["fact_retired_by_source"]
+    assert {r.id for r in run(g.relations.list()).items} == {r.id for r in complete.relations}
+
+
 @pytest.mark.parametrize(
     ("dates", "expected"),
     [
