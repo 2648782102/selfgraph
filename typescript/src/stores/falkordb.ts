@@ -71,6 +71,7 @@ function isGraphEntity(value: Record<string, unknown>): boolean {
  */
 function toJson(value: unknown): unknown {
   if (value === null || value === undefined) return null;
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
   if (typeof value === "bigint")
     return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
   if (Array.isArray(value)) return value.map(toJson);
