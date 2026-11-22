@@ -53,7 +53,7 @@ import { FalkorDBStore } from "./stores/falkordb.js";
 import { HydraDBStore } from "./stores/hydradb.js";
 import { KuzuStore } from "./stores/kuzu.js";
 import { clamp, type Level, PRESETS, requireLevel } from "./tiers.js";
-import { checkOptions, requireNamespace } from "./validate.js";
+import { checkOptions, MAX_JSON_DEPTH, requireCleanJson, requireNamespace } from "./validate.js";
 
 export { version } from "../package.json";
 export { parseTime } from "./validate.js";
@@ -171,14 +171,26 @@ export function settingsFromEnv(
  *
  * @param text (string): the JSON text.
  * @param where (string): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+ * @param field (string | undefined): the argument or key at fault, when one is.
  * @return (unknown): the parsed value.
  */
-export function parseJson(text: string, where: string): unknown {
+export function parseJson(text: string, where: string, field?: string): unknown {
+  let value: unknown;
   try {
-    return JSON.parse(text);
+    value = JSON.parse(text);
   } catch (exc) {
-    throw new ValidationError(`invalid JSON${where}: ${(exc as Error).message}`);
+    throw new ValidationError(`invalid JSON${where}: ${(exc as Error).message}`, field === undefined ? {} : { field });
   }
+  try {
+    requireCleanJson("JSON", value, 0, false);
+  } catch (exc) {
+    if (!(exc instanceof ValidationError) || !exc.message.includes("nested too deeply")) throw exc;
+    throw new ValidationError(
+      `invalid JSON${where}: nested too deeply; keep it under ${MAX_JSON_DEPTH} levels`,
+      field === undefined ? {} : { field },
+    );
+  }
+  return value;
 }
 
 /**
