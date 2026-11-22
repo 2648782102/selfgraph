@@ -3,7 +3,7 @@ import { loadTokenizer } from "../chunking.js";
 import { ExtractionError, ValidationError } from "../errors.js";
 import * as ids from "../ids.js";
 import { log } from "../internal/log.js";
-import { pySplit, pyStrip, utf8 } from "../internal/py.js";
+import { pyRepr, pySplit, pyStrip, utf8 } from "../internal/py.js";
 import { parseIso } from "../internal/time.js";
 import { EDGE_TYPES, preferenceStanceOf } from "../labels.js";
 import { summarizeError } from "../llm/index.js";
@@ -189,6 +189,7 @@ export function lenientTime(value: string | null | undefined): Date | null {
  * @param rawPreferences (RawPreference[]): the extracted preferences, by name.
  * @param rawDecisions (RawDecision[]): the extracted decisions, by name.
  * @param warnings (InsertWarning[]): receives one warning per dropped invalid item.
+ * @param schema (ParsedSchema | null): endpoint types for resolving ambiguous names.
  * @return (ParsedExtraction): the assembled facts.
  */
 export function assembleExtraction(
@@ -197,24 +198,30 @@ export function assembleExtraction(
   rawPreferences: RawPreference[],
   rawDecisions: RawDecision[],
   warnings: InsertWarning[] = [],
+  schema: ParsedSchema | null = null,
 ): ParsedExtraction {
   const registry = new Map<string, RawEntity>();
   const rejected = new Set<string>();
   const admit = (ent: RawEntity): boolean =>
     admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
   for (const ent of rawEntities) {
-    const key = norm(ent.name);
-    if (!registry.has(key) && !isNoiseName(ent.name) && admit(ent)) registry.set(key, ent);
+    if (isNoiseName(ent.name) || !admit(ent)) continue;
+    const key = ids.entityId(ent.type, ent.name);
+    if (!registry.has(key)) registry.set(key, { ...ent, aliases: [] });
+    const kept = registry.get(key)!;
+    kept.aliases = [...new Set([...(kept.aliases ?? []), ...(ent.aliases ?? [])])];
   }
 
-  const resolve = (name: string | null | undefined): string | null => {
+  const resolve = (name: string | null | undefined, types: string[] = []): string | null => {
     if (name == null || !pyStrip(name)) return null;
     const key = norm(name);
-    let ent: RawEntity | undefined;
+    let matches: RawEntity[];
     try {
-      ent =
-        registry.get(key) ??
-        [...registry.values()].find((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+      matches = [...registry.values()].filter((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+      if (matches.length > 1 && types.length) {
+        const typed = matches.filter((e) => types.some((t) => norm(t) === norm(e.type)));
+        if (typed.length) matches = typed;
+      }
     } catch (error) {
       if (!(error instanceof ValidationError)) throw error;
       if (!rejected.has(key)) {
@@ -223,6 +230,16 @@ export function assembleExtraction(
       }
       return null;
     }
+    if (matches.length > 1) {
+      warnings.push(
+        insertWarning(
+          "extraction_partial_failure",
+          `unresolved extracted entity reference ${pyRepr(name)}: multiple entity types match`,
+        ),
+      );
+      return null;
+    }
+    let ent = matches[0];
     if (ent === undefined) {
       if (isNoiseName(name) || rejected.has(key)) return null;
       ent = { type: FALLBACK_TYPE, name: pyStrip(name) };
@@ -230,9 +247,14 @@ export function assembleExtraction(
         rejected.add(key);
         return null;
       }
-      registry.set(key, ent);
+      registry.set(ids.entityId(ent.type, ent.name), ent);
     }
     return ids.entityId(ent.type, ent.name);
+  };
+
+  const endpointTypes = (rtype: string, side: "from" | "to"): string[] => {
+    const rel = schema?.relations.find((r) => [r.type, ...r.aliases].some((t) => norm(t) === norm(rtype)));
+    return rel?.[side].types ?? [];
   };
 
   const relations = new Map<
@@ -273,15 +295,15 @@ export function assembleExtraction(
 
   const promoted: RawPreference[] = [];
   for (const rel of rawRelations) {
-    const fromId = resolve(rel.from_name);
-    const toId = resolve(rel.to_name);
+    const fromId = resolve(rel.from_name, endpointTypes(rel.type, "from"));
+    const toId = resolve(rel.to_name, endpointTypes(rel.type, "to"));
     if (fromId && toId) {
       admitted(
         warnings,
         "relation",
         () => {
           const stance = preferenceStanceOf(ids.normalizeRelType(rel.type));
-          const value = registry.get(norm(rel.to_name));
+          const value = registry.get(toId);
           if (stance !== null && value !== undefined && value.type !== FALLBACK_TYPE) {
             promoted.push({
               subject_name: rel.from_name,
@@ -329,8 +351,8 @@ export function assembleExtraction(
     const actorId = resolve(dec.actor_name);
     const stepIds: string[] = [];
     for (const step of dec.steps ?? []) {
-      const fromId = resolve(step.from_name);
-      const toId = resolve(step.to_name);
+      const fromId = resolve(step.from_name, endpointTypes(step.type, "from"));
+      const toId = resolve(step.to_name, endpointTypes(step.type, "to"));
       if (fromId && toId) {
         admitted(
           warnings,
@@ -354,7 +376,9 @@ export function assembleExtraction(
         summary: dec.summary ?? null,
         rationale: dec.rationale ?? null,
         outcome_entity: resolve(dec.outcome_name),
-        alternative_entities: (dec.alternative_names ?? []).map(resolve).filter((a): a is string => Boolean(a)),
+        alternative_entities: (dec.alternative_names ?? [])
+          .map((name) => resolve(name))
+          .filter((a): a is string => Boolean(a)),
         status: dec.status ?? null,
       });
     }
@@ -417,6 +441,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
       prompts: parseOrThrow(ExtractionPrompts.nullish(), options.prompts, "prompts"),
       instructions: parseOrThrow(ExtractionInstructions.nullish(), options.instructions, "instructions"),
       call_prompts: parseOrThrow(ExtractionPrompts.nullish(), options.call_prompts, "call prompts"),
+      schema: options.schema,
       call_instructions: parseOrThrow(ExtractionInstructions.nullish(), options.call_instructions, "call instructions"),
     };
     checkPrompts(this.options.prompts);
@@ -530,7 +555,14 @@ export class LLMExtractor extends WarningSink implements Extractor {
     });
 
     const failed = this.warnings.length;
-    const facts = assembleExtraction(rawEntities, rawRelations, rawPreferences, rawDecisions, this.warnings);
+    const facts = assembleExtraction(
+      rawEntities,
+      rawRelations,
+      rawPreferences,
+      rawDecisions,
+      this.warnings,
+      this.options.schema,
+    );
     const { entities, relations, preferences, decisions } = facts;
     if (failed && !(entities.length || relations.length || preferences.length || decisions.length)) {
       throw new ExtractionError(

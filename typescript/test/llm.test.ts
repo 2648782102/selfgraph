@@ -110,6 +110,83 @@ function mockModel(
 const open = freshGraphs(KUZU_SPEC, "llm");
 
 describe("LLM extraction through the AI SDK", () => {
+  it.each([false, true])("issue 343 keeps same-name entities with different types (typed: %s)", async (typed) => {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        if (kind === "entities")
+          return {
+            entities: [
+              { type: "Person", name: "Acme", aliases: [] },
+              { type: "Company", name: "acme", aliases: [] },
+            ],
+          } as never;
+        if (kind === "relations")
+          return { relations: [{ from_name: "Acme", type: "WORKS_AT", to_name: "acme", event_time: null }] } as never;
+        if (kind === "decisions")
+          return {
+            decisions: [
+              {
+                title: "Join",
+                actor_name: null,
+                summary: null,
+                rationale: null,
+                outcome_name: null,
+                alternative_names: [],
+                status: null,
+                steps: [{ from_name: "Acme", type: "WORKS_AT", to_name: "acme" }],
+              },
+            ],
+          } as never;
+        return { [kind]: [] } as never;
+      },
+    };
+    const schema = typed
+      ? {
+          entities: [{ name: "Person" }, { name: "Company" }],
+          relations: [{ type: "WORKS_AT", from: { types: ["Person"] }, to: { types: ["Company"] } }],
+        }
+      : null;
+    const g = open({ llm, resolver: "exact", schema });
+    const result = await g.insert.text("Acme works at acme.");
+    expect(result.entities.map((e) => e.id).sort()).toEqual(["company:acme", "person:acme"]);
+    expect((await g.entities.list()).items.map((e) => e.id).sort()).toEqual(["company:acme", "person:acme"]);
+    if (typed) {
+      expect(result.relations.map((r) => [r.from_entity, r.to_entity])).toEqual([["person:acme", "company:acme"]]);
+      expect(result.decisions[0]!.steps.map((step) => step.relation_id)).toEqual([result.relations[0]!.id]);
+      expect(result.warnings).toEqual([]);
+    } else {
+      expect(result.relations).toEqual([]);
+      expect(result.decisions[0]!.steps).toEqual([]);
+      expect(result.warnings.map((w) => w.code)).toEqual(Array(4).fill("extraction_partial_failure"));
+    }
+  });
+
+  it.each([false, true])(
+    "issue 360 unions aliases from every mention (multiple chunks: %s)",
+    async (multipleChunks) => {
+      let calls = 0;
+      const llm: LLMClient = {
+        async generate({ output }) {
+          const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+          if (kind !== "entities") return { [kind]: [] } as never;
+          calls += 1;
+          const first = { type: "Person", name: "Ann", aliases: ["A"] };
+          const later = { type: "Person", name: "ann", aliases: ["A", "Annie"] };
+          return { entities: multipleChunks && calls === 1 ? [first] : [first, later] } as never;
+        },
+      };
+      const g = open({ llm, resolver: "exact" });
+      const text = `Ann is also called Annie.${multipleChunks ? " context".repeat(650) : ""}`;
+      expect((await loadTokenizer()).chunkText(text)).toHaveLength(multipleChunks ? 2 : 1);
+      const result = await g.insert.text(text);
+      expect(result.entities).toHaveLength(1);
+      expect(result.entities[0]!.aliases).toEqual(["A", "Annie"]);
+      expect((await g.entities.get("person:ann"))!.aliases).toEqual(["A", "Annie"]);
+      expect(result.warnings).toEqual([]);
+    },
+  );
+
   it("preserves source facts when one chunk call fails during replacement", async () => {
     let calls = 0;
     let phase = "initial";

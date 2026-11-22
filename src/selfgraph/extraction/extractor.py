@@ -215,6 +215,7 @@ class LLMExtractor(_WarningSink):
         check_prompts(prompts)
         check_prompts(call_prompts)
         self._llm = llm
+        self._schema = schema
         self._source_id = source_id
         self._client_prompts = prompts
         self._client_instructions = instructions
@@ -312,7 +313,9 @@ class LLMExtractor(_WarningSink):
                 sink.extend(outcome)
 
         failed = len(self._warnings)
-        facts = self._assemble(raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings)
+        facts = self._assemble(
+            raw_entities, raw_relations, raw_preferences, raw_decisions, self._warnings, self._schema
+        )
         if failed and not (facts.entities or facts.relations or facts.preferences or facts.decisions):
             raise ExtractionError(
                 f"extraction failed for the whole input ({failed} of {len(tasks)} LLM calls failed); "
@@ -334,6 +337,7 @@ class LLMExtractor(_WarningSink):
         raw_preferences: list[_PrefOut],
         raw_decisions: list[_DecOut],
         warnings: list[InsertWarning] | None = None,
+        schema: Schema | None = None,
     ) -> Extraction:
         """Resolve extracted names to ids and assemble deduplicated facts, dropping invalid items.
 
@@ -342,6 +346,7 @@ class LLMExtractor(_WarningSink):
         @param raw_preferences (list[_PrefOut]): the extracted preferences, by name.
         @param raw_decisions (list[_DecOut]): the extracted decisions, by name.
         @param warnings (list[InsertWarning] | None): receives one warning per dropped invalid item.
+        @param schema (Schema | None): endpoint types for resolving ambiguous names.
         @return (Extraction): the assembled facts.
         """
         sink = warnings if warnings is not None else []
@@ -357,24 +362,37 @@ class LLMExtractor(_WarningSink):
             return True
 
         for ent in raw_entities:
-            key = _norm(ent.name)
-            if key not in registry and not _is_noise_name(ent.name) and admit(ent):
-                registry[key] = ent
+            if _is_noise_name(ent.name) or not admit(ent):
+                continue
+            key = _ids.entity_id(ent.type, ent.name)
+            if key not in registry:
+                registry[key] = ent.model_copy(update={"aliases": []})
+            registry[key].aliases = list(dict.fromkeys([*registry[key].aliases, *ent.aliases]))
 
-        def resolve(name: str | None) -> str | None:
+        def resolve(name: str | None, types: list[str] | None = None) -> str | None:
             if name is None or not name.strip():
                 return None
             key = _norm(name)
             try:
-                ent = registry.get(key) or next(
-                    (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)),
-                    None,
-                )
+                matches = [
+                    e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)
+                ]
+                if len(matches) > 1 and types:
+                    matches = [e for e in matches if _norm(e.type) in {_norm(t) for t in types}] or matches
             except ValidationError as exc:
                 if key not in rejected:
                     rejected.add(key)
                     _dropped(sink, "entity", exc)
                 return None
+            if len(matches) > 1:
+                sink.append(
+                    InsertWarning(
+                        code="extraction_partial_failure",
+                        message=f"unresolved extracted entity reference {name!r}: multiple entity types match",
+                    )
+                )
+                return None
+            ent = matches[0] if matches else None
             if ent is None:
                 if _is_noise_name(name) or key in rejected:
                     return None
@@ -382,8 +400,14 @@ class LLMExtractor(_WarningSink):
                 if not admit(ent):
                     rejected.add(key)
                     return None
-                registry[key] = ent
+                registry[_ids.entity_id(ent.type, ent.name)] = ent
             return _ids.entity_id(ent.type, ent.name)
+
+        def endpoint_types(rtype: str, side: str) -> list[str]:
+            for rel in schema.relations if schema else []:
+                if _norm(rtype) in {_norm(rel.type), *(_norm(a) for a in rel.aliases)}:
+                    return (rel.from_ if side == "from" else rel.to).types
+            return []
 
         relations: dict[str, RelationInput] = {}
 
@@ -404,12 +428,12 @@ class LLMExtractor(_WarningSink):
 
         promoted: list[_PrefOut] = []
         for rel in raw_relations:
-            from_id = resolve(rel.from_name)
-            to_id = resolve(rel.to_name)
+            from_id = resolve(rel.from_name, endpoint_types(rel.type, "from"))
+            to_id = resolve(rel.to_name, endpoint_types(rel.type, "to"))
             if from_id and to_id:
                 try:
                     stance = preference_stance_of(_ids.normalize_rel_type(rel.type))
-                    value = registry.get(_norm(rel.to_name))
+                    value = registry.get(to_id)
                     if stance is not None and value is not None and value.type != _FALLBACK_TYPE:
                         key = value.type.lower()
                         promoted.append(
@@ -453,8 +477,8 @@ class LLMExtractor(_WarningSink):
             actor_id = resolve(dec.actor_name)
             step_ids: list[str] = []
             for step in dec.steps:
-                from_id = resolve(step.from_name)
-                to_id = resolve(step.to_name)
+                from_id = resolve(step.from_name, endpoint_types(step.type, "from"))
+                to_id = resolve(step.to_name, endpoint_types(step.type, "to"))
                 if from_id and to_id:
                     try:
                         step_ids.append(add_relation(from_id, step.type, to_id, evidence=dec._evidence))

@@ -32,6 +32,68 @@ from selfgraph.extraction.extractor import (
 from selfgraph.extraction.prompts import render
 
 
+@pytest.mark.parametrize("typed", [False, True])
+def test_issue_343_keeps_same_name_entities_with_different_types(typed):
+    class LLM:
+        async def generate(self, *, system, user, output):
+            kind = next(iter(output.model_fields))
+            if kind == "entities":
+                return {kind: [{"type": "Person", "name": "Acme"}, {"type": "Company", "name": "acme"}]}
+            if kind == "relations":
+                return {kind: [{"from_name": "Acme", "type": "WORKS_AT", "to_name": "acme"}]}
+            if kind == "decisions":
+                return {
+                    kind: [{"title": "Join", "steps": [{"from_name": "Acme", "type": "WORKS_AT", "to_name": "acme"}]}]
+                }
+            return {kind: []}
+
+    schema = (
+        {
+            "entities": [{"name": "Person"}, {"name": "Company"}],
+            "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
+        }
+        if typed
+        else None
+    )
+    g = fresh_graph("issue-343", llm=LLM(), resolver="exact", schema=schema)
+    result = run(g.insert.text("Acme works at acme."))
+    assert {e.id for e in result.entities} == {"person:acme", "company:acme"}
+    assert {e.id for e in run(g.entities.list()).items} == {"person:acme", "company:acme"}
+    if typed:
+        assert [(r.from_entity, r.to_entity) for r in result.relations] == [("person:acme", "company:acme")]
+        assert [step.relation_id for step in result.decisions[0].steps] == [result.relations[0].id]
+        assert result.warnings == []
+    else:
+        assert result.relations == []
+        assert result.decisions[0].steps == []
+        assert [w.code for w in result.warnings] == ["extraction_partial_failure"] * 4
+
+
+@pytest.mark.parametrize("multiple_chunks", [False, True])
+def test_issue_360_unions_aliases_from_every_mention(multiple_chunks):
+    calls = 0
+
+    class LLM:
+        async def generate(self, *, system, user, output):
+            nonlocal calls
+            kind = next(iter(output.model_fields))
+            if kind != "entities":
+                return {kind: []}
+            calls += 1
+            first = {"type": "Person", "name": "Ann", "aliases": ["A"]}
+            later = {"type": "Person", "name": "ann", "aliases": ["A", "Annie"]}
+            return {kind: [first] if multiple_chunks and calls == 1 else [first, later]}
+
+    g = fresh_graph("issue-360", llm=LLM(), resolver="exact")
+    text = "Ann is also called Annie." + (" context" * 650 if multiple_chunks else "")
+    assert len(chunk_text(text)) == (2 if multiple_chunks else 1)
+    result = run(g.insert.text(text))
+    assert len(result.entities) == 1
+    assert result.entities[0].aliases == ["A", "Annie"]
+    assert run(g.entities.get("person:ann")).aliases == ["A", "Annie"]
+    assert result.warnings == []
+
+
 def test_replace_source_preserves_facts_when_one_chunk_call_fails():
     llm = extracting_llm([("Person", "Jane"), ("Company", "Acme"), ("Company", "Globex")])
     calls = 0
