@@ -112,7 +112,9 @@ def _sort_key(ns: str, label: str) -> str:
 
 
 def _scalars(props: dict) -> dict:
-    return {k: v for k, v in props.items() if k not in ("id", "ns") and isinstance(v, _SCALARS)}
+    return {
+        k: v for k, v in props.items() if k not in ("id", "ns") and not k.endswith("_json") and isinstance(v, _SCALARS)
+    }
 
 
 def _unset(props: Mapping[str, Any]) -> tuple[str, ...]:

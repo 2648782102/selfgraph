@@ -164,7 +164,7 @@ function sortKey(ns: string, label: string): string {
 function scalars(props: Props): Props {
   const out: Props = {};
   for (const [k, v] of Object.entries(props)) {
-    if (k === "id" || k === "ns") continue;
+    if (k === "id" || k === "ns" || k.endsWith("_json")) continue;
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[k] = v;
   }
   return out;
