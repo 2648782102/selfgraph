@@ -1393,6 +1393,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   );
   out.retrieval_overflow = await overflow(graph);
   out.retrieval_ppr_ties = await pprTies(graph);
+  out.retrieval_passage_ranking = await passageRanking(graph);
   out.vault_names = await vaultNames(graph);
   try {
     await graph.insert.facts(
@@ -1655,6 +1656,20 @@ async function pprTies(graph: SelfGraph): Promise<{ entities: string[]; context:
   for (const [a, b] of pairs) await g.relations.create(`thing:${a}`, "LINKS", `thing:${b}`);
   const ranked = await g.retrieve("Sol", { strategy: "ppr", max_nodes: 4 });
   return { entities: ranked.subgraph.entities.map((e) => e.id), context: ranked.context };
+}
+
+/**
+ * Retrieve from twenty sources behind one entity by each source's own word and by a word all of them share.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<{ tied: string; ranked: Record<string, string> }>): the context of the tied query and of each ranked one.
+ */
+async function passageRanking(graph: SelfGraph): Promise<{ tied: string; ranked: Record<string, string> }> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_passages` });
+  for (let i = 0; i < 20; i++) await g.insert.text(`Ann collects word${i} items.`, { source_id: `note-${i}` });
+  const ranked: Record<string, string> = {};
+  for (const word of ["word3", "word4", "word9"]) ranked[word] = (await g.retrieve(`Ann ${word}`)).context;
+  return { tied: (await g.retrieve("Ann")).context, ranked };
 }
 
 async function vaultNames(graph: SelfGraph): Promise<string[]> {

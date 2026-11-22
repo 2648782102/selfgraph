@@ -22,11 +22,17 @@ import {
 import { pyRepr } from "../src/internal/py.js";
 import { childEdgeId, LABELS } from "../src/labels.js";
 import { Extraction, parseOrThrow } from "../src/models.js";
+import * as ops from "../src/ops.js";
 import { HUB_DEGREE } from "../src/retrieval.js";
 import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { forEachStore, freshGraphs, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
+
+const NOTE_WORDS = (
+  "zebra quartz walnut falcon ember lotus marble nectar orchid pepper " +
+  "raven saffron tundra velvet willow yarrow cobalt dahlia fennel garnet"
+).split(" ");
 
 const NO_DELETES = {
   deleted_entities: 0,
@@ -1191,6 +1197,52 @@ function suite(spec: StoreSpec) {
       expect(ppr.subgraph.entities.map((e) => e.id)).toEqual(expect.arrayContaining([r.from_entity, r.to_entity]));
     }
     await expect(graph.retrieve("x", { depth: 1.5 })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  const noteGraph = async (eventTimes: Record<string, string> = {}): Promise<SelfGraph> => {
+    const g = fresh();
+    for (const [i, word] of NOTE_WORDS.entries()) {
+      const event_time = eventTimes[word];
+      await g.insert.text(`Ann collects ${word} items.`, { source_id: `note-${i}`, ...(event_time && { event_time }) });
+    }
+    return g;
+  };
+
+  const passages = (context: string): string[] => context.split("\n").filter((line) => line.startsWith("SOURCE | "));
+
+  it.each(["bfs", "dfs", "ppr"] as const)("ranks every source before keeping passages with %s", async (strategy) => {
+    const g = await noteGraph();
+    for (const word of NOTE_WORDS) {
+      const found = passages((await g.retrieve(`Ann ${word}`, { strategy })).context);
+      expect(found[0]).toBe(`SOURCE | Ann collects ${word} items.`);
+    }
+  });
+
+  it("ranks only current sources among all of them", async () => {
+    const g = await noteGraph({ ember: "2031-01-01T00:00:00Z", pepper: "2031-01-01T00:00:00Z" });
+    await g.insert.text("Ann collects cypress items.", { source_id: "note-3", replace_source: true });
+    for (const word of [...NOTE_WORDS, "cypress"]) {
+      const { context } = await g.retrieve(`Ann ${word}`, { as_of: new Date(Date.UTC(2029, 0, 1)) });
+      const gone = ["falcon", "ember", "pepper"].includes(word);
+      expect(context.includes(`collects ${word} items`)).toBe(!gone);
+      if (!gone) expect(passages(context)[0]).toBe(`SOURCE | Ann collects ${word} items.`);
+    }
+  });
+
+  it("keeps distinct passages when many sources repeat one text", async () => {
+    const g = fresh();
+    const others = NOTE_WORDS.slice(1, 6);
+    for (let i = 0; i < 20; i++) await g.insert.text("Ann collects zebra items.", { source_id: `copy-${i}` });
+    for (const word of others) await g.insert.text(`Ann collects ${word} items.`, { source_id: `other-${word}` });
+    const batches = ops.batches;
+    const spy = vi.spyOn(ops, "batches").mockImplementation((items) => batches(items, 4));
+    try {
+      const found = passages((await g.retrieve("Ann zebra")).context);
+      expect(found[0]).toBe("SOURCE | Ann collects zebra items.");
+      expect(found.slice(1).sort()).toEqual(others.map((word) => `SOURCE | Ann collects ${word} items.`).sort());
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it.each(["depth", "k", "max_nodes", "budget_tokens"] as const)(

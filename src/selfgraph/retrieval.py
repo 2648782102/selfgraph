@@ -133,7 +133,6 @@ _PAGE = 500
 _MAX_POOL = 5000
 _SEED_PAGE = 5000
 _NEIGHBOR_PARTS = 8
-_MAX_PASSAGE_SOURCES = 12
 _MAX_PASSAGES = 6
 _PASSAGE_BUDGET_PERCENT = 60
 _BM25_K1 = 2.0
@@ -738,6 +737,25 @@ def _quotable(version: dict | None, as_of: AsOf | None) -> bool:
     )
 
 
+async def _chunk_texts(graph: SelfGraph, ns: str, versions: list[str]) -> dict[str, list[str]]:
+    """Read the stripped, non-empty chunk texts of source versions in chunk order, a batch per query.
+
+    @param graph (SelfGraph): the open graph to read.
+    @param ns (str): the namespace to read.
+    @param versions (list[str]): the source version ids.
+    @return (dict[str, list[str]]): each source version's chunk texts, in chunk order.
+    """
+    edges = await _ops._edges_into(graph.store, ns, L_SOURCE_VERSION, L_CHUNK, "from_in", versions, type=R_HAS_CHUNK)
+    chunks = await _ops._nodes_by_id(graph.store, ns, L_CHUNK, [e["to_id"] for e in edges])
+    ordered: dict[str, list[tuple[int, str]]] = {sv: [] for sv in versions}
+    for e in edges:
+        chunk = chunks[e["to_id"]]
+        text = (chunk.get("text") or "").strip()
+        if text:
+            ordered[e["from_id"]].append((int(chunk["index"]), text))
+    return {sv: [text for _, text in sorted(found)] for sv, found in ordered.items()}
+
+
 async def _collect_passages(
     graph: SelfGraph,
     ns: str,
@@ -747,6 +765,11 @@ async def _collect_passages(
     as_of: AsOf | None = None,
 ) -> list[str]:
     """Gather the most query-relevant source passages behind the retrieved entities.
+
+    Every usable source version of every entity is scored, so a passage is never cut before it is ranked. Chunk
+    texts are read a batch of versions at a time, and only the best _MAX_PASSAGES distinct ones are kept between
+    batches. A passage ranks by the query tokens it holds, then by the closeness of the nearest entity that cites
+    its version, then by first read.
 
     @param graph (SelfGraph): the open graph to read.
     @param ns (str): the namespace to read.
@@ -762,13 +785,11 @@ async def _collect_passages(
     sv_dist: dict[str, int] = {}
     usable: dict[str, bool] = {}
     for e in sorted(entities, key=lambda e: dist.get(e.id, far)):
-        if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
-            break
         if not e.source_count:
             continue
         fetch = partial(graph.store.match_nodes, ns, L_EVIDENCE, equals={"target_id": e.id})
         skip = 0
-        while len(sv_dist) < _MAX_PASSAGE_SOURCES:
+        while True:
             rows = await fetch(skip=skip, limit=_PAGE)
             unseen = list(dict.fromkeys(r["source_version"] for r in rows if r["source_version"] not in usable))
             versions = await _ops._nodes_by_id(graph.store, ns, L_SOURCE_VERSION, unseen)
@@ -779,30 +800,22 @@ async def _collect_passages(
                 if as_of is not None and not _ops._known_by(from_iso(row.get("created_at")), as_of.known):
                     continue
                 sv_dist.setdefault(row["source_version"], dist.get(e.id, far))
-                if len(sv_dist) >= _MAX_PASSAGE_SOURCES:
-                    break
             if len(rows) < _PAGE:
                 break
             skip += len(rows)
 
-    candidates: list[tuple[float, int, str]] = []
-    for sv, d in sv_dist.items():
-        chunks = await graph.store.child_nodes(ns, L_SOURCE_VERSION, sv, R_HAS_CHUNK, L_CHUNK, order_by="index")
-        for c in sorted(chunks, key=lambda c: int(c["index"])):
-            text = (c.get("text") or "").strip()
-            if text:
-                candidates.append((float(len(query_tokens & _tokens(text))), d, text))
-
-    candidates.sort(key=lambda t: (-t[0], t[1]))
-    out: list[str] = []
-    seen: set[str] = set()
-    for score, _, text in candidates:
-        if score <= 0 or len(out) >= _MAX_PASSAGES:
-            break
-        if text not in seen:
-            seen.add(text)
-            out.append(text)
-    return out
+    best: dict[str, tuple[int, int, int]] = {}
+    order = 0
+    for batch in _ops._batches(list(sv_dist)):
+        for sv, texts in (await _chunk_texts(graph, ns, batch)).items():
+            for text in texts:
+                score = len(query_tokens & _tokens(text))
+                if score > 0 and text not in best:
+                    best[text] = (-score, sv_dist[sv], order)
+                    order += 1
+        if len(best) > _MAX_PASSAGES:
+            best = dict(heapq.nsmallest(_MAX_PASSAGES, best.items(), key=lambda item: item[1]))
+    return sorted(best, key=best.__getitem__)
 
 
 async def _collect_preferences(

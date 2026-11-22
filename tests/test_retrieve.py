@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+from functools import partial
 
 import pytest
-from helpers import KUZU, extracting_llm, fresh_graph, new_graph, run
+from helpers import KUZU, extracting_llm, fresh_graph, new_graph, run, utc
 
-from selfgraph import Entity, EntityInput, Extraction, Relation, ValidationError
+from selfgraph import Entity, EntityInput, Extraction, Relation, ValidationError, _ops
 from selfgraph.extraction.chunking import count_tokens
 from selfgraph.retrieval import HUB_DEGREE, _assemble
 
@@ -169,6 +170,73 @@ def test_retrieve_includes_source_passage():
     run(g.insert.text(passage, source_id="m1"))
     res = run(g.retrieve("Soham HydraDB"))
     assert "bitemporal provenance ledger" in res.context
+
+
+_NOTE_WORDS = [
+    "zebra",
+    "quartz",
+    "walnut",
+    "falcon",
+    "ember",
+    "lotus",
+    "marble",
+    "nectar",
+    "orchid",
+    "pepper",
+    "raven",
+    "saffron",
+    "tundra",
+    "velvet",
+    "willow",
+    "yarrow",
+    "cobalt",
+    "dahlia",
+    "fennel",
+    "garnet",
+]
+
+
+def _note_graph(**event_times):
+    g = fresh_graph("passage-rank")
+    for i, word in enumerate(_NOTE_WORDS):
+        run(g.insert.text(f"Ann collects {word} items.", source_id=f"note-{i}", event_time=event_times.get(word)))
+    return g
+
+
+def _passages(context):
+    return [line for line in context.splitlines() if line.startswith("SOURCE | ")]
+
+
+@pytest.mark.parametrize("strategy", ["bfs", "dfs", "ppr"])
+def test_retrieve_ranks_every_source_before_keeping_passages(strategy):
+    g = _note_graph()
+    for word in _NOTE_WORDS:
+        passages = _passages(run(g.retrieve(f"Ann {word}", strategy=strategy)).context)
+        assert passages[0] == f"SOURCE | Ann collects {word} items."
+
+
+def test_retrieve_ranks_only_current_sources_among_all_of_them():
+    g = _note_graph(ember=utc(2031), pepper=utc(2031))
+    run(g.insert.text("Ann collects cypress items.", source_id="note-3", replace_source=True))
+    for word in [*_NOTE_WORDS, "cypress"]:
+        context = run(g.retrieve(f"Ann {word}", as_of=utc(2029))).context
+        gone = word in ("falcon", "ember", "pepper")
+        assert (f"collects {word} items" in context) is not gone
+        if not gone:
+            assert _passages(context)[0] == f"SOURCE | Ann collects {word} items."
+
+
+def test_retrieve_keeps_distinct_passages_when_many_sources_repeat_one_text(monkeypatch):
+    g = fresh_graph("passage-copies")
+    others = _NOTE_WORDS[1:6]
+    for i in range(20):
+        run(g.insert.text("Ann collects zebra items.", source_id=f"copy-{i}"))
+    for word in others:
+        run(g.insert.text(f"Ann collects {word} items.", source_id=f"other-{word}"))
+    monkeypatch.setattr(_ops, "_batches", partial(_ops._batches, size=4))
+    passages = _passages(run(g.retrieve("Ann zebra")).context)
+    assert passages[0] == "SOURCE | Ann collects zebra items."
+    assert sorted(passages[1:]) == sorted(f"SOURCE | Ann collects {word} items." for word in others)
 
 
 def test_retrieve_surfaces_preferences():
