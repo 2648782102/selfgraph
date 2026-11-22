@@ -3,7 +3,7 @@ import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, StrictBool, ValidationInfo, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
@@ -59,7 +59,7 @@ class PropertySpec(InputModel):
 
     name: str
     type: PropertyType = "string"
-    required: bool = False
+    required: StrictBool = False
     description: str | None = None
 
     _non_blank = field_validator("name")(_non_blank_name)
@@ -80,7 +80,7 @@ class Definition(InputModel):
     expression: str
     description: str | None = None
     synonyms: list[str] = Field(default_factory=list)
-    certified: bool = False
+    certified: StrictBool = False
 
 
 class EntityType(InputModel):
@@ -94,7 +94,7 @@ class EntityType(InputModel):
     parent: str | None = None
     mappings: list[TermMapping] = Field(default_factory=list)
     definitions: list[Definition] = Field(default_factory=list)
-    certified: bool = False
+    certified: StrictBool = False
 
     _non_blank = field_validator("name")(_non_blank_name)
 
@@ -168,7 +168,7 @@ class RelationType(InputModel):
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
     synonyms: list[str] = Field(default_factory=list)
-    certified: bool = False
+    certified: StrictBool = False
     from_: RelationEndpoint = Field(default_factory=RelationEndpoint, alias="from")
     to: RelationEndpoint = Field(default_factory=RelationEndpoint)
     properties: list[PropertySpec] = Field(default_factory=list)

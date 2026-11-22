@@ -431,6 +431,7 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
   unknown_keys: string[];
+  schema_types: string[];
   alias_errors: string[];
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
@@ -558,6 +559,13 @@ export function schemaWarnings(): {
       }
     }),
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
+    schema_types: ["false", 0, 1].flatMap((value) =>
+      [
+        { entities: [{ name: "T", certified: value }] },
+        { entities: [{ name: "T", properties: [{ name: "p", required: value }] }] },
+        { relations: [{ type: "R", certified: value }] },
+      ].map((spec) => unknownKeyError("schema", spec)),
+    ),
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
     tables_errors: tablesReferenceErrors(),
     neo4j_dropped: neo4jExportWarnings(),
@@ -695,6 +703,11 @@ export const FACTS = {
 const JOINED = { from_entity: "company:acme", type: "JOINED", to_entity: "person:jane-doe" };
 const LIKES = { subject_entity: "person:jane-doe", key: "employer", value_entity: "company:acme" };
 const FACTS_TYPE_CASES: unknown[] = [
+  ...["start_offset", "end_offset"].flatMap((offset) =>
+    ["2", true, false].map((value) => ({
+      relations: [{ ...JOINED, evidence: [{ source_id: "s", [offset]: value }] }],
+    })),
+  ),
   { relations: [{ ...JOINED, event_time: "2021" }] },
   { relations: [{ ...JOINED, event_time: 2021 }] },
   { relations: [{ ...JOINED, event_time: true }] },

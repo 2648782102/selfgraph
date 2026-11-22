@@ -451,6 +451,15 @@ def schema_warnings():
         "parents": [parent_outcome(spec) for spec in parent_specs],
         "endpoint_types": [endpoint_outcome(spec) for spec in endpoint_specs],
         "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
+        "schema_types": [
+            unknown_key_error("schema", spec)
+            for value in ("false", 0, 1)
+            for spec in (
+                {"entities": [{"name": "T", "certified": value}]},
+                {"entities": [{"name": "T", "properties": [{"name": "p", "required": value}]}]},
+                {"relations": [{"type": "R", "certified": value}]},
+            )
+        ],
         "tables": to_jsonable(Schema.from_tables(TABLES, name="sales")),
         "tables_errors": tables_reference_errors(),
         "term_forms": to_jsonable(schema_forms(Schema.model_validate(TERMS_SPEC))),
@@ -645,6 +654,11 @@ FACTS = {
 _JOINED = {"from_entity": "company:acme", "type": "JOINED", "to_entity": "person:jane-doe"}
 _LIKES = {"subject_entity": "person:jane-doe", "key": "employer", "value_entity": "company:acme"}
 FACTS_TYPE_CASES = [
+    *[
+        {"relations": [{**_JOINED, "evidence": [{"source_id": "s", offset: value}]}]}
+        for offset in ("start_offset", "end_offset")
+        for value in ("2", True, False)
+    ],
     {"relations": [{**_JOINED, "event_time": "2021"}]},
     {"relations": [{**_JOINED, "event_time": 2021}]},
     {"relations": [{**_JOINED, "event_time": True}]},
