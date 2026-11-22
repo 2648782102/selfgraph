@@ -552,11 +552,19 @@ class SelfGraph:
         async def create(tx: Any) -> Any:
             found.clear()
             check = self._schema_check
+            judgment = None
+            if judged and self._llm is not None:
+                planned = await _ops.create_relation(
+                    tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, dry_run=True
+                )
+                judgment = await judge_contradictions(
+                    tx, self.namespace, self._llm, [planned], caps, planned.created_at
+                )
             rel = await _ops.create_relation(
                 tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, warnings=found
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, self.namespace, self._llm, [rel], caps, rel.created_at))
+            if judgment is not None:
+                found.extend(await judgment(rel.created_at))
             return rel
 
         rel = await self._in_tx(create)
@@ -641,6 +649,27 @@ class SelfGraph:
                 await _ops.require_max_count(tx, ns, caps, resolved.relations, default_event_time, created_at)
             await _ops.require_relation_identities(tx, ns, resolved.relations)
             await _ops.require_preference_identities(tx, ns, resolved.preferences)
+            judgment = None
+            if judged and self._llm is not None:
+                planned = await _ops.upsert_relations(
+                    tx,
+                    ns,
+                    [(rel, []) for rel in resolved.relations],
+                    default_event_time=default_event_time,
+                    created_at=created_at,
+                    contradiction=conflicts,
+                    caps=caps,
+                    dry_run=True,
+                )
+                judgment = await judge_contradictions(
+                    tx,
+                    ns,
+                    self._llm,
+                    planned,
+                    caps,
+                    created_at,
+                    {ent.id or entity_id(ent.type, ent.name): ent.name for ent in resolved.entities},
+                )
             source_version: str | None = None
             base_evidence = []
             prior = await _ops.source_targets(tx, ns, source_id) if replace_source and source_id else set()
@@ -696,8 +725,8 @@ class SelfGraph:
                 warnings=found,
                 via=None if resolution is None else [[resolution.statements(rel)] * len(ev) for rel, ev in items],
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, ns, self._llm, relations, caps, created_at))
+            if judgment is not None:
+                found.extend(await judgment(created_at))
 
             diff = None
             if replace_source and source_id is not None and source_version is not None:

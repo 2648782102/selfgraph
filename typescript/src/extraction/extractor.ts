@@ -25,7 +25,14 @@ import {
 import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
 import type { Extractor, LLMClient } from "../protocols.js";
 import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
-import { checkOptions, keysOf, rejectProtoKeys, requireCleanJson, requireOptionalText } from "../validate.js";
+import {
+  checkOptions,
+  keysOf,
+  rejectProtoKeys,
+  requireCleanJson,
+  requireJsonMapping,
+  requireOptionalText,
+} from "../validate.js";
 import { checkPrompts, effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
 const EntitiesOut = z.object({
@@ -271,6 +278,13 @@ export function assembleExtraction(
   ): string => {
     const rid = ids.relationId(fromId, rtype, toId);
     rejectReservedRelType(ids.normalizeRelType(rtype), rtype);
+    props = { ...props };
+    for (const key of Object.keys(props)) {
+      if (!pyStrip(key)) {
+        admitted(warnings, "relation property", () => requireJsonMapping("properties", { [key]: props![key] }));
+        delete props[key];
+      }
+    }
     rejectProtoKeys(props);
     requireCleanJson("relation property", props);
     if (!relations.has(rid)) {

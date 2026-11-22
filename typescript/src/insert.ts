@@ -248,6 +248,26 @@ export class Insert {
         await ops.requireMaxCount(tx, ns, caps, resolved.relations, source.default_event_time, createdAt);
       await ops.requireRelationIdentities(tx, ns, resolved.relations);
       await ops.requirePreferenceIdentities(tx, ns, resolved.preferences);
+      let judgment: ((at: Date) => Promise<InsertWarning[]>) | null = null;
+      if (judged && llm !== null) {
+        const planned = await ops.upsertRelations(
+          tx,
+          ns,
+          resolved.relations.map((rel) => [rel, []] as const),
+          source.default_event_time,
+          createdAt,
+          { contradiction: conflicts, caps, dry_run: true },
+        );
+        judgment = await judgeContradictions(
+          tx,
+          ns,
+          llm,
+          planned,
+          caps,
+          createdAt,
+          new Map(resolved.entities.map((ent) => [ent.id || ids.entityId(ent.type, ent.name), ent.name])),
+        );
+      }
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
       const prior =
@@ -289,9 +309,7 @@ export class Insert {
         warnings: found,
         ...(via ? { via } : {}),
       });
-      if (judged && llm !== null) {
-        found.push(...(await judgeContradictions(tx, ns, llm, relations, caps, createdAt)));
-      }
+      if (judgment !== null) found.push(...(await judgment(createdAt)));
 
       let diff: SourceDiff | null = null;
       if (source.replace_source && source.source_id !== null && sourceVersion !== null) {
