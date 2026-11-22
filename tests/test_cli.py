@@ -485,7 +485,10 @@ def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
 
 def test_a_non_utf8_stdin_schema_reports_a_coded_error_under_surrogateescape():
     pytest.importorskip("kuzu")
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8:surrogateescape"}
+    import selfgraph
+
+    src = os.path.dirname(os.path.dirname(os.path.abspath(selfgraph.__file__)))
+    env = {**os.environ, "PYTHONPATH": src, "PYTHONIOENCODING": "utf-8:surrogateescape"}
     result = subprocess.run(
         [
             sys.executable,
