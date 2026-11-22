@@ -410,6 +410,19 @@ def schema_warnings():
     cases = [Extraction.model_validate(case) for case in SCHEMA_CASES]
     alias_errors = []
     consistency_errors = []
+    neo4j_description_errors = []
+    for source in ("node_types", "relationship_types"):
+        for property_description in (False, True):
+            for description in (False, 0, {}, []):
+                body = {"label": "Person" if source == "node_types" else "KNOWS"}
+                if property_description:
+                    body["properties"] = [{"name": "note", "description": description}]
+                else:
+                    body["description"] = description
+                try:
+                    Schema.from_neo4j_ontology({source: [body]})
+                except ValidationError as exc:
+                    neo4j_description_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
     for spec in [
         {"entities": [{"name": "Person"}, {"name": "Person"}]},
         {"entities": [{"name": "Employee", "parent": "Persn"}]},
@@ -499,6 +512,7 @@ def schema_warnings():
         ],
         "alias_errors": alias_errors,
         "consistency_errors": consistency_errors,
+        "neo4j_description_errors": neo4j_description_errors,
         "own_keys": [
             [{"code": w.code, "message": w.message} for w in validate_against_schema(facts, own_key_schema)]
             for own_key_schema in [Schema.model_validate(OWN_KEY_SPEC)]

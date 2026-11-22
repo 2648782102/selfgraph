@@ -125,12 +125,12 @@ def _import_type(data: Mapping[str, Any], where: str, dropped: list[str]) -> dic
                 "name": name,
                 "type": mapped,
                 "required": prop.get("required") is True,
-                "description": prop.get("description") or None,
+                "description": None if prop.get("description") == "" else prop.get("description"),
             }
         )
     return {
         "label": label,
-        "description": data.get("description") or None,
+        "description": None if data.get("description") == "" else data.get("description"),
         "aliases": _items(data, "aliases", label),
         "properties": properties,
     }
