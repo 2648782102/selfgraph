@@ -1148,6 +1148,23 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     out.facts_none = exc.message;
   }
   out.mcp_arguments = await mcpArgumentErrors();
+  const flagErrors: string[] = [];
+  for (const flag of ["false", 0]) {
+    for (const call of [
+      () => graph.relations.list({ include_invalidated: flag as never }),
+      () => graph.relations.versions("relation:missing", { newest_first: flag as never }),
+      () => graph.preferences.versions("preference:missing", { newest_first: flag as never }),
+    ]) {
+      try {
+        await call();
+        flagErrors.push("accepted");
+      } catch (exc) {
+        if (!(exc instanceof ValidationError)) throw exc;
+        flagErrors.push(exc.message);
+      }
+    }
+  }
+  out.flag_errors = flagErrors;
   const factsTypes: string[] = [];
   for (const facts of FACTS_TYPE_CASES) {
     try {

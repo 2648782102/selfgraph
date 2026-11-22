@@ -1069,6 +1069,18 @@ async def write(graph):
     except ValidationError as exc:
         out["facts_none"] = str(exc)
     out["mcp_arguments"] = await mcp_argument_errors()
+    out["flag_errors"] = []
+    for flag in ("false", 0):
+        for call in (
+            lambda flag=flag: graph.relations.list(include_invalidated=flag),
+            lambda flag=flag: graph.relations.versions("relation:missing", newest_first=flag),
+            lambda flag=flag: graph.preferences.versions("preference:missing", newest_first=flag),
+        ):
+            try:
+                await call()
+                out["flag_errors"].append("accepted")
+            except ValidationError as exc:
+                out["flag_errors"].append(str(exc))
     out["facts_types"] = []
     for facts in FACTS_TYPE_CASES:
         try:
