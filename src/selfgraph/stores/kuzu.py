@@ -6,17 +6,20 @@ import json
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from concurrent.futures import Future
 from contextvars import ContextVar
 from functools import partial
 from typing import Any
 
+from .._ops import _batches
+from .._serde import L_ENTITY, decode_entity
 from ..errors import SelfGraphError, StoreError, ValidationError, mask_uri, split_scheme
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue, check_options
+from ..resolution import match_keys
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
-from ._docrows import docs, edge_row, first_doc, merged_current_edge
+from ._docrows import docs, edge_row, first_doc, merged_current_edge, parse_doc
 
 __all__ = ["KuzuStore"]
 
@@ -45,7 +48,9 @@ _SCHEMA = (
     "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
     "CREATE REL TABLE IF NOT EXISTS R(FROM N TO N, sid STRING, ns STRING, etype STRING, "
     "is_current BOOLEAN, revision INT64, doc STRING)",
+    "CREATE NODE TABLE IF NOT EXISTS K(pk STRING, ns STRING, key STRING, eid STRING, PRIMARY KEY(pk))",
 )
+_SEEK_BATCH = 256
 _DATABASES: dict[object, Any] = {}
 _DATABASE_OPTIONS: dict[object, dict[str, Any]] = {}
 
@@ -172,6 +177,36 @@ def _pk(ns: str, id: str) -> str:
     return f"{ns}\x00{id}"
 
 
+def _keys_of(props: Mapping[str, Any]) -> frozenset[str]:
+    """The match keys of a stored entity, none for a document that is not a readable entity.
+
+    @param props (Mapping[str, Any]): the encoded entity properties.
+    @return (frozenset[str]): its keys, as resolution.match_keys derives them.
+    """
+    try:
+        ent = decode_entity(dict(props))
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    return match_keys(ent.name, ent.aliases, ent.external_ids)
+
+
+def _readable(rows: Iterable[dict]) -> list[tuple[str, dict]]:
+    """The (id, properties) pairs of stored rows whose document is valid JSON, so a corrupt row never blocks a
+    backfill.
+
+    @param rows (Iterable[dict]): the rows, each with doc, stored_id, and stored_ns columns.
+    @return (list[tuple[str, dict]]): the readable entities.
+    """
+    out = []
+    for row in rows:
+        try:
+            props = parse_doc(row)
+        except SelfGraphError:
+            continue
+        out.append((row["stored_id"], props))
+    return out
+
+
 def _jv(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
@@ -180,6 +215,9 @@ _BY_SID = "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid"
 _UPSERT_NODES = (
     "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:N {pk: k}) "
     "SET n.id = row.id, n.ns = $ns, n.label = $label, n.doc = row.doc"
+)
+_MERGE_KEYS = (
+    "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:K {pk: k}) SET n.ns = $ns, n.key = row.key, n.eid = row.eid"
 )
 _EDGE_ROWS = (
     "UNWIND $rows AS row WITH row, row.f AS f MATCH (a:N {pk: f}) WITH a, row, row.t AS t MATCH (b:N {pk: t}) "
@@ -416,9 +454,81 @@ class KuzuStore(AutoCommitStore):
         return await self._run(query, params, raw=True)
 
     async def initialize(self) -> None:
-        """Create the node and relationship tables if they do not exist."""
+        """Create the node, relationship, and entity key tables if they do not exist, and index entities stored
+        before the key table.
+        """
         for stmt in _SCHEMA:
             await self._run(stmt)
+        if count_of((await self._run("MATCH (k:K) RETURN count(*) AS n")).rows):
+            return
+        after = ""
+        while True:
+            page = await self._run(
+                "MATCH (n:N) WHERE n.label = $label AND n.pk > $after RETURN n.pk AS pk, n.ns AS ns, "
+                "n.id AS stored_id, n.ns AS stored_ns, n.doc AS doc ORDER BY n.pk LIMIT 1000",
+                {"label": L_ENTITY, "after": after},
+            )
+            if not page.rows:
+                return
+            after = page.rows[-1]["pk"]
+            for ns in sorted({r["ns"] for r in page.rows}):
+                await self._merge_keys(ns, _readable(r for r in page.rows if r["ns"] == ns))
+
+    async def _merge_keys(self, ns: str, rows: list[tuple[str, dict]]) -> None:
+        """Write the key rows of some entities, one per entity and match key, so a rewrite merges in place.
+
+        @param ns (str): namespace.
+        @param rows (list[tuple[str, dict]]): (entity id, encoded entity properties) pairs.
+        @return (None): nothing.
+        """
+        keyed = (
+            (None, {"pk": f"{ns}\x00{key}\x00{id}", "key": key, "eid": id})
+            for id, props in rows
+            for key in sorted(_keys_of(props))
+        )
+        for _, batch in write_batches(keyed):
+            await self._run(_MERGE_KEYS, {"rows": batch, "ns": ns})
+
+    async def _drop_keys(self, ns: str, ids: list[str]) -> None:
+        """Delete the key rows of deleted entities, so the index only holds stored entities' keys.
+
+        @param ns (str): namespace.
+        @param ids (list[str]): the deleted entity ids.
+        @return (None): nothing.
+        """
+        for batch in _batches(ids, _SEEK_BATCH):
+            await self._run("MATCH (k:K) WHERE k.ns = $ns AND k.eid IN $ids DELETE k", {"ns": ns, "ids": batch})
+
+    async def entities_matching(self, ns: str, keys: Iterable[str]) -> list[dict]:
+        """Read the entities sharing a match key with some keys, through the key table instead of a scan.
+
+        A key row whose entity is gone or no longer has that key, after an alias or external id was removed, is
+        deleted on the way, so the index never grows stale.
+
+        @param ns (str): namespace.
+        @param keys (Iterable[str]): the match keys, as resolution.match_keys derives them.
+        @return (list[dict]): the matching entities' properties.
+        """
+        hits: list[tuple[str, str, str]] = []
+        for batch in _batches(sorted(set(keys)), _SEEK_BATCH):
+            res = await self._run(
+                "MATCH (k:K) WHERE k.ns = $ns AND k.key IN $keys RETURN k.pk AS pk, k.key AS key, k.eid AS eid",
+                {"ns": ns, "keys": batch},
+            )
+            hits += [(r["pk"], r["key"], r["eid"]) for r in res.rows]
+        found: dict[str, dict] = {}
+        for batch in _batches(sorted({eid for _, _, eid in hits}), _SEEK_BATCH):
+            res = await self._run(
+                "MATCH (n:N) WHERE n.pk IN $pks AND n.label = $label "
+                "RETURN n.doc AS doc, n.id AS stored_id, n.ns AS stored_ns",
+                {"pks": [_pk(ns, eid) for eid in batch], "label": L_ENTITY},
+            )
+            found.update((props["id"], props) for props in docs(res.rows))
+        held = {eid: _keys_of(props) for eid, props in found.items()}
+        stale = [pk for pk, key, eid in hits if eid not in found or key not in held[eid]]
+        for batch in _batches(stale, _SEEK_BATCH):
+            await self._run("MATCH (k:K) WHERE k.pk IN $pks DELETE k", {"pks": batch})
+        return list(found.values())
 
     async def close(self) -> None:
         """Close the connection, and the database once no other store in this process holds it.
@@ -464,6 +574,8 @@ class KuzuStore(AutoCommitStore):
             quote_label(extra_label)
         for _, props in rows:
             require_keys(props)
+        if label == L_ENTITY:
+            await self._merge_keys(ns, rows)
         for _, batch in write_batches((None, {"pk": _pk(ns, id), "id": id, "doc": _jv(props)}) for id, props in rows):
             await self._run(_UPSERT_NODES, {"rows": batch, "ns": ns, "label": label})
 
@@ -532,20 +644,24 @@ class KuzuStore(AutoCommitStore):
         return docs(res.rows)
 
     async def delete_node(self, ns: str, label: str, id: str) -> None:
-        await self._run("MATCH (n:N {pk:$pk}) DETACH DELETE n", {"pk": _pk(ns, id)})
+        await self.delete_nodes(ns, label, [id])
 
     async def delete_nodes(self, ns: str, label: str, ids: list[str]) -> None:
         if ids:
             await self._run("MATCH (n:N) WHERE n.pk IN $pks DETACH DELETE n", {"pks": [_pk(ns, i) for i in ids]})
+            if label == L_ENTITY:
+                await self._drop_keys(ns, ids)
 
     async def delete_nodes_by(self, ns: str, label: str, *, equals: dict) -> int:
         where = ["n.ns = $ns", "n.label = $label"]
         params: dict[str, Any] = {"ns": ns, "label": label}
         _where_doc_equals("n", equals, where, params)
-        res = await self._run(f"MATCH (n:N) WHERE {' AND '.join(where)} RETURN n.pk AS pk", params)
+        res = await self._run(f"MATCH (n:N) WHERE {' AND '.join(where)} RETURN n.pk AS pk, n.id AS id", params)
         pks = [r["pk"] for r in res.rows]
         if pks:
             await self._run("MATCH (n:N) WHERE n.pk IN $pks DETACH DELETE n", {"pks": pks})
+            if label == L_ENTITY:
+                await self._drop_keys(ns, [r["id"] for r in res.rows])
         return len(pks)
 
     async def create_edge(
