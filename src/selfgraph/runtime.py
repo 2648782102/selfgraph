@@ -431,10 +431,10 @@ def _falkor_store(uri: str, settings: GraphSettings) -> GraphStore:
     @param settings (GraphSettings): the resolved auth and database settings.
     @return (GraphStore): the store.
     """
-    from .stores.falkordb import FalkorDBStore
-
     parsed, port, tls = _falkor_address(uri)
     username, password = _falkor_credentials(uri, settings.auth)
+    from .stores.falkordb import FalkorDBStore
+
     credentials: dict[str, Any] = {k: v for k, v in (("username", username), ("password", password)) if v}
     if tls:
         credentials["ssl"] = True
