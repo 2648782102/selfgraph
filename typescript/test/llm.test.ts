@@ -816,3 +816,17 @@ describe("LLM extraction through the AI SDK", () => {
     expect(summarizeError(await call({ timeout: 0.5 }))).toBe(`connection refused 127.0.0.1:${port}`);
   });
 });
+it.each([false, true])("does not classify a reply quoting invalid API key as authentication: wrapped=%s", (wrapped) => {
+  const config = { provider: "openai", model: "m" };
+  const error = Object.assign(new Error('Could not parse model reply: "invalid API key"'), {
+    name: "AI_NoObjectGeneratedError",
+  });
+  const exc = wrapped ? Object.assign(new Error("retry failed"), { name: "AI_RetryError", lastError: error }) : error;
+  expect(fatalError(exc, config)).toBeNull();
+  const auth = fatalError(Object.assign(new Error("unauthorized"), { statusCode: 401 }), config);
+  expect(auth?.code).toBe("llm_auth_failed");
+  expect(auth?.message).toBe(
+    "LLM authentication failed for provider openai: check the API key, set by " +
+      "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)",
+  );
+});
