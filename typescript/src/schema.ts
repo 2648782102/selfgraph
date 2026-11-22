@@ -279,16 +279,19 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
   }
   const types = new Map<string, number>();
   for (const [i, relation] of schema.relations.entries()) {
-    let rtype: string | null = null;
+    let rtype: string;
     try {
       rtype = normalizeRelType(relation.type);
     } catch (err) {
-      if (!(err instanceof ValidationError)) throw err;
+      if (err instanceof ValidationError) {
+        throw new ValidationError(err.message, { code: err.code, field: `relations[${i}].type` });
+      }
+      throw err;
     }
-    if (rtype !== null && types.has(rtype)) {
+    if (types.has(rtype)) {
       return [["relations", i, "type"], `duplicate relation type ${pyRepr(relation.type)}`];
     }
-    if (rtype !== null) types.set(rtype, i);
+    types.set(rtype, i);
     for (const side of ["from", "to"] as const) {
       if (schema.entities.length) {
         const resolvedTypes: string[] = [];

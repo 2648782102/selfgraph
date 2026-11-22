@@ -69,7 +69,12 @@ def from_tables(tables: Sequence[Mapping[str, Any]], name: str | None = None) ->
         if not isinstance(table, Mapping) or not isinstance(table.get("name"), str):
             raise ValidationError(f"tables[{i}]: each table needs a name")
         names[table["name"]] = _type_name(table["name"])
-        names.setdefault(table["name"].rsplit(".", 1)[-1], names[table["name"]])
+    type_names = list(names.values())
+    for table_name, etype in list(names.items()):
+        if "." in table_name and type_names.count(etype) > 1:
+            names[table_name] = _type_name(table_name.replace(".", "_"))
+    for table_name, etype in list(names.items()):
+        names.setdefault(table_name.rsplit(".", 1)[-1], etype)
     entities: list[dict[str, Any]] = []
     relations: dict[str, dict[str, Any]] = {}
     for i, table in enumerate(tables):

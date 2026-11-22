@@ -436,6 +436,7 @@ export function schemaWarnings(): {
   endpoint_types: unknown[];
   tables: unknown;
   tables_errors: string[];
+  qualified_tables: unknown;
   term_forms: unknown;
   terms: unknown[];
   shared_term_forms: unknown;
@@ -482,6 +483,7 @@ export function schemaWarnings(): {
         ],
       },
       { entities: [{ name: "Straße" }, { name: "Company", aliases: ["STRASSE"] }] },
+      ...["!!!", "___", " - / ", "💥"].map((type) => ({ relations: [{ type }] })),
       { relations: [{ type: "WORKS_AT" }, { type: "OWNS", aliases: ["works at"] }] },
       { relations: [{ type: "OWNS", aliases: ["works-at"] }, { type: "WORKS_AT" }] },
       {
@@ -559,6 +561,7 @@ export function schemaWarnings(): {
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
     tables_errors: tablesReferenceErrors(),
+    qualified_tables: toJsonable(fromTables([{ name: "sales.users" }, { name: "support.users" }])),
     neo4j_dropped: neo4jExportWarnings(),
     ossie: ossieExport(),
     json_constants: jsonConstants(),
