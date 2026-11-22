@@ -175,6 +175,13 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
   it("schema validation produces identical warnings in both languages", () => {
     const warnings = schemaWarnings();
     expect(warnings).toEqual(py("schema", "-", "-"));
+    expect(warnings.consistency_errors.map((error) => error.field)).toEqual([
+      "entities[1].name",
+      "entities[0].parent",
+      "relations[0].to.types[0]",
+      "relations[1].type",
+      "relations[0].from.max_count",
+    ]);
     expect(warnings.ossie.warnings).toContain("the OneToMany multiplicity of relation LEADS are left out");
   });
 

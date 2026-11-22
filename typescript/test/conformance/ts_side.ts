@@ -462,6 +462,7 @@ export function schemaWarnings(): {
   unknown_keys: string[];
   schema_types: string[];
   alias_errors: string[];
+  consistency_errors: Array<{ code: string; field: string | null; message: string }>;
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
   endpoint_types: unknown[];
@@ -485,6 +486,21 @@ export function schemaWarnings(): {
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
+  const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  for (const spec of [
+    { entities: [{ name: "Person" }, { name: "Person" }] },
+    { entities: [{ name: "Employee", parent: "Persn" }] },
+    { entities: [{ name: "Person" }], relations: [{ type: "WORKS_AT", to: { types: ["Company"] } }] },
+    { relations: [{ type: "KNOWS" }, { type: "knows" }] },
+    { relations: [{ type: "X", from: { max_count: 0 } }] },
+  ]) {
+    try {
+      parseOrThrow(Schema, spec, "schema");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      consistencyErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+    }
+  }
   const terms = Schema.parse(TERMS_SPEC);
   const sharedSchema = Schema.parse(SHARED_DEFINITION_SPEC);
   const subSchema = Schema.parse({
@@ -515,6 +531,7 @@ export function schemaWarnings(): {
         }),
       ).map((w) => ({ code: w.code, message: w.message })),
     ),
+    consistency_errors: consistencyErrors,
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
       {

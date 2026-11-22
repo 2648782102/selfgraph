@@ -314,6 +314,42 @@ def test_inconsistent_schemas_are_rejected_with_a_path(spec, message):
 
 
 @pytest.mark.parametrize(
+    ("spec", "field"),
+    [
+        ({"entities": [{"name": "Person"}, {"name": "Person"}]}, "entities[1].name"),
+        ({"entities": [{"name": "Person"}, {"name": "Company", "aliases": ["Person"]}]}, "entities[1].aliases[0]"),
+        ({"entities": [{"name": "Person", "parent": "Unknown"}]}, "entities[0].parent"),
+        ({"entities": [{"name": "Person", "parent": "Person"}]}, "entities[0].parent"),
+        ({"relations": [{"type": "KNOWS"}, {"type": "knows"}]}, "relations[1].type"),
+        ({"relations": [{"type": "KNOWS"}, {"type": "OWNS", "aliases": ["knows"]}]}, "relations[1].aliases[0]"),
+        *(
+            (
+                {"entities": [{"name": "Person"}], "relations": [{"type": "R", side: {"types": ["Unknown"]}}]},
+                f"relations[0].{side}.types[0]",
+            )
+            for side in ("from", "to")
+        ),
+        *(
+            ({"relations": [{"type": "R", side: counts}]}, f"relations[0].{side}.{key}")
+            for side in ("from", "to")
+            for counts, key in (
+                ({"max_count": 0}, "max_count"),
+                ({"min_count": -1}, "min_count"),
+                ({"min_count": 2, "max_count": 1}, "min_count"),
+            )
+        ),
+    ],
+)
+def test_schema_consistency_errors_identify_the_field(spec, field):
+    for build in (as_schema, Schema.model_validate, lambda data: Schema(**data)):
+        with pytest.raises(ValidationError) as err:
+            build(spec)
+        assert err.value.code == "invalid_argument"
+        assert err.value.field == field
+        assert str(err.value).startswith(f"invalid schema: {field}: ")
+
+
+@pytest.mark.parametrize(
     ("spec", "lines"),
     [
         (
