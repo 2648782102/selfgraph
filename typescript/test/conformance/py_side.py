@@ -20,7 +20,7 @@ from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_ev
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
-from selfgraph.runtime import parse_json, to_jsonable
+from selfgraph.runtime import _falkor_credentials, parse_json, to_jsonable
 from selfgraph.schema import validate_against_schema
 from selfgraph.terms import expand_tokens, schema_forms
 
@@ -257,6 +257,31 @@ UNKNOWN_KEY_CASES = [
     ["schema", {"relations": [{"type": "X", "from": {"min_count": 2**53, "max_count": 5}}]}],
     ["schema", {"relations": [{"type": "X", "from": {"max_count": 2**53, "min_count": 1.5}}]}],
 ]
+
+
+FALKOR_CREDENTIAL_CASES = [
+    ["redis://default:100%@127.0.0.1:1", None],
+    ["redis://u:p%ff@h:1", None],
+    ["redis://u%zz:p@h:1", None],
+    ["redis://us%C3%A9r:p%40ss%3Aw0rd@h:1", None],
+    ["redis://:onlypass@h:1", None],
+    ["h:6379", None],
+    ["redis://u:bad%@h:1", "v:ok"],
+]
+
+
+def falkor_credentials():
+    """Read the FalkorDB login from URLs with valid, malformed, and overridden credentials.
+
+    @return (list): each case's user name and password, or the error code, field, and message.
+    """
+    out = []
+    for uri, auth in FALKOR_CREDENTIAL_CASES:
+        try:
+            out.append(list(_falkor_credentials(uri, auth)))
+        except ValidationError as exc:
+            out.append([exc.code, exc.field, str(exc)])
+    return out
 
 
 def unknown_key_error(kind, value):
@@ -503,6 +528,7 @@ def schema_warnings():
             for q in TERM_QUESTIONS
         ],
         "datetime_errors": datetime_errors(),
+        "falkor_credentials": falkor_credentials(),
         "iso_times": iso_times(),
         "terms_subtypes": [
             sorted(expand_tokens(_tokens(q), sub_schema, _tokens))

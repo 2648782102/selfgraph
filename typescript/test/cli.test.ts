@@ -617,6 +617,24 @@ describe("CLI settings", () => {
     expect(storeKind({ ...DEFAULT_SETTINGS, store: "Neo4j", uri: "bolt://x:1" })).toBe("neo4j");
   });
 
+  it("rejects a malformed escape in FalkorDB URL credentials without quoting them", () => {
+    for (const userinfo of ["default:100%", "u:%ff", "u%zz:p", "u:%e2%82"]) {
+      let caught: unknown;
+      try {
+        buildGraph({ ...DEFAULT_SETTINGS, store: "falkordb", uri: `redis://${userinfo}@db:6390` });
+      } catch (exc) {
+        caught = exc;
+      }
+      expect(caught, userinfo).toBeInstanceOf(ValidationError);
+      const err = caught as ValidationError;
+      expect([err.code, err.field]).toEqual(["invalid_setting", "uri"]);
+      expect(err.message).toBe(
+        "the store URI has a malformed percent escape in its user or password; " +
+          "write a literal % as %25 and percent-encode other characters as UTF-8",
+      );
+    }
+  });
+
   it("passes FalkorDB credentials and the graph name from settings", () => {
     const built = (over: Partial<GraphSettings>) => {
       const store = buildGraph({ ...DEFAULT_SETTINGS, store: "falkordb", ...over }).store as unknown as {

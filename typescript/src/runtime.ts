@@ -4,6 +4,7 @@ import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
 import {
+  MALFORMED_USERINFO_ESCAPE,
   maskUri,
   NotFoundError,
   needsLlm,
@@ -384,6 +385,36 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
 }
 
 /**
+ * Decode the percent escapes of a URL user or password, rejecting a malformed escape as the Python SDK does.
+ *
+ * @param text (string): the user or password as written in the URL.
+ * @return (string): the decoded text; throws ValidationError for a % not followed by two hex digits or escapes that are not UTF-8, without quoting the text.
+ */
+function urlUnquote(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    throw new ValidationError(MALFORMED_USERINFO_ESCAPE, { code: "invalid_setting", field: "uri" });
+  }
+}
+
+/**
+ * The user name and password a FalkorDB store logs in with: auth, else the URL's, percent-decoded.
+ *
+ * @param uri (string): the address.
+ * @param auth (GraphSettings["auth"] | undefined): the auth setting.
+ * @return ([string | null, string | null]): the user name and password, null when empty.
+ */
+export function falkorCredentials(
+  uri: string,
+  auth: GraphSettings["auth"] | undefined,
+): [string | null, string | null] {
+  const { url } = falkorAddress(uri);
+  const [username, password] = parseAuth(auth, "") ?? [urlUnquote(url.username), urlUnquote(url.password)];
+  return [username || null, password || null];
+}
+
+/**
  * A FalkorDB store from "host:port" or a redis:// style URL; auth, else the URL credentials, logs in.
  *
  * @param uri (string): the address.
@@ -393,10 +424,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
 function falkorStore(uri: string, settings: GraphSettings): GraphStore {
   const { url, tls } = falkorAddress(uri);
   const host = url.hostname.replace(/^\[|\]$/g, "") || "localhost";
-  const [username, password] = parseAuth(settings.auth, "") ?? [
-    decodeURIComponent(url.username),
-    decodeURIComponent(url.password),
-  ];
+  const [username, password] = falkorCredentials(uri, settings.auth);
   return new FalkorDBStore(host, url.port ? Number(url.port) : 6379, {
     graph: settings.database || "selfgraph",
     ...(username ? { username } : {}),
