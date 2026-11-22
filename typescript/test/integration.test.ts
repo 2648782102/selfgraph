@@ -27,7 +27,7 @@ import { HUB_DEGREE } from "../src/retrieval.js";
 import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
-import { forEachStore, freshGraphs, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
+import { forEachStore, freshGraphs, interruptUpdate, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
 
 const NOTE_WORDS = (
   "zebra quartz walnut falcon ember lotus marble nectar orchid pepper " +
@@ -580,6 +580,71 @@ function suite(spec: StoreSpec) {
     await expect(graph.preferences.update(pid, { strength: 2 })).rejects.toBeInstanceOf(ValidationError);
     expect((await graph.preferences.list("person:jane-doe", { stance: "disinterest" })).items).toHaveLength(1);
     expect((await graph.preferences.list({ key: "database" })).items).toHaveLength(2);
+  });
+
+  it.runIf(!spec.transactional)("completes a relation left without a current version", async () => {
+    const rows = [
+      [{ set_properties: { role: "manager" } }, { role: "manager" }],
+      [{ set_properties: { role: "engineer" } }, { role: "engineer" }],
+      [{ set_properties: { team: "core" } }, { role: "engineer", team: "core" }],
+      [{ remove_properties: ["role"] }, {}],
+    ] as const;
+    for (const [changes, expected] of rows) {
+      const g = fresh();
+      await g.insert.facts({
+        entities: [
+          { type: "Person", name: "Ann" },
+          { type: "Company", name: "Acme" },
+        ],
+      });
+      const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", {
+        properties: { role: "engineer" },
+      });
+      await interruptUpdate(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+      expect(await g.relations.get(rel.id)).toBeNull();
+      expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current])).toEqual([[1, false]]);
+
+      const updated = await g.relations.update(rel.id, { remove_properties: [], ...changes });
+
+      expect([updated.revision, updated.is_current, updated.properties]).toEqual([2, true, expected]);
+      expect(await g.relations.get(rel.id)).toEqual(updated);
+      expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current, v.properties])).toEqual([
+        [2, true, expected],
+        [1, false, { role: "engineer" }],
+      ]);
+      expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([rel.id]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("completes a preference left without a current version", async () => {
+    const rows = [
+      [{ strength: 0.9 }, 0.9],
+      [{ strength: 0.5 }, 0.5],
+      [{ clear: ["strength"] }, null],
+    ] as const;
+    for (const [changes, expected] of rows) {
+      const g = fresh();
+      await g.insert.facts({
+        entities: [
+          { type: "Person", name: "Ann" },
+          { type: "Company", name: "Acme" },
+        ],
+      });
+      const pref = await g.preferences.create("person:ann", "employer", "company:acme", { strength: 0.5 });
+      await interruptUpdate(g, () => g.preferences.update(pref.id, { remove_properties: [], strength: 1 }));
+      expect(await g.preferences.get(pref.id)).toBeNull();
+      expect((await g.preferences.versions(pref.id)).map((v) => [v.revision, v.is_current])).toEqual([[1, false]]);
+
+      const updated = await g.preferences.update(pref.id, { remove_properties: [], ...changes });
+
+      expect([updated.revision, updated.is_current, updated.strength]).toEqual([2, true, expected]);
+      expect(await g.preferences.get(pref.id)).toEqual(updated);
+      expect((await g.preferences.versions(pref.id)).map((v) => [v.revision, v.is_current, v.strength])).toEqual([
+        [2, true, expected],
+        [1, false, 0.5],
+      ]);
+      expect((await g.preferences.list("person:ann")).items.map((p) => p.id)).toEqual([pref.id]);
+    }
   });
 
   it("rejects a bad reference before writing anything", async () => {

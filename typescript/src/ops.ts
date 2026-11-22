@@ -2884,8 +2884,8 @@ export interface UpdateRelationArgs {
  * Return the current version of a relation or preference, read again under its lock so no writer slips in.
  *
  * An object whose newest version carries invalidated_at was retired by a contradiction, which is a settled state
- * and throws ValidationError; any other object with versions but no current one is mid-write and throws
- * TransientError so the caller retries.
+ * and throws ValidationError; any other object with versions but no current one lost its create to an interrupted
+ * update, since writers hold the store's write lock, so its newest version is returned for the caller to complete.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -2894,9 +2894,9 @@ export interface UpdateRelationArgs {
  * @param get ((runner: Runner, ns: string, id: string) => Promise<T | null>): reads the current version, or null.
  * @param newest ((runner: Runner, ns: string, id: string) => Promise<T | null>): reads the highest revision, current or not, or null.
  * @param lockOn ((current: T) => [string, string]): maps the current version to the (label, id) node to lock.
- * @return (T): the current version, under the lock.
+ * @return (T): the current version under the lock, or the newest version when an interrupted update left none.
  */
-async function lockCurrent<T>(
+async function lockCurrent<T extends { is_current: boolean }>(
   runner: Runner,
   ns: string,
   id: string,
@@ -2905,24 +2905,42 @@ async function lockCurrent<T>(
   newest: (runner: Runner, ns: string, id: string) => Promise<T | null>,
   lockOn: (current: T) => [string, string],
 ): Promise<T> {
-  const before = await get(runner, ns, id);
-  if (before === null) {
-    const latest = await newest(runner, ns, id);
-    if (latest === null) {
-      throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id, undefined, { namespace: ns });
-    }
-    const ended = latest as Partial<Relation>;
-    if (ended.invalidated_at != null) {
-      throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`, {
-        code: "relation_invalidated",
-      });
-    }
-    throw new TransientError(`${kind} ${pyRepr(id)} has no current version right now (concurrent write); retry`);
-  }
+  const before = (await get(runner, ns, id)) ?? (await newestUnretired(runner, ns, id, kind, newest));
   await runner.lockNode(ns, ...lockOn(before));
   const current = await get(runner, ns, id);
-  if (current === null) throw new TransientError(`${kind} ${pyRepr(id)} was changed concurrently; retry`);
-  return current;
+  if (current !== null) return current;
+  if (before.is_current) throw new TransientError(`${kind} ${pyRepr(id)} was changed concurrently; retry`);
+  return newestUnretired(runner, ns, id, kind, newest);
+}
+
+/**
+ * Return the newest version of a relation or preference with no current one, unless a contradiction retired it.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param id (string): the relation or preference id.
+ * @param kind ("relation" | "preference"): the object kind, for the errors.
+ * @param newest ((runner: Runner, ns: string, id: string) => Promise<T | null>): reads the highest revision, current or not, or null.
+ * @return (T): the newest version.
+ */
+async function newestUnretired<T>(
+  runner: Runner,
+  ns: string,
+  id: string,
+  kind: "relation" | "preference",
+  newest: (runner: Runner, ns: string, id: string) => Promise<T | null>,
+): Promise<T> {
+  const latest = await newest(runner, ns, id);
+  if (latest === null) {
+    throw new NotFoundError(kind === "relation" ? "Relation" : "Preference", id, undefined, { namespace: ns });
+  }
+  const ended = latest as Partial<Relation>;
+  if (ended.invalidated_at != null) {
+    throw new ValidationError(`${invalidatedNote(ended as Relation)}; create it again to reassert it`, {
+      code: "relation_invalidated",
+    });
+  }
+  return latest;
 }
 
 /**
@@ -2977,7 +2995,11 @@ export async function updateRelation(
   );
   const sources = current.source_count + (gained.get(rid) ?? 0);
 
-  if (deepEqual(newProps, current.properties) && toIso(newEventTime) === toIso(current.event_time)) {
+  if (
+    current.is_current &&
+    deepEqual(newProps, current.properties) &&
+    toIso(newEventTime) === toIso(current.event_time)
+  ) {
     if (sources !== current.source_count) {
       await runner.updateCurrentEdge(ns, rid, { source_count: sources });
       current.source_count = sources;
@@ -2996,11 +3018,20 @@ export async function updateRelation(
     is_current: true,
     source_count: sources,
   });
-  const rel = await writeRelationVersion(runner, ns, current, props, certifications(current, createdAt));
+  const rel = await writeRelationVersion(
+    runner,
+    ns,
+    current,
+    props,
+    current.is_current ? certifications(current, createdAt) : null,
+  );
   await writeEvidence(runner, ns, records, createdAt);
   const moved = toIso(newEventTime) !== toIso(current.event_time);
-  if (options.contradiction === "supersede" && (moved || current.certified_at !== null)) {
-    if (current.certified_at !== null) await settleUncertified(runner, ns, rel, options.caps, createdAt);
+  const lostCertification = current.is_current
+    ? current.certified_at !== null
+    : current.certifications.slice(-1).some((c) => c.until !== null);
+  if (options.contradiction === "supersede" && (moved || lostCertification)) {
+    if (lostCertification) await settleUncertified(runner, ns, rel, options.caps, createdAt);
     if (moved) {
       const edge = { type: rel.type, from_id: rel.from_entity, to_id: rel.to_entity, props };
       await resettleEndpoints(runner, ns, [edge], options.caps, createdAt);
@@ -3783,6 +3814,7 @@ export async function updatePreference(
   const newEventTime = cleared.has("event_time") ? null : (args.event_time ?? current.event_time);
   const newAbout = cleared.has("about_entity") ? null : current.about_entity;
   if (
+    current.is_current &&
     newStrength === current.strength &&
     newAbout === current.about_entity &&
     deepEqual(newProps, current.properties) &&
@@ -3803,7 +3835,7 @@ export async function updatePreference(
     created_at: new Date(),
     is_current: true,
   });
-  return writePreferenceVersion(runner, ns, current, props, true);
+  return writePreferenceVersion(runner, ns, current, props, current.is_current);
 }
 
 export async function listPreferenceVersions(

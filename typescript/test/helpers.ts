@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterAll, afterEach, describe, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, vi } from "vitest";
 import { version } from "../package.json";
 import { type ErrorCode, HINTS } from "../src/errors.js";
 import {
@@ -204,6 +204,22 @@ export const ANN_AT_ACME = {
     { from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:acme", event_time: "2020-01-01T00:00:00Z" },
   ],
 };
+
+/**
+ * Fail an update's create after it has retired the current version, as a timeout or crash between the two writes does.
+ *
+ * @param g (SelfGraph): the graph on an auto-commit store.
+ * @param update (() => Promise<unknown>): the update to interrupt.
+ * @return (Promise<void>): resolves once the update has failed.
+ */
+export async function interruptUpdate(g: SelfGraph, update: () => Promise<unknown>): Promise<void> {
+  const create = vi.spyOn(g.store, "createEdge").mockRejectedValueOnce(new Error("interrupted"));
+  try {
+    await expect(update()).rejects.toThrow("interrupted");
+  } finally {
+    create.mockRestore();
+  }
+}
 
 /**
  * Build a WORKS_AT relation input, dated to January 1 of a year when one is given.

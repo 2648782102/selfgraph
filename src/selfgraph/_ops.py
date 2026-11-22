@@ -1732,13 +1732,20 @@ def _require_same_ends(rid: str, stored: tuple[str, str, str], given: tuple[str,
 
 
 async def _lock_current(
-    runner: Any, ns: str, oid: str, kind: str, get: Callable[..., Any], keep: Callable[[str], bool], lock_on: Callable
+    runner: Any,
+    ns: str,
+    oid: str,
+    kind: str,
+    get: Callable[..., Any],
+    keep: Callable[[str], bool],
+    decode: Callable[[dict], Any],
+    lock_on: Callable,
 ) -> Any:
     """Return the current version of a relation or preference, read again under its lock so no writer slips in.
 
     An object whose newest version carries invalidated_at was retired by a contradiction, which is a settled state
-    and raises ValidationError; any other object with versions but no current one is mid-write and raises
-    TransientError so the caller retries.
+    and raises ValidationError; any other object with versions but no current one lost its create to an interrupted
+    update, since writers hold the store's write lock, so its newest version is returned for the caller to complete.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1746,24 +1753,41 @@ async def _lock_current(
     @param kind (str): "relation" or "preference", for the errors.
     @param get (Callable[..., Any]): reads the current version, or None.
     @param keep (Callable[[str], bool]): predicate selecting the edge type for this object kind.
+    @param decode (Callable[[dict], Any]): decodes a stored edge row into this object kind.
     @param lock_on (Callable): maps the current version to the (label, id) node to lock.
-    @return (Any): the current version, under the lock.
+    @return (Any): the current version under the lock, or the newest version when an interrupted update left none.
     """
-    before = await get(runner, ns, oid)
-    if before is None:
-        latest = await _newest_edge(runner, ns, oid, keep)
-        if latest is None:
-            raise NotFoundError(kind.capitalize(), oid, namespace=ns)
-        if latest["props"].get("invalidated_at"):
-            raise ValidationError(
-                f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
-            )
-        raise TransientError(f"{kind} {oid!r} has no current version right now (concurrent write); retry")
+    before = await get(runner, ns, oid) or await _newest_unretired(runner, ns, oid, kind, keep, decode)
     await runner.lock_node(ns, *lock_on(before))
     current = await get(runner, ns, oid)
-    if current is None:
+    if current is not None:
+        return current
+    if before.is_current:
         raise TransientError(f"{kind} {oid!r} was changed concurrently; retry")
-    return current
+    return await _newest_unretired(runner, ns, oid, kind, keep, decode)
+
+
+async def _newest_unretired(
+    runner: Any, ns: str, oid: str, kind: str, keep: Callable[[str], bool], decode: Callable[[dict], Any]
+) -> Any:
+    """Return the newest version of a relation or preference with no current one, unless a contradiction retired it.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param oid (str): the relation or preference id.
+    @param kind (str): "relation" or "preference", for the errors.
+    @param keep (Callable[[str], bool]): predicate selecting the edge type for this object kind.
+    @param decode (Callable[[dict], Any]): decodes a stored edge row into this object kind.
+    @return (Any): the newest version, decoded.
+    """
+    latest = await _newest_edge(runner, ns, oid, keep)
+    if latest is None:
+        raise NotFoundError(kind.capitalize(), oid, namespace=ns)
+    if latest["props"].get("invalidated_at"):
+        raise ValidationError(
+            f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
+        )
+    return decode(latest)
 
 
 async def _precheck_nodes(runner: Any, ns: str, label: str, rows: list[tuple[str, dict]]) -> None:
@@ -2786,7 +2810,14 @@ async def update_relation(
     require_changes({k: v for k, v in given.items() if v is not None})
     event_time = parse_time(event_time, "event_time")
     current = await _lock_current(
-        runner, ns, rid, "relation", get_relation_current, _is_relation_type, lambda rel: (L_ENTITY, rel.from_entity)
+        runner,
+        ns,
+        rid,
+        "relation",
+        get_relation_current,
+        _is_relation_type,
+        _relation_of,
+        lambda rel: (L_ENTITY, rel.from_entity),
     )
     new_props = _merge_props(current.properties, set_properties, remove_properties)
     if schema_check is not None:
@@ -2804,7 +2835,11 @@ async def update_relation(
     records, gained = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
     sources = current.source_count + gained.get(rid, 0)
 
-    if _json_equal(new_props, current.properties) and to_iso(new_event_time) == to_iso(current.event_time):
+    if (
+        current.is_current
+        and _json_equal(new_props, current.properties)
+        and to_iso(new_event_time) == to_iso(current.event_time)
+    ):
         if sources != current.source_count:
             await runner.update_current_edge(ns, rid, {"source_count": sources})
             current.source_count = sources
@@ -2828,12 +2863,17 @@ async def update_relation(
         current.type,
         current.to_entity,
         props,
-        retire=_certifications(current, created_at),
+        retire=_certifications(current, created_at) if current.is_current else None,
     )
     await _write_evidence(runner, ns, records, created_at)
     moved = to_iso(new_event_time) != to_iso(current.event_time)
-    if contradiction == "supersede" and (moved or current.certified_at is not None):
-        if current.certified_at is not None:
+    lost_certification = (
+        current.certified_at is not None
+        if current.is_current
+        else any(c.until is not None for c in current.certifications[-1:])
+    )
+    if contradiction == "supersede" and (moved or lost_certification):
+        if lost_certification:
             await _settle_uncertified(runner, ns, rel, caps, created_at)
         if moved:
             edge = {"type": rel.type, "from_id": rel.from_entity, "to_id": rel.to_entity, "props": props}
@@ -3559,14 +3599,22 @@ async def update_preference(
     }
     require_changes({k: v for k, v in given.items() if v is not None})
     current = await _lock_current(
-        runner, ns, pid, "preference", get_preference, _is_preference_type, lambda pref: (L_PROFILE, pref.profile_id)
+        runner,
+        ns,
+        pid,
+        "preference",
+        get_preference,
+        _is_preference_type,
+        _preference_of,
+        lambda pref: (L_PROFILE, pref.profile_id),
     )
     new_strength = None if "strength" in cleared else strength if strength is not None else current.strength
     new_props = _merge_props(current.properties, properties, remove_properties)
     new_event_time = None if "event_time" in cleared else event_time if event_time is not None else current.event_time
     new_about = None if "about_entity" in cleared else current.about_entity
     if (
-        new_strength == current.strength
+        current.is_current
+        and new_strength == current.strength
         and new_about == current.about_entity
         and _json_equal(new_props, current.properties)
         and to_iso(new_event_time) == to_iso(current.event_time)
@@ -3586,7 +3634,7 @@ async def update_preference(
         is_current=True,
     )
     return await _write_preference_version(
-        runner, ns, current.profile_id, current.value_entity, current.stance, props, retire=True
+        runner, ns, current.profile_id, current.value_entity, current.stance, props, retire=current.is_current
     )
 
 

@@ -1,5 +1,5 @@
 import pytest
-from helpers import HYDRADB, RAW_CYPHER, create_entities, fresh_graph, new_graph, run
+from helpers import AUTO_COMMIT, HYDRADB, RAW_CYPHER, create_entities, fresh_graph, interrupt_update, new_graph, run
 
 from selfgraph import ConflictError, NotFoundError, StoreError, ValidationError
 
@@ -166,3 +166,31 @@ def test_an_update_over_the_hydradb_message_limit_keeps_the_current_version():
         run(g.preferences.update(pref.id, properties={"blob": "x" * 1_100_000}))
     current = run(g.preferences.get(pref.id))
     assert (current.revision, current.properties) == (1, {})
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store leaves the gap between retire and create")
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"strength": 0.9}, 0.9),
+        ({"strength": 0.5}, 0.5),
+        ({"clear": ["strength"]}, None),
+    ],
+)
+def test_an_update_completes_a_preference_an_interrupted_update_left_without_a_current_version(
+    monkeypatch, changes, expected
+):
+    g = fresh_graph("interrupted-update")
+    seed(g)
+    pref = run(g.preferences.create("person:soham", "database", "company:hydradb", strength=0.5))
+    interrupt_update(g, g.preferences.update(pref.id, strength=1.0), monkeypatch)
+    assert run(g.preferences.get(pref.id)) is None
+    assert [(v.revision, v.is_current) for v in run(g.preferences.versions(pref.id))] == [(1, False)]
+
+    updated = run(g.preferences.update(pref.id, **changes))
+
+    assert (updated.revision, updated.is_current, updated.strength) == (2, True, expected)
+    assert run(g.preferences.get(pref.id)) == updated
+    history = run(g.preferences.versions(pref.id))
+    assert [(v.revision, v.is_current, v.strength) for v in history] == [(2, True, expected), (1, False, 0.5)]
+    assert [p.id for p in run(g.preferences.list("person:soham")).items] == [pref.id]

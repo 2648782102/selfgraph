@@ -1,7 +1,19 @@
 import asyncio
 
 import pytest
-from helpers import HYDRADB, KUZU, create_entities, fresh_graph, new_graph, run, utc
+from helpers import (
+    AUTO_COMMIT,
+    HYDRADB,
+    KUZU,
+    create_entities,
+    employment_graph,
+    fresh_graph,
+    interrupt_update,
+    new_graph,
+    run,
+    utc,
+    works_at,
+)
 
 from selfgraph import ConflictError, KuzuStore, NotFoundError, SelfGraph, StoreError
 
@@ -198,3 +210,55 @@ def test_an_update_whose_edge_row_is_over_the_hydradb_limit_keeps_the_current_ve
         run(g.relations.update(rel.id, set_properties={"blob": "x" * 1_010_000}))
     current = run(g.relations.get(rel.id))
     assert (current.revision, current.properties) == (1, {})
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store leaves the gap between retire and create")
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"set_properties": {"role": "manager"}}, {"role": "manager"}),
+        ({"set_properties": {"role": "engineer"}}, {"role": "engineer"}),
+        ({"set_properties": {"team": "core"}}, {"role": "engineer", "team": "core"}),
+        ({"remove_properties": ["role"]}, {}),
+    ],
+)
+def test_an_update_completes_a_relation_an_interrupted_update_left_without_a_current_version(
+    monkeypatch, changes, expected
+):
+    g = fresh_graph("interrupted-update")
+    seed(g)
+    rel = run(g.relations.create("person:soham", "WORKS_AT", "company:hydradb", properties={"role": "engineer"}))
+    interrupt_update(g, g.relations.update(rel.id, set_properties={"role": "cto"}), monkeypatch)
+    assert run(g.relations.get(rel.id)) is None
+    assert [(v.revision, v.is_current) for v in run(g.relations.versions(rel.id))] == [(1, False)]
+
+    updated = run(g.relations.update(rel.id, **changes))
+
+    assert (updated.revision, updated.is_current, updated.properties) == (2, True, expected)
+    assert run(g.relations.get(rel.id)) == updated
+    history = run(g.relations.versions(rel.id))
+    assert [(v.revision, v.is_current, v.properties) for v in history] == [
+        (2, True, expected),
+        (1, False, {"role": "engineer"}),
+    ]
+    assert [r.id for r in run(g.relations.list(from_entity="person:soham")).items] == [rel.id]
+
+
+@pytest.mark.skipif(not AUTO_COMMIT, reason="only an auto-commit store leaves the gap between retire and create")
+def test_an_update_of_a_certified_relation_left_without_a_current_version_settles_its_endpoints_again(monkeypatch):
+    g = employment_graph("interrupted-certified", contradiction="supersede")
+    old = run(g.insert.facts({"relations": [works_at("acme", 2024)]})).relations[0]
+    run(g.relations.certify(old.id, by="hr"))
+    newer = run(g.insert.facts({"relations": [works_at("globex", 2025)]})).relations[0]
+    interrupt_update(g, g.relations.update(old.id, set_properties={"role": "cto"}), monkeypatch)
+    assert run(g.relations.get(old.id)) is None
+
+    updated = run(g.relations.update(old.id, set_properties={"role": "cto"}))
+
+    assert (updated.revision, updated.is_current, updated.invalidated_by) == (2, False, newer.id)
+    assert (updated.certified_at, updated.certified_by, updated.certifications) == (None, None, [])
+    assert [r.id for r in run(g.relations.list(from_entity="person:ann")).items] == [newer.id]
+    [second, first] = run(g.relations.versions(old.id))
+    assert (first.revision, first.is_current, first.certified_at) == (1, False, None)
+    assert [(c.by, c.until is not None) for c in first.certifications] == [("hr", True)]
+    assert second.properties == {"role": "cto"}

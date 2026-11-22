@@ -112,7 +112,7 @@ before writing anything.
 
 | | Transactional (Neo4j, Memgraph) | Auto-commit (HydraDB, Kuzu, FalkorDB) |
 |---|---|---|
-| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. |
+| A failed batch | Rolls back as one unit. | Can leave some of its writes in place. HydraDB runs writes that do not depend on each other concurrently, so they need not be the earlier ones. An update cut off between retiring a relation's or preference's current version and writing the next leaves no current version, and the next update of it completes the write. |
 | Writers in one process | Serialized per subject node. | One write at a time per graph object. |
 | Writers in separate processes | Each keeps its own version. A loser under heavy contention raises `TransientError` to retry. | Not serialized. Concurrent creates of one id can all report success with one write kept, and concurrent updates collapse to last-writer-wins. |
 

@@ -28,6 +28,7 @@ import {
   captureLog,
   forEachStore,
   freshGraphs,
+  interruptUpdate,
   runCli,
   SINGLE_EMPLOYER,
   type StoreSpec,
@@ -300,6 +301,25 @@ function suite(spec: StoreSpec): void {
       await expect(g.relations.certify(old.id, { by: " " })).rejects.toThrow("certified_by must be a non-empty string");
       await expect(g.relations.certify("relation:missing", { by: "hr" })).rejects.toThrow("does not exist");
     }
+  });
+
+  it.runIf(!spec.transactional)("settles a certified relation left without a current version", async () => {
+    const g = await employment({ contradiction: "supersede" });
+    const old = (await g.insert.facts({ relations: [worksAt("person:ann", "company:acme", 2024)] })).relations[0]!;
+    await g.relations.certify(old.id, { by: "hr" });
+    const newer = (await g.insert.facts({ relations: [worksAt("person:ann", "company:globex", 2025)] })).relations[0]!;
+    await interruptUpdate(g, () => g.relations.update(old.id, { set_properties: { role: "cto" } }));
+    expect(await g.relations.get(old.id)).toBeNull();
+
+    const updated = await g.relations.update(old.id, { set_properties: { role: "cto" } });
+
+    expect([updated.revision, updated.is_current, updated.invalidated_by]).toEqual([2, false, newer.id]);
+    expect([updated.certified_at, updated.certified_by, updated.certifications]).toEqual([null, null, []]);
+    expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([newer.id]);
+    const [second, first] = await g.relations.versions(old.id);
+    expect([first!.revision, first!.is_current, first!.certified_at]).toEqual([1, false, null]);
+    expect(first!.certifications.map((c) => [c.by, c.until !== null])).toEqual([["hr", true]]);
+    expect(second!.properties).toEqual({ role: "cto" });
   });
 
   it("refuses to certify a retired relation", async () => {

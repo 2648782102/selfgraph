@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +35,7 @@ CYPHER = TEST_STORE in ("cypher", "memgraph")
 FALKORDB = TEST_STORE == "falkordb"
 KUZU = TEST_STORE == "kuzu"
 RAW_CYPHER = not (HYDRADB or KUZU)
+AUTO_COMMIT = HYDRADB or KUZU or FALKORDB
 NEO4J_URI = _env("SG_NEO4J_URI", "NEO4J_URI", default="bolt://127.0.0.1:7687")
 CYPHER_URI = _env("SG_MEMGRAPH_URI", "CYPHER_URI", default="bolt://127.0.0.1:7688")
 FALKOR_HOST = _env("FALKOR_HOST", default="localhost")
@@ -158,6 +159,33 @@ def employment_graph(prefix: str = "test", **kwargs) -> SelfGraph:
     g = fresh_graph(prefix, schema=WORKS_AT_SPEC, **kwargs)
     run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
     return g
+
+
+def interrupt_update(g: SelfGraph, update: Any, monkeypatch: Any) -> None:
+    """Cancel an update after it retires the current version and before it creates the next one.
+
+    @param g (SelfGraph): the graph on an auto-commit store.
+    @param update (Any): the update coroutine to interrupt.
+    @param monkeypatch (Any): the pytest monkeypatch fixture.
+    @return (None): nothing.
+    """
+
+    async def interrupted() -> None:
+        reached = asyncio.Event()
+
+        async def hang(*_args: Any, **_kwargs: Any) -> None:
+            reached.set()
+            await asyncio.Event().wait()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(g.store, "create_edge", hang)
+            task = asyncio.ensure_future(update)
+            await reached.wait()
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    run(interrupted())
 
 
 def utc(year: int, month: int = 1, day: int = 1) -> datetime:
