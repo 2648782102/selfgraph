@@ -409,7 +409,7 @@ class KuzuStore(AutoCommitStore):
 
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         res = await self._run(
-            "MATCH (n:N {pk:$pk}) WHERE n.label = $label RETURN n.doc AS doc",
+            "MATCH (n:N {pk:$pk}) WHERE n.label = $label RETURN n.doc AS doc, n.id AS stored_id, n.ns AS stored_ns",
             {"pk": _pk(ns, id), "label": label},
         )
         return first_doc(res.rows)
@@ -500,7 +500,8 @@ class KuzuStore(AutoCommitStore):
         ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{require_identifier(order_by, 'order_by')}')"
         res = await self._run(
             f"MATCH (n:N) WHERE {' AND '.join(where)} "
-            f"RETURN n.doc AS doc ORDER BY {ob} SKIP {int(skip)} LIMIT {int(limit)}",
+            f"RETURN n.doc AS doc, n.id AS stored_id, n.ns AS stored_ns"
+            f" ORDER BY {ob} SKIP {int(skip)} LIMIT {int(limit)}",
             params,
         )
         return docs(res.rows)
@@ -532,14 +533,16 @@ class KuzuStore(AutoCommitStore):
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
-            f"{_BY_SID} AND r.is_current = true RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+            f"{_BY_SID} AND r.is_current = true "
+            f"RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
         )
         return edge_row(res.rows[0]) if res.rows else None
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
-            f"{_BY_SID} RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
+            f"{_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, "
+            "a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev",
             {"ns": ns, "sid": id},
         )
         return [edge_row(r) for r in res.rows]
@@ -567,7 +570,7 @@ class KuzuStore(AutoCommitStore):
                 params[f"{alias}_label"] = label
         result = await self._run(
             f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
-            "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+            "RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et",
             params,
         )
         rows = [edge_row(row) for row in result.rows]
@@ -649,7 +652,7 @@ class KuzuStore(AutoCommitStore):
             ob = f"json_extract(r.doc, '{require_identifier(order_by, 'order_by')}')"
         res = await self._run(
             f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
-            f"RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et "
+            f"RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et "
             f"ORDER BY {ob}, a.id, b.id, r.etype SKIP {int(skip)} LIMIT {int(limit)}",
             params,
         )
@@ -670,7 +673,8 @@ class KuzuStore(AutoCommitStore):
         )
         res = await self._run(
             "MATCH (p:N {pk:$pk})-[r:R]->(c:N) "
-            f"WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc{order}",
+            f"WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl "
+            f"RETURN c.doc AS doc, c.id AS stored_id, c.ns AS stored_ns{order}",
             {"pk": _pk(ns, parent_id), "ns": ns, "et": edge_type, "cl": child_label},
         )
         return docs(res.rows)

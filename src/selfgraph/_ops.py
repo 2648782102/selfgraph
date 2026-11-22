@@ -3180,6 +3180,8 @@ async def certify_relation(
     _ids._require_str("relation id", rid)
     if by is not None and (not isinstance(by, str) or not by.strip()):
         raise ValidationError("certified_by must be a non-empty string")
+    if by is not None and _ids._has_surrogate(by):
+        raise ValidationError("certified_by cannot contain unpaired surrogate characters", field="by")
     edge = await runner.get_current_edge(ns, rid)
     if edge is not None:
         for eid in _relation_lock_ids(caps, [(edge["type"], edge["from_id"], edge["to_id"])]):

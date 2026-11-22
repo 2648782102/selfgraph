@@ -474,10 +474,13 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   }
 
   async getNode(ns: string, label: string, id: string): Promise<Props | null> {
-    const res = await this._run("MATCH (n:N {pk:$pk}) WHERE n.label = $label RETURN n.doc AS doc", {
-      pk: pk(ns, id),
-      label,
-    });
+    const res = await this._run(
+      "MATCH (n:N {pk:$pk}) WHERE n.label = $label RETURN n.doc AS doc, n.id AS stored_id, n.ns AS stored_ns",
+      {
+        pk: pk(ns, id),
+        label,
+      },
+    );
     return firstDoc(res.rows);
   }
 
@@ -577,7 +580,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     whereAfter("n.id", id_gt, where, params);
     const res = await this._run(
       `MATCH (n:N) WHERE ${where.join(" AND ")} ` +
-        `RETURN n.doc AS doc ORDER BY n.id SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
+        `RETURN n.doc AS doc, n.id AS stored_id, n.ns AS stored_ns ORDER BY n.id SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
       params,
     );
     return docs(res.rows);
@@ -639,7 +642,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
 
   async getCurrentEdge(ns: string, id: string): Promise<EdgeRow | null> {
     const res = await this._run(
-      `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et`,
+      `${BY_SID} AND r.is_current = true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et`,
       { ns, sid: id },
     );
     const row = res.rows[0];
@@ -648,7 +651,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
 
   async listEdgeVersions(ns: string, id: string): Promise<EdgeRow[]> {
     const res = await this._run(
-      `${BY_SID} RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
+      `${BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et, r.revision AS rev ORDER BY rev`,
       { ns, sid: id },
     );
     return res.rows.map(edgeRow);
@@ -684,7 +687,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
     const result = await this._run(
       `MATCH (a:N)-[r:R]->(b:N) WHERE ${where.join(" AND ")} ` +
-        "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+        "RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et",
       params,
     );
     const order = new Map(ids.map((id, i) => [id, i]));
@@ -764,7 +767,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     whereAfter("r.sid", id_gt, where, params);
     const res = await this._run(
       `MATCH (a:N)-[r:R]->(b:N) WHERE ${where.join(" AND ")} ` +
-        `RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et ` +
+        `RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns, a.id AS fa, b.id AS tb, r.etype AS et ` +
         `ORDER BY r.sid, r.revision, a.id, b.id, r.etype SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
       params,
     );
@@ -779,7 +782,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     childLabel: string,
   ): Promise<Props[]> {
     const res = await this._run(
-      "MATCH (p:N {pk:$pk})-[r:R]->(c:N) WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc",
+      "MATCH (p:N {pk:$pk})-[r:R]->(c:N) WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc, c.id AS stored_id, c.ns AS stored_ns",
       { pk: pk(ns, parentId), ns, et: edgeType, cl: childLabel },
     );
     return docs(res.rows);
