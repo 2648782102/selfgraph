@@ -206,18 +206,52 @@ export const ANN_AT_ACME = {
 };
 
 /**
- * Fail an update's create after it has retired the current version, as a timeout or crash between the two writes does.
+ * Fail a write after it has retired the current version and before it creates the next one, as a timeout or crash
+ * between the two writes does.
  *
  * @param g (SelfGraph): the graph on an auto-commit store.
- * @param update (() => Promise<unknown>): the update to interrupt.
- * @return (Promise<void>): resolves once the update has failed.
+ * @param write (() => Promise<unknown>): the write to interrupt.
+ * @param options ({ method?: "createEdge" | "createEdges"; whileStuck?: () => Promise<void> }): the store method that
+ *   blocks, where createEdges writes the first row, and what runs in the write's outer transaction while it is cut off.
+ * @return (Promise<void>): resolves once the write has failed.
  */
-export async function interruptUpdate(g: SelfGraph, update: () => Promise<unknown>): Promise<void> {
-  const create = vi.spyOn(g.store, "createEdge").mockRejectedValueOnce(new Error("interrupted"));
+export async function interruptWrite(
+  g: SelfGraph,
+  write: () => Promise<unknown>,
+  options: { method?: "createEdge" | "createEdges"; whileStuck?: () => Promise<void> } = {},
+): Promise<void> {
+  const { method = "createEdge", whileStuck } = options;
+  const store = g.store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = store[method]!.bind(g.store);
+  let reached!: () => void;
+  const stuck = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let cut!: (error: Error) => void;
+  const failed = new Promise<never>((_, reject) => {
+    cut = reject;
+  });
+  const spy = vi.spyOn(store, method).mockImplementation(async (...args: unknown[]) => {
+    if (spy.mock.calls.length > 1) return original(...args);
+    if (method === "createEdges") await original(...args.slice(0, -1), (args.at(-1) as unknown[]).slice(0, 1));
+    reached();
+    return failed;
+  });
+  const interrupted = async () => {
+    const done = expect(write()).rejects.toThrow("interrupted");
+    try {
+      await Promise.race([stuck, done]);
+      expect(spy).toHaveBeenCalled();
+      await whileStuck?.();
+    } finally {
+      cut(new Error("interrupted"));
+      await done;
+    }
+  };
   try {
-    await expect(update()).rejects.toThrow("interrupted");
+    await (whileStuck ? g.store.transaction(interrupted) : interrupted());
   } finally {
-    create.mockRestore();
+    spy.mockRestore();
   }
 }
 

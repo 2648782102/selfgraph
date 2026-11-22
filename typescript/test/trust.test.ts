@@ -28,7 +28,7 @@ import {
   captureLog,
   forEachStore,
   freshGraphs,
-  interruptUpdate,
+  interruptWrite,
   runCli,
   SINGLE_EMPLOYER,
   type StoreSpec,
@@ -308,7 +308,7 @@ function suite(spec: StoreSpec): void {
     const old = (await g.insert.facts({ relations: [worksAt("person:ann", "company:acme", 2024)] })).relations[0]!;
     await g.relations.certify(old.id, { by: "hr" });
     const newer = (await g.insert.facts({ relations: [worksAt("person:ann", "company:globex", 2025)] })).relations[0]!;
-    await interruptUpdate(g, () => g.relations.update(old.id, { set_properties: { role: "cto" } }));
+    await interruptWrite(g, () => g.relations.update(old.id, { set_properties: { role: "cto" } }));
     expect(await g.relations.get(old.id)).toBeNull();
 
     const updated = await g.relations.update(old.id, { set_properties: { role: "cto" } });
@@ -320,6 +320,30 @@ function suite(spec: StoreSpec): void {
     expect([first!.revision, first!.is_current, first!.certified_at]).toEqual([1, false, null]);
     expect(first!.certifications.map((c) => [c.by, c.until !== null])).toEqual([["hr", true]]);
     expect(second!.properties).toEqual({ role: "cto" });
+  });
+
+  it.runIf(!spec.transactional)("completes a relation left without a current version on insert", async () => {
+    const rows = [
+      ["off", { team: "core" }, { role: "eng", team: "core" }],
+      ["supersede", { role: "eng" }, { role: "eng" }],
+    ] as const;
+    for (const [contradiction, properties, expected] of rows) {
+      const g = await employment({ contradiction });
+      const acme = worksAt("person:ann", "company:acme", 2024, { role: "eng" });
+      const rel = (await g.insert.facts({ relations: [acme] })).relations[0]!;
+      await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+
+      const again = worksAt("person:ann", "company:acme", undefined, properties);
+      const inserted = (await g.insert.facts({ relations: [again] })).relations[0]!;
+
+      expect([inserted.revision, inserted.is_current, inserted.properties]).toEqual([2, true, expected]);
+      expect(inserted.event_time).toEqual(new Date("2024-01-01T00:00:00Z"));
+      expect(await g.relations.get(rel.id)).toEqual(inserted);
+      expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current])).toEqual([
+        [2, true],
+        [1, false],
+      ]);
+    }
   });
 
   it("refuses to certify a retired relation", async () => {

@@ -5,8 +5,8 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager, nullcontext, suppress
 from datetime import datetime, timezone
 from typing import Any
 
@@ -161,29 +161,54 @@ def employment_graph(prefix: str = "test", **kwargs) -> SelfGraph:
     return g
 
 
-def interrupt_update(g: SelfGraph, update: Any, monkeypatch: Any) -> None:
-    """Cancel an update after it retires the current version and before it creates the next one.
+def interrupt_write(
+    g: SelfGraph,
+    write: Any,
+    monkeypatch: Any,
+    *,
+    method: str = "create_edge",
+    while_stuck: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Cancel a write after it retires the current version and before it creates the next one.
 
     @param g (SelfGraph): the graph on an auto-commit store.
-    @param update (Any): the update coroutine to interrupt.
+    @param write (Any): the write coroutine to interrupt.
     @param monkeypatch (Any): the pytest monkeypatch fixture.
+    @param method (str): the store method that blocks, "create_edge", or "create_edges", which writes the first row.
+    @param while_stuck (Callable[[], Awaitable[None]] | None): runs while the write is cut off, in its outer transaction.
     @return (None): nothing.
     """
 
     async def interrupted() -> None:
         reached = asyncio.Event()
+        original = getattr(g.store, method)
 
-        async def hang(*_args: Any, **_kwargs: Any) -> None:
+        async def hang(ns: str, *args: Any) -> Any:
+            if reached.is_set():
+                return await original(ns, *args)
+            if method == "create_edges":
+                *ends, rows = args
+                await original(ns, *ends, rows[:1])
             reached.set()
             await asyncio.Event().wait()
 
         with monkeypatch.context() as patch:
-            patch.setattr(g.store, "create_edge", hang)
-            task = asyncio.ensure_future(update)
-            await reached.wait()
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            patch.setattr(g.store, method, hang)
+            async with g.store.transaction() if while_stuck else nullcontext():
+                task = asyncio.ensure_future(write)
+                waiter = asyncio.ensure_future(reached.wait())
+                try:
+                    await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                    if not reached.is_set():
+                        await task
+                        raise AssertionError("the write ended before it was cut off")
+                    if while_stuck is not None:
+                        await while_stuck()
+                finally:
+                    waiter.cancel()
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
     run(interrupted())
 

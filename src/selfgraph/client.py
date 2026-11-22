@@ -483,7 +483,7 @@ class SelfGraph:
         await self._ensure_ready()
         for attempt in range(_MAX_TX_RETRIES):
             try:
-                async with self.store.transaction() as tx:
+                async with self.store.transaction() as tx, _ops.claim_scope():
                     return await fn(tx)
             except TransientError as exc:
                 if attempt == _MAX_TX_RETRIES - 1:

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { ConflictError, NotFoundError, TransientError, ValidationError } from "./errors.js";
 import * as ids from "./ids.js";
 import { casefold } from "./internal/casefold.js";
@@ -1623,6 +1625,93 @@ export async function listRelationVersions(
   return rels;
 }
 
+interface ClaimState {
+  active: number;
+  seen: number;
+}
+
+interface Claim {
+  readonly states: Map<string, ClaimState>;
+  readonly key: string;
+  readonly state: ClaimState;
+  readonly contended: () => boolean;
+}
+
+const CLAIMS = new WeakMap<Runner, Map<string, ClaimState>>();
+const HELD = new AsyncLocalStorage<Map<ClaimState, Claim>>();
+
+/**
+ * Hold the relations and preferences a write attempt claims until it ends, sharing an enclosing attempt's scope.
+ *
+ * @param write (() => Promise<T>): the write attempt.
+ * @return (Promise<T>): the write's result; the claims taken inside are released when it settles.
+ */
+export async function withClaims<T>(write: () => Promise<T>): Promise<T> {
+  if (HELD.getStore() !== undefined) return write();
+  const held = new Map<ClaimState, Claim>();
+  try {
+    return await HELD.run(held, write);
+  } finally {
+    for (const { states, key, state } of held.values()) {
+      state.active -= 1;
+      if (!state.active) states.delete(key);
+    }
+  }
+}
+
+/**
+ * Claim a relation or preference for the running write attempt, before it is read.
+ *
+ * On an auto-commit store the retire and the create are two statements, and writers that share an outer
+ * transaction share its lock, so of the writes that find a record with no current version only the one that held
+ * it first completes it, and only when no write found it current meanwhile.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param id (string): the relation or preference id.
+ * @return (Claim): the record's holding attempts and times one found it current, and whether another may write it.
+ */
+function takeClaim(runner: Runner, ns: string, id: string): Claim {
+  const held = HELD.getStore()!;
+  const states = CLAIMS.get(runner) ?? new Map<string, ClaimState>();
+  CLAIMS.set(runner, states);
+  const key = JSON.stringify([ns, id]);
+  const existing = states.get(key);
+  const own = existing === undefined ? undefined : held.get(existing);
+  if (own !== undefined) return own;
+  const state = existing ?? { active: 0, seen: 0 };
+  states.set(key, state);
+  state.active += 1;
+  const [first, seen] = [state.active === 1, state.seen];
+  const claim = { states, key, state, contended: () => !first || state.seen !== seen };
+  held.set(state, claim);
+  return claim;
+}
+
+/**
+ * Record that a write attempt found a record current, so it may retire that version before writing the next.
+ *
+ * @param claim (Claim): the attempt's claim on the record, from takeClaim.
+ * @return (void): nothing.
+ */
+function foundCurrent(claim: Claim): void {
+  claim.state.seen += 1;
+}
+
+/**
+ * Throw TransientError when another write may be writing a relation or preference found with no current version.
+ *
+ * @param claim (Claim): the record's claim, from takeClaim.
+ * @param id (string): the relation or preference id.
+ * @param kind ("relation" | "preference"): the object kind, for the error.
+ * @return (void): nothing; throws TransientError for a record another write may still be writing.
+ */
+function requireUnshared(claim: Claim, id: string, kind: "relation" | "preference"): void {
+  if (claim.contended()) {
+    throw new TransientError(`${kind} ${pyRepr(id)} has no current version right now (concurrent write); retry`);
+  }
+}
+
 /**
  * Write a relation version as the current one, retiring the previous current version when there is one.
  *
@@ -2613,11 +2702,13 @@ export async function upsertRelations(
   ))
     await runner.lockNode(ns, L_ENTITY, eid);
   const rids = dedupList(keyed.map((k) => k.rid));
+  const claims = new Map(rids.map((rid) => [rid, takeClaim(runner, ns, rid)] as const));
   const stored = await currentRelations(
     runner,
     ns,
     keyed.map((k) => [k.rid, k.rel] as const),
   );
+  for (const [rid, edge] of stored) if (edge.props.is_current) foundCurrent(claims.get(rid)!);
   const [records, gained] = await planEvidence(
     runner,
     ns,
@@ -2659,7 +2750,9 @@ export async function upsertRelations(
     } else {
       requireSameEnds(rid, [edge.from_id, edge.type, edge.to_id], [rel.from_entity, rtype, rel.to_entity]);
       const prev = relationOf(edge);
-      eventTime = named ?? (prev.is_current || options.contradiction === "supersede" ? prev.event_time : null);
+      if (!prev.is_current && prev.invalidated_at == null) requireUnshared(claims.get(rid)!, rid, "relation");
+      eventTime =
+        named ?? (prev.invalidated_at == null || options.contradiction === "supersede" ? prev.event_time : null);
       const effective = eventTime ?? createdAt;
       const sources = prev.source_count + takeGained(gained, rid);
       const mergedProperties = mergeProps(prev.properties, rel.properties);
@@ -2667,6 +2760,7 @@ export async function upsertRelations(
       const unchanged = deepEqual(prev.properties, mergedProperties) && toIso(prev.event_time) === toIso(eventTime);
       if (
         unchanged &&
+        prev.invalidated_at != null &&
         options.contradiction === "supersede" &&
         (named === null || toIso(effective) === toIso(prev.invalidated_at))
       )
@@ -2884,8 +2978,9 @@ export interface UpdateRelationArgs {
  * Return the current version of a relation or preference, read again under its lock so no writer slips in.
  *
  * An object whose newest version carries invalidated_at was retired by a contradiction, which is a settled state
- * and throws ValidationError; any other object with versions but no current one lost its create to an interrupted
- * update, since writers hold the store's write lock, so its newest version is returned for the caller to complete.
+ * and throws ValidationError. One another write may still be writing throws TransientError (see takeClaim). Any
+ * other object with versions but no current one lost its create to an interrupted write, so its newest version is
+ * returned for the caller to complete.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -2905,11 +3000,16 @@ async function lockCurrent<T extends { is_current: boolean }>(
   newest: (runner: Runner, ns: string, id: string) => Promise<T | null>,
   lockOn: (current: T) => [string, string],
 ): Promise<T> {
+  const claim = takeClaim(runner, ns, id);
   const before = (await get(runner, ns, id)) ?? (await newestUnretired(runner, ns, id, kind, newest));
   await runner.lockNode(ns, ...lockOn(before));
   const current = await get(runner, ns, id);
-  if (current !== null) return current;
+  if (current !== null) {
+    foundCurrent(claim);
+    return current;
+  }
   if (before.is_current) throw new TransientError(`${kind} ${pyRepr(id)} was changed concurrently; retry`);
+  requireUnshared(claim, id, kind);
   return newestUnretired(runner, ns, id, kind, newest);
 }
 
@@ -3018,13 +3118,8 @@ export async function updateRelation(
     is_current: true,
     source_count: sources,
   });
-  const rel = await writeRelationVersion(
-    runner,
-    ns,
-    current,
-    props,
-    current.is_current ? certifications(current, createdAt) : null,
-  );
+  const retire = current.is_current ? certifications(current, createdAt) : null;
+  const rel = await writeRelationVersion(runner, ns, current, props, retire);
   await writeEvidence(runner, ns, records, createdAt);
   const moved = toIso(newEventTime) !== toIso(current.event_time);
   const lostCertification = current.is_current
@@ -3651,6 +3746,8 @@ export async function requirePreferenceIdentities(
 /**
  * Insert-semantics upsert of a preference: merge properties, versioning on change.
  *
+ * A preference an interrupted update left with no current version is completed from its newest version.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param pref (ParsedPreferenceInput): the preference to upsert.
@@ -3672,17 +3769,21 @@ export async function upsertPreference(
   await requirePreferenceRefs(runner, ns, pref);
   const profileId = await ensureProfile(runner, ns, pref.subject_entity, createdAt);
 
+  const claim = takeClaim(runner, ns, pid);
   await runner.lockNode(ns, L_PROFILE, profileId);
-  const current = await getPreference(runner, ns, pid);
-  if (current !== null) requireSamePreference(pid, preferenceIdentity(current), preferenceIdentity(pref));
-  const eventTime = named ?? current?.event_time ?? null;
-  const strength = current === null || pref.strength != null ? pref.strength : current.strength;
-  const aboutEntity = current === null || pref.about_entity != null ? pref.about_entity : current.about_entity;
-  const mergedProps = mergeProps(current?.properties ?? null, pref.properties);
+  const base = await newestPreference(runner, ns, pid);
+  const current = base?.is_current ? base : null;
+  if (current !== null) foundCurrent(claim);
+  else if (base !== null) requireUnshared(claim, pid, "preference");
+  if (base !== null) requireSamePreference(pid, preferenceIdentity(base), preferenceIdentity(pref));
+  const eventTime = named ?? base?.event_time ?? null;
+  const strength = base === null || pref.strength != null ? pref.strength : base.strength;
+  const aboutEntity = base === null || pref.about_entity != null ? pref.about_entity : base.about_entity;
+  const mergedProps = mergeProps(base?.properties ?? null, pref.properties);
   const props = encodePreferenceProps({
     ns,
     id: pid,
-    revision: current === null ? 1 : current.revision + 1,
+    revision: base === null ? 1 : base.revision + 1,
     subject_entity: pref.subject_entity,
     key: ids.normalizeText(pref.key),
     about_entity: aboutEntity ?? null,

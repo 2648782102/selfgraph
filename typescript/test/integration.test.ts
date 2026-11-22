@@ -27,7 +27,20 @@ import { HUB_DEGREE } from "../src/retrieval.js";
 import { boltError, openDriver, parseAuth, queryError } from "../src/stores/bolt.js";
 import { uniqueLabels } from "../src/stores/cypher.js";
 import { kuzuError } from "../src/stores/kuzu.js";
-import { forEachStore, freshGraphs, interruptUpdate, KUZU_SPEC, type StoreSpec, uniqueNs } from "./helpers.js";
+import {
+  ANN_AT_ACME,
+  forEachStore,
+  freshGraphs,
+  interruptWrite,
+  KUZU_SPEC,
+  type StoreSpec,
+  uniqueNs,
+} from "./helpers.js";
+
+const concurrentWrite = (error: unknown): boolean =>
+  error instanceof TransientError && String(error.cause).includes("concurrent write");
+const revisions = async (versions: Promise<readonly { revision: number; is_current: boolean }[]>) =>
+  (await versions).map((v) => [v.revision, v.is_current]);
 
 const NOTE_WORDS = (
   "zebra quartz walnut falcon ember lotus marble nectar orchid pepper " +
@@ -585,24 +598,17 @@ function suite(spec: StoreSpec) {
   it.runIf(!spec.transactional)("completes a relation left without a current version", async () => {
     const rows = [
       [{ set_properties: { role: "manager" } }, { role: "manager" }],
-      [{ set_properties: { role: "engineer" } }, { role: "engineer" }],
-      [{ set_properties: { team: "core" } }, { role: "engineer", team: "core" }],
+      [{ set_properties: { role: "eng" } }, { role: "eng" }],
+      [{ set_properties: { team: "core" } }, { role: "eng", team: "core" }],
       [{ remove_properties: ["role"] }, {}],
     ] as const;
     for (const [changes, expected] of rows) {
       const g = fresh();
-      await g.insert.facts({
-        entities: [
-          { type: "Person", name: "Ann" },
-          { type: "Company", name: "Acme" },
-        ],
-      });
-      const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", {
-        properties: { role: "engineer" },
-      });
-      await interruptUpdate(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { properties: { role: "eng" } });
+      await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
       expect(await g.relations.get(rel.id)).toBeNull();
-      expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current])).toEqual([[1, false]]);
+      expect(await revisions(g.relations.versions(rel.id))).toEqual([[1, false]]);
 
       const updated = await g.relations.update(rel.id, { remove_properties: [], ...changes });
 
@@ -610,7 +616,7 @@ function suite(spec: StoreSpec) {
       expect(await g.relations.get(rel.id)).toEqual(updated);
       expect((await g.relations.versions(rel.id)).map((v) => [v.revision, v.is_current, v.properties])).toEqual([
         [2, true, expected],
-        [1, false, { role: "engineer" }],
+        [1, false, { role: "eng" }],
       ]);
       expect((await g.relations.list({ from_entity: "person:ann" })).items.map((r) => r.id)).toEqual([rel.id]);
     }
@@ -624,16 +630,11 @@ function suite(spec: StoreSpec) {
     ] as const;
     for (const [changes, expected] of rows) {
       const g = fresh();
-      await g.insert.facts({
-        entities: [
-          { type: "Person", name: "Ann" },
-          { type: "Company", name: "Acme" },
-        ],
-      });
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
       const pref = await g.preferences.create("person:ann", "employer", "company:acme", { strength: 0.5 });
-      await interruptUpdate(g, () => g.preferences.update(pref.id, { remove_properties: [], strength: 1 }));
+      await interruptWrite(g, () => g.preferences.update(pref.id, { remove_properties: [], strength: 1 }));
       expect(await g.preferences.get(pref.id)).toBeNull();
-      expect((await g.preferences.versions(pref.id)).map((v) => [v.revision, v.is_current])).toEqual([[1, false]]);
+      expect(await revisions(g.preferences.versions(pref.id))).toEqual([[1, false]]);
 
       const updated = await g.preferences.update(pref.id, { remove_properties: [], ...changes });
 
@@ -644,6 +645,132 @@ function suite(spec: StoreSpec) {
         [1, false, 0.5],
       ]);
       expect((await g.preferences.list("person:ann")).items.map((p) => p.id)).toEqual([pref.id]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("completes a preference left without a current version on insert", async () => {
+    const g = fresh();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    const pref = await g.preferences.create("person:ann", "employer", "company:acme", {
+      strength: 0.5,
+      properties: { a: 1 },
+    });
+    await interruptWrite(g, () => g.preferences.update(pref.id, { strength: 1 }));
+    const facts = { subject_entity: "person:ann", key: "employer", value_entity: "company:acme" };
+
+    const [inserted] = (await g.insert.facts({ preferences: [{ ...facts, properties: { b: 2 } }] })).preferences;
+
+    expect([inserted!.revision, inserted!.is_current, inserted!.strength]).toEqual([2, true, 0.5]);
+    expect(await g.preferences.get(pref.id)).toEqual(inserted);
+    expect((await g.preferences.versions(pref.id)).map((v) => [v.revision, v.is_current, v.properties])).toEqual([
+      [2, true, { a: 1, b: 2 }],
+      [1, false, { a: 1 }],
+    ]);
+  });
+
+  it.runIf(!spec.transactional)("waits for a relation write still running in its transaction", async () => {
+    for (const by of ["update", "insert", "recovery"] as const) {
+      const g = fresh();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { properties: { role: "eng" } });
+      const ends = { from_entity: rel.from_entity, type: rel.type, to_entity: rel.to_entity };
+      if (by === "recovery") {
+        await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "lead" } }));
+      }
+      const write =
+        by === "insert"
+          ? () => g.insert.facts({ relations: [{ ...ends, properties: { role: "cto" } }] })
+          : () => g.relations.update(rel.id, { set_properties: { role: "cto" } });
+      await interruptWrite(g, write, {
+        method: by === "insert" ? "createEdges" : "createEdge",
+        whileStuck: async () => {
+          await expect(g.relations.update(rel.id, { set_properties: { team: "core" } })).rejects.toSatisfy(
+            concurrentWrite,
+          );
+          await expect(g.insert.facts({ relations: [{ ...ends, properties: { team: "core" } }] })).rejects.toSatisfy(
+            concurrentWrite,
+          );
+          expect(await revisions(g.relations.versions(rel.id))).toEqual([[1, false]]);
+        },
+      });
+
+      const updated = await g.relations.update(rel.id, { set_properties: { team: "core" } });
+
+      expect([updated.revision, updated.is_current, updated.properties]).toEqual([
+        2,
+        true,
+        { role: "eng", team: "core" },
+      ]);
+      expect(await revisions(g.relations.versions(rel.id))).toEqual([
+        [2, true],
+        [1, false],
+      ]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("waits for a preference write still running in its transaction", async () => {
+    for (const by of ["update", "insert", "recovery"] as const) {
+      const g = fresh();
+      await g.insert.facts({ entities: ANN_AT_ACME.entities });
+      const pref = await g.preferences.create("person:ann", "employer", "company:acme", { strength: 0.5 });
+      const facts = { subject_entity: "person:ann", key: "employer", value_entity: "company:acme" };
+      if (by === "recovery") await interruptWrite(g, () => g.preferences.update(pref.id, { strength: 0.7 }));
+      const write =
+        by === "insert"
+          ? () => g.insert.facts({ preferences: [{ ...facts, strength: 1 }] })
+          : () => g.preferences.update(pref.id, { strength: 1 });
+      await interruptWrite(g, write, {
+        whileStuck: async () => {
+          await expect(g.preferences.update(pref.id, { strength: 0.9 })).rejects.toSatisfy(concurrentWrite);
+          await expect(g.insert.facts({ preferences: [{ ...facts, strength: 0.9 }] })).rejects.toSatisfy(
+            concurrentWrite,
+          );
+          expect(await revisions(g.preferences.versions(pref.id))).toEqual([[1, false]]);
+        },
+      });
+
+      const updated = await g.preferences.update(pref.id, { strength: 0.9 });
+
+      expect([updated.revision, updated.is_current, updated.strength]).toEqual([2, true, 0.9]);
+      expect(await revisions(g.preferences.versions(pref.id))).toEqual([
+        [2, true],
+        [1, false],
+      ]);
+    }
+  });
+
+  it.runIf(!spec.transactional)("lets the first of two updates complete an interrupted relation", async () => {
+    const g = fresh();
+    await g.insert.facts({ entities: ANN_AT_ACME.entities });
+    const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", { properties: { role: "eng" } });
+    await interruptWrite(g, () => g.relations.update(rel.id, { set_properties: { role: "cto" } }));
+    const go: (() => void)[] = [];
+    const original = g.store.lockNode.bind(g.store);
+    const spy = vi.spyOn(g.store, "lockNode").mockImplementation(async (...args) => {
+      if (go.length < 2) await new Promise<void>((resolve) => go.push(resolve));
+      return original(...args);
+    });
+    try {
+      const [first, second] = await g.store.transaction(async () => {
+        const first = g.relations.update(rel.id, { set_properties: { team: "core" } });
+        await vi.waitFor(() => expect(go).toHaveLength(1));
+        const second = g.relations.update(rel.id, { set_properties: { level: 3 } });
+        await vi.waitFor(() => expect(go).toHaveLength(2));
+        go[0]!();
+        const done = await first;
+        go[1]!();
+        return [done, await second] as const;
+      });
+
+      expect([first.revision, first.properties]).toEqual([2, { role: "eng", team: "core" }]);
+      expect([second.revision, second.properties]).toEqual([3, { role: "eng", team: "core", level: 3 }]);
+      expect(await revisions(g.relations.versions(rel.id))).toEqual([
+        [3, true],
+        [2, false],
+        [1, false],
+      ]);
+    } finally {
+      spy.mockRestore();
     }
   });
 
