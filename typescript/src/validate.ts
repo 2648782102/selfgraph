@@ -405,7 +405,7 @@ export function requireJsonMapping(name: string, value: unknown, safeInts = true
 export function requireStrMapping(name: string, value: unknown): asserts value is Record<string, string> {
   requireMapping(name, value);
   for (const [key, item] of Object.entries(value)) {
-    if (!pyStrip(key)) throw new ValidationError(`${name} keys cannot be empty or whitespace`);
+    if (!pyStrip(key)) throw new ValidationError(`${name} keys cannot be empty or whitespace`, { field: name });
     if (typeof item !== "string") throw new ValidationError(`${name} must map strings to strings`);
   }
 }

@@ -148,8 +148,9 @@ def test_property_values_and_keys_are_checked_and_null_clears_a_key():
         with pytest.raises(ValidationError, match="properties keys cannot be empty or whitespace"):
             run(g.entities.create("A", "T", properties=bad))
     for bad in ({"": "v"}, {"  ": "v"}):
-        with pytest.raises(ValidationError, match="external_ids keys cannot be empty or whitespace"):
+        with pytest.raises(ValidationError, match="external_ids keys cannot be empty or whitespace") as bad_key:
             run(g.entities.create("B", "T", external_ids=bad))
+        assert bad_key.value.field == "external_ids"
         with pytest.raises(ValidationError, match="external_ids keys cannot be empty or whitespace"):
             run(g.entities.update(e.id, external_ids=bad))
     with pytest.raises(ValidationError, match="properties keys cannot be empty"):

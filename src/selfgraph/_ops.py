@@ -470,7 +470,7 @@ def _require_str_mapping(name: str, value: Any) -> None:
     _require_mapping(name, value)
     for key, item in value.items():
         if not key.strip():
-            raise ValidationError(f"{name} keys cannot be empty or whitespace")
+            raise ValidationError(f"{name} keys cannot be empty or whitespace", field=name)
         if not isinstance(item, str):
             raise ValidationError(f"{name} must map strings to strings")
 
