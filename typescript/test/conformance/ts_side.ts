@@ -465,6 +465,7 @@ export function schemaWarnings(): {
   alias_errors: string[];
   consistency_errors: Array<{ code: string; field: string | null; message: string }>;
   neo4j_description_errors: Array<{ code: string; field: string | null; message: string }>;
+  unit_range_errors: Array<{ code: string; field: string | null; message: string }>;
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
   endpoint_types: unknown[];
@@ -490,6 +491,21 @@ export function schemaWarnings(): {
 } {
   const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
   const neo4jDescriptionErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  const unitRangeErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  for (const confidence of [1e16, -1e-7, -1e20]) {
+    try {
+      parseOrThrow(
+        Extraction,
+        {
+          relations: [{ from_entity: "t:a", type: "R", to_entity: "t:b", evidence: [{ source_id: "s", confidence }] }],
+        },
+        "facts",
+      );
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      unitRangeErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+    }
+  }
   for (const source of ["node_types", "relationship_types"]) {
     for (const propertyDescription of [false, true]) {
       for (const description of [false, 0, {}, []]) {
@@ -551,6 +567,7 @@ export function schemaWarnings(): {
     ),
     consistency_errors: consistencyErrors,
     neo4j_description_errors: neo4jDescriptionErrors,
+    unit_range_errors: unitRangeErrors,
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
       {

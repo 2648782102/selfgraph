@@ -411,6 +411,23 @@ def schema_warnings():
     alias_errors = []
     consistency_errors = []
     neo4j_description_errors = []
+    unit_range_errors = []
+    for confidence in (1e16, -1e-7, -1e20):
+        try:
+            Extraction.model_validate(
+                {
+                    "relations": [
+                        {
+                            "from_entity": "t:a",
+                            "type": "R",
+                            "to_entity": "t:b",
+                            "evidence": [{"source_id": "s", "confidence": confidence}],
+                        }
+                    ]
+                }
+            )
+        except ValidationError as exc:
+            unit_range_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
     for source in ("node_types", "relationship_types"):
         for property_description in (False, True):
             for description in (False, 0, {}, []):
@@ -513,6 +530,7 @@ def schema_warnings():
         "alias_errors": alias_errors,
         "consistency_errors": consistency_errors,
         "neo4j_description_errors": neo4j_description_errors,
+        "unit_range_errors": unit_range_errors,
         "own_keys": [
             [{"code": w.code, "message": w.message} for w in validate_against_schema(facts, own_key_schema)]
             for own_key_schema in [Schema.model_validate(OWN_KEY_SPEC)]
