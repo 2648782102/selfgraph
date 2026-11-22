@@ -12,6 +12,7 @@ from pydantic import ValidationError as PydanticValidationError
 from .. import ids as _ids
 from .._ops import (
     _reject_reserved_rel_type,
+    _require_json_mapping,
     _require_optional_text,
     _validate_entity_identity,
     _validate_strength,
@@ -390,6 +391,14 @@ class LLMExtractor(_WarningSink):
         def add_relation(from_id: str, rtype: str, to_id: str, props=None, event_time=None, evidence=None) -> str:
             rid = _ids.relation_id(from_id, rtype, to_id)
             _reject_reserved_rel_type(_ids.normalize_rel_type(rtype), rtype)
+            props = dict(props or {})
+            for key in list(props):
+                if not key.strip():
+                    try:
+                        _require_json_mapping("properties", {key: props[key]})
+                    except ValidationError as exc:
+                        _dropped(sink, "relation property", exc)
+                    del props[key]
             _ids._reject_proto_keys(props)
             _ids._require_clean_json("relation property", props)
             if rid not in relations:

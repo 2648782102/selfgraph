@@ -2491,6 +2491,7 @@ async def upsert_relations(
     caps: Mapping[str, RelationCap] | None = None,
     warnings: list[InsertWarning] | None = None,
     via: list[list[list[str]]] | None = None,
+    dry_run: bool = False,
 ) -> list[Relation]:
     """Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
 
@@ -2515,6 +2516,7 @@ async def upsert_relations(
     @param warnings (list[InsertWarning] | None): receives the contradiction warnings.
     @param via (list[list[list[str]]] | None): for each input, each evidence record's statements (see _plan_evidence);
         None for all direct.
+    @param dry_run (bool): compute relation versions without writing them.
     @return (list[Relation]): each input's stored version, in input order.
     """
     keyed = []
@@ -2643,11 +2645,12 @@ async def upsert_relations(
         for batch in (writes, retires)
     ]
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, [row for rows in batches for row in rows])
-    for rows in batches:
-        if rows:
-            await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
-    await _write_evidence(runner, ns, records, created_at)
-    if contradiction == "supersede" and moved:
+    if not dry_run:
+        for rows in batches:
+            if rows:
+                await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
+        await _write_evidence(runner, ns, records, created_at)
+    if not dry_run and contradiction == "supersede" and moved:
         await resettle_endpoints(runner, ns, [current[rid] for rid in moved], caps, created_at)
         stored = {
             rid: await _newest_edge(runner, ns, rid, _is_relation_type) for rid in _dedup_list(r for r, _, _ in out)
@@ -2676,6 +2679,7 @@ async def create_relation(
     contradiction: str = "off",
     caps: Mapping[str, RelationCap] | None = None,
     warnings: list[InsertWarning] | None = None,
+    dry_run: bool = False,
 ) -> Relation:
     """Create one relation version, failing if the id already exists unless a contradiction invalidated it.
 
@@ -2697,6 +2701,7 @@ async def create_relation(
     @param contradiction (str): "off", "warn", "supersede", or "strict" (raise), applied where caps set a max_count.
     @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits by relation type.
     @param warnings (list[InsertWarning] | None): receives the contradiction warnings.
+    @param dry_run (bool): compute the relation version without writing it.
     @return (Relation): the created relation.
     """
     _require_text("relation from_entity", from_entity)
@@ -2746,6 +2751,8 @@ async def create_relation(
             props = _retired(edge, *ended[rid], created_at)["props"]
     retired = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in retires]
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, [(rtype, from_entity, to_entity, props), *retired])
+    if dry_run:
+        return _relation_of({"type": rtype, "from_id": from_entity, "to_id": to_entity, "props": props})
     rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=None)
     if retired:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, retired)

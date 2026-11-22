@@ -2370,6 +2370,7 @@ function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow 
 }
 
 export interface ContradictionOptions {
+  dry_run?: boolean;
   contradiction?: string;
   caps?: ReadonlyMap<string, RelationCap> | null;
   warnings?: InsertWarning[];
@@ -2764,11 +2765,13 @@ export async function upsertRelations(
     }),
   );
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, batched.flat());
-  for (const rows of batched) {
-    if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+  if (!options.dry_run) {
+    for (const rows of batched) {
+      if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+    }
+    await writeEvidence(runner, ns, records, createdAt);
   }
-  await writeEvidence(runner, ns, records, createdAt);
-  if (options.contradiction === "supersede" && moved.size) {
+  if (!options.dry_run && options.contradiction === "supersede" && moved.size) {
     await resettleEndpoints(
       runner,
       ns,
@@ -2885,6 +2888,8 @@ export async function createRelation(
   }
   const retired: EdgeWrite[] = retires.map((e) => [e.type, e.from_id, e.to_id, e.props]);
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, [[ends.type, ends.from_entity, ends.to_entity, written], ...retired]);
+  if (options.dry_run)
+    return relationOf({ type: rtype, from_id: args.from_entity, to_id: args.to_entity, props: written });
   const rel = await writeRelationVersion(runner, ns, ends, written, null);
   if (retired.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, retired);
   await writeEvidence(runner, ns, records, createdAt);
