@@ -431,7 +431,7 @@ def setting_hint(key: str) -> str:
     @param key (str): the setting name, such as "llm_model".
     @return (str): the hint, such as "llm_model= (or SELFGRAPH_LLM_MODEL)", which the CLI rewords to its flag.
     """
-    return f"{key}= (or SELFGRAPH_{key.upper()})"
+    return f"the {key} option (or SELFGRAPH_{key.upper()})"
 
 
 _SURFACE_HINTS = (

@@ -4,7 +4,6 @@ import { APICallError, LoadAPIKeyError } from "@ai-sdk/provider";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-
 import { loadTokenizer } from "../src/chunking.js";
 import { assembleExtraction, LLMExtractor } from "../src/extraction/extractor.js";
 import { render } from "../src/extraction/prompts.js";
@@ -21,6 +20,7 @@ import { fatalError, summarizeError } from "../src/llm/index.js";
 import type { InsertWarning } from "../src/models.js";
 import type { LLMClient } from "../src/protocols.js";
 import { captureLog, freshGraphs, KUZU_SPEC } from "./helpers.js";
+import { callProviderMessage } from "./llmServer.js";
 
 type Kind = "entities" | "relations" | "preferences" | "decisions";
 
@@ -725,31 +725,11 @@ describe("LLM extraction through the AI SDK", () => {
     ],
     [404, "LLM model 'm' was not found for provider openai"],
   ])("quotes the model like Python on HTTP %i", async (status, expected) => {
-    const server = createServer((_req, res) => {
-      res.writeHead(status, { "content-type": "application/json" }).end("{}");
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const { port } = server.address() as { port: number };
-    try {
-      const error = await buildLlmClient({
-        provider: "openai",
-        model: "m",
-        api_key: "k",
-        base_url: `http://127.0.0.1:${port}`,
-        max_retries: 0,
-      })
-        .generate({ system: "", user: "x", output: z.object({ ok: z.boolean() }) })
-        .catch((e: unknown) => e);
-      const message = error instanceof Error ? error.message : String(error);
-      expect(message.startsWith(expected), message).toBe(true);
-      if (status === 404) {
-        expect(message).toBe(
-          `${expected} at http://127.0.0.1:${port}: ` +
-            "check the llm_model option (or SELFGRAPH_LLM_MODEL) and the provider",
-        );
-      }
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    const { base_url, message } = await callProviderMessage(status);
+    expect(message).toBe(
+      status === 404
+        ? `${expected} at ${base_url}: check the llm_model option (or SELFGRAPH_LLM_MODEL) and the provider`
+        : expected,
+    );
   });
 });
