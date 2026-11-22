@@ -738,6 +738,40 @@ export function conformanceStore(name: string, kuzuPath: string): GraphStore {
   return STORE_SPECS.find((s) => s.name === name)!.make();
 }
 
+export const STATEMENT_QUERIES = [
+  "RETURN 1 AS a; MATCH (n:N) DETACH DELETE n",
+  "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})",
+  "RETURN 'a; b' AS s",
+  "MATCH (n:N) RETURN count(*) AS c ; // trailing",
+];
+
+/**
+ * Run each STATEMENT_QUERIES entry through a fresh Kuzu store and report its outcome and the surviving node ids.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<{ outcomes: unknown[]; ids: unknown[] }>): each query's rows or {error, code}, then the node ids.
+ */
+export async function kuzuStatements(path: string): Promise<{ outcomes: unknown[]; ids: unknown[] }> {
+  const store = new KuzuStore(path);
+  const graph = new SelfGraph(store, { namespace: "c" });
+  await graph.initialize();
+  await graph.entities.create("A", "T", { id: "t:a" });
+  await graph.entities.create("B", "T", { id: "t:b" });
+  const outcomes: unknown[] = [];
+  for (const query of STATEMENT_QUERIES) {
+    try {
+      outcomes.push({ rows: (await store.runCypher(query)).rows });
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      outcomes.push({ error: exc.message, code: exc.code });
+    }
+  }
+  const ids = (await store.runCypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows.map((r) => r.id);
+  await graph.close();
+  await KuzuStore.closeDatabase(path);
+  return { outcomes, ids };
+}
+
 const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
   ["list_entities", { limit: "5" }],
   ["list_entities", { limit: true }],

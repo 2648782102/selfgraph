@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { errorMessage, SelfGraphError, StoreError, ValidationError } from "../errors.js";
+import { BLANK, blankLexicalTokens } from "../internal/cypherGuard.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
@@ -109,6 +110,19 @@ const CHECKPOINT_POOL_DIVISOR = 1024;
 const MAX_DB_SIZE_DEFAULT = 8_796_093_022_208;
 const NOW = "RETURN current_timestamp() AS now";
 const CLOCK_TICK_MS = 20;
+const MULTI_STATEMENT = "Kuzu runs one statement per query; pass one statement, not several joined by ';'";
+
+/**
+ * Count the ';'-separated statements in a query, ignoring semicolons inside string literals and comments.
+ *
+ * @param query (string): the raw Cypher query.
+ * @return (number): the number of statements that hold a non-whitespace token outside literals and comments.
+ */
+function nonEmptyStatements(query: string): number {
+  return blankLexicalTokens(query)
+    .split(";")
+    .filter((part) => part.replaceAll(BLANK, "").trim().length > 0).length;
+}
 
 function normalize(value: unknown): unknown {
   if (value === null || value === undefined) return null;
@@ -353,7 +367,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
         : await conn.query(query);
     if (Array.isArray(res)) {
       for (const r of res) r.close?.();
-      throw new StoreError("Kuzu runs one statement per query; pass one statement, not several joined by ';'");
+      throw new StoreError(MULTI_STATEMENT);
     }
     try {
       const columns = await res.getColumnNames();
@@ -386,6 +400,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   }
 
   override async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
+    if (nonEmptyStatements(query) > 1) throw new StoreError(MULTI_STATEMENT);
     return this._run(query, params, true);
   }
 
