@@ -409,6 +409,18 @@ def schema_warnings():
     schema = Schema.model_validate(SCHEMA_SPEC)
     cases = [Extraction.model_validate(case) for case in SCHEMA_CASES]
     alias_errors = []
+    consistency_errors = []
+    for spec in [
+        {"entities": [{"name": "Person"}, {"name": "Person"}]},
+        {"entities": [{"name": "Employee", "parent": "Persn"}]},
+        {"entities": [{"name": "Person"}], "relations": [{"type": "WORKS_AT", "to": {"types": ["Company"]}}]},
+        {"relations": [{"type": "KNOWS"}, {"type": "knows"}]},
+        {"relations": [{"type": "X", "from": {"max_count": 0}}]},
+    ]:
+        try:
+            Schema.model_validate(spec)
+        except ValidationError as exc:
+            consistency_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
     for spec in [
         {"entities": [{"name": "Person"}, {"name": "Company", "aliases": ["Person"]}]},
         {"entities": [{"name": "Company", "aliases": ["org"]}, {"name": "Team", "aliases": ["Org"]}]},
@@ -486,6 +498,7 @@ def schema_warnings():
             for value in (-0.0, 1.0, 1.5, float(2**53 - 1))
         ],
         "alias_errors": alias_errors,
+        "consistency_errors": consistency_errors,
         "own_keys": [
             [{"code": w.code, "message": w.message} for w in validate_against_schema(facts, own_key_schema)]
             for own_key_schema in [Schema.model_validate(OWN_KEY_SPEC)]
