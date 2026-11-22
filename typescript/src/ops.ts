@@ -60,6 +60,7 @@ import type {
 } from "./protocols.js";
 import { type SchemaSubject, warnSchema } from "./schema.js";
 import {
+  ABOUT_DROPPED,
   decodeEntity,
   decodeEvidence,
   decodePreference,
@@ -1475,6 +1476,16 @@ async function deleteNodesWhere(
 }
 
 /**
+ * Count the preference versions a caller wrote, leaving out those only written to drop a deleted about_entity.
+ *
+ * @param edges (readonly EdgeRow[]): preference edge rows.
+ * @return (number): how many rows were not written by an entity delete.
+ */
+function authoredVersions(edges: readonly EdgeRow[]): number {
+  return edges.filter((edge) => edge.props[ABOUT_DROPPED] !== true).length;
+}
+
+/**
  * Delete many entities and everything attached to them, reading and deleting in batches.
  *
  * The result matches deleting them one by one: their relations with every version and the relations' evidence,
@@ -1482,6 +1493,10 @@ async function deleteNodesWhere(
  * pointing at them, their evidence, and the merge records they survived or were absorbed in. A considered
  * alternative is dropped from a decision that is kept, and a kept preference about a deleted entity loses its
  * about_entity in a new version. Ids that are not stored are skipped.
+ *
+ * deleted_preference_versions counts the versions of each preference removed with its subject or value entity, once
+ * per preference however many of its entities are deleted. A version written only to drop a deleted about_entity
+ * is never counted, so the total is the same in any delete order, in one batch, and in a prune.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -1520,23 +1535,24 @@ export async function deleteEntities(
 
   const profiles = [...(await nodesById(runner, ns, L_PROFILE, eids.map(ids.profileId))).keys()];
   const goneProfiles = new Set(profiles);
-  counts.deleted_preference_versions = (
-    await edgesAt(runner, ns, { from_label: L_PROFILE }, "from_in", profiles)
-  ).length;
+  counts.deleted_preference_versions = authoredVersions(
+    await edgesAt(runner, ns, { from_label: L_PROFILE }, "from_in", profiles),
+  );
   for (const pref of await preferencesAbout(runner, ns, doomed)) {
     if (!doomed.has(pref.to_id) && !goneProfiles.has(pref.from_id)) {
-      await updatePreference(runner, ns, idOf(pref.props), {
-        properties: null,
-        remove_properties: [],
-        clear: ["about_entity"],
-      });
+      await updatePreference(
+        runner,
+        ns,
+        idOf(pref.props),
+        { properties: null, remove_properties: [], clear: ["about_entity"] },
+        true,
+      );
     }
   }
-  for (const edge of await edgesAt(runner, ns, { from_label: L_PROFILE, to_label: L_ENTITY }, "to_in", eids)) {
-    if (PREFERENCE_EDGE_TYPES.includes(edge.type) && !goneProfiles.has(edge.from_id)) {
-      counts.deleted_preference_versions += 1;
-    }
-  }
+  const valued = await edgesAt(runner, ns, { from_label: L_PROFILE, to_label: L_ENTITY }, "to_in", eids);
+  counts.deleted_preference_versions += authoredVersions(
+    valued.filter((edge) => PREFERENCE_EDGE_TYPES.includes(edge.type) && !goneProfiles.has(edge.from_id)),
+  );
   for (const batch of batches(profiles)) await runner.deleteNodes(ns, L_PROFILE, batch);
   await deleteNodesWhere(runner, ns, L_EVIDENCE, "target_id", rids);
   for (const batch of batches(eids)) await runner.deleteNodes(ns, L_ENTITY, batch);
@@ -3751,6 +3767,7 @@ export interface UpdatePreferenceArgs {
  * @param ns (string): the namespace.
  * @param pid (string): the preference id.
  * @param args (UpdatePreferenceArgs): the new strength, properties to merge and remove, valid time, and the fields to clear (strength, about_entity, event_time).
+ * @param aboutDropped (boolean): true when an entity delete writes the version to drop a deleted about_entity.
  * @return (Preference): the current version.
  */
 export async function updatePreference(
@@ -3758,6 +3775,7 @@ export async function updatePreference(
   ns: string,
   pid: string,
   args: UpdatePreferenceArgs,
+  aboutDropped = false,
 ): Promise<Preference> {
   validateStrength(args.strength);
   requireJsonMapping("properties", args.properties);
@@ -3802,6 +3820,7 @@ export async function updatePreference(
     event_time: newEventTime,
     created_at: new Date(),
     is_current: true,
+    about_dropped: aboutDropped,
   });
   return writePreferenceVersion(runner, ns, current, props, true);
 }
@@ -3851,9 +3870,10 @@ export async function listPreferences(
 
 export async function deletePreference(runner: Runner, ns: string, pid: string): Promise<DeleteResult> {
   requireStr("preference id", pid);
-  if (!(await preferenceExists(runner, ns, pid)))
-    throw new NotFoundError("Preference", pid, undefined, { namespace: ns });
-  return { ...NO_DELETES, deleted_preference_versions: await runner.deleteEdges(ns, pid) };
+  const versions = await typedEdgeVersions(runner, ns, pid, isPreferenceType);
+  if (!versions.length) throw new NotFoundError("Preference", pid, undefined, { namespace: ns });
+  const dropped = versions.length - authoredVersions(versions);
+  return { ...NO_DELETES, deleted_preference_versions: (await runner.deleteEdges(ns, pid)) - dropped };
 }
 
 async function readSteps(runner: Runner, ns: string, tid: string): Promise<DecisionStep[]> {

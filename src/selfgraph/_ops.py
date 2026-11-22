@@ -8,6 +8,7 @@ from typing import Any, NamedTuple, TypeVar, get_args
 
 from . import ids as _ids
 from ._serde import (
+    ABOUT_DROPPED,
     EDGE_TYPES,
     L_ENTITY,
     L_EVIDENCE,
@@ -1457,6 +1458,15 @@ async def _preferences_about(runner: Any, ns: str, eids: set[str]) -> list[dict]
     return [e for e in await _paged(fetch, page=_BATCH) if e["props"].get("about_entity") in eids]
 
 
+def _authored_versions(edges: Iterable[dict]) -> int:
+    """Count the preference versions a caller wrote, leaving out those only written to drop a deleted about_entity.
+
+    @param edges (Iterable[dict]): preference edge rows.
+    @return (int): how many rows were not written by an entity delete.
+    """
+    return sum(not e["props"].get(ABOUT_DROPPED) for e in edges)
+
+
 async def _delete_nodes_where(runner: Any, ns: str, label: str, key: str, values: list[str]) -> None:
     """Detach-delete every node of one label whose property is one of some values, a batch per query.
 
@@ -1482,6 +1492,10 @@ async def delete_entities(
     pointing at them, their evidence, and the merge records they survived or were absorbed in. A considered
     alternative is dropped from a decision that is kept, and a kept preference about a deleted entity loses its
     about_entity in a new version. Ids that are not stored are skipped.
+
+    deleted_preference_versions counts the versions of each preference removed with its subject or value entity, once
+    per preference however many of its entities are deleted. A version written only to drop a deleted about_entity
+    is never counted, so the total is the same in any delete order, in one batch, and in a prune.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1517,7 +1531,9 @@ async def delete_entities(
 
     profiles = list(await _nodes_by_id(runner, ns, L_PROFILE, [_ids.profile_id(eid) for eid in eids]))
     gone_profiles = set(profiles)
-    counts["deleted_preference_versions"] = len(await _edges_into(runner, ns, L_PROFILE, None, "from_in", profiles))
+    counts["deleted_preference_versions"] = _authored_versions(
+        await _edges_into(runner, ns, L_PROFILE, None, "from_in", profiles)
+    )
     for pref in await _preferences_about(runner, ns, doomed):
         if pref["to_id"] not in doomed and pref["from_id"] not in gone_profiles:
             await update_preference(
@@ -1529,10 +1545,12 @@ async def delete_entities(
                 remove_properties=[],
                 event_time=None,
                 clear=["about_entity"],
+                about_dropped=True,
             )
-    counts["deleted_preference_versions"] += sum(
-        e["type"] in PREFERENCE_EDGE_TYPES and e["from_id"] not in gone_profiles
+    counts["deleted_preference_versions"] += _authored_versions(
+        e
         for e in await _edges_into(runner, ns, L_PROFILE, L_ENTITY, "to_in", eids)
+        if e["type"] in PREFERENCE_EDGE_TYPES and e["from_id"] not in gone_profiles
     )
     for batch in _batches(profiles):
         await runner.delete_nodes(ns, L_PROFILE, batch)
@@ -3530,6 +3548,7 @@ async def update_preference(
     remove_properties: list[str],
     event_time: datetime | None,
     clear: Iterable[str] = (),
+    about_dropped: bool = False,
 ) -> Preference:
     """Create a new version of a preference, merging properties like entities and relations.
 
@@ -3541,6 +3560,7 @@ async def update_preference(
     @param remove_properties (list[str]): property keys to drop.
     @param event_time (datetime | None): new valid time.
     @param clear (Iterable[str]): fields to clear: strength, about_entity, or event_time.
+    @param about_dropped (bool): True when an entity delete writes the version to drop a deleted about_entity.
     @return (Preference): the new current version.
     """
     _validate_strength(strength)
@@ -3584,6 +3604,7 @@ async def update_preference(
         event_time=new_event_time,
         created_at=now(),
         is_current=True,
+        about_dropped=about_dropped,
     )
     return await _write_preference_version(
         runner, ns, current.profile_id, current.value_entity, current.stance, props, retire=True
@@ -3655,15 +3676,19 @@ async def list_preferences(
 async def delete_preference(runner: Any, ns: str, pid: str) -> dict[str, int]:
     """Delete a preference and all of its versions.
 
+    The count leaves out a version an entity delete wrote only to drop a deleted about_entity.
+
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param pid (str): preference id.
     @return (dict[str, int]): counts of what was removed.
     """
     _ids._require_str("preference id", pid)
-    if not await preference_exists(runner, ns, pid):
+    versions = await _typed_edge_versions(runner, ns, pid, _is_preference_type)
+    if not versions:
         raise NotFoundError("Preference", pid, namespace=ns)
-    return {**_NO_DELETES, "deleted_preference_versions": await runner.delete_edges(ns, pid)}
+    dropped = len(versions) - _authored_versions(versions)
+    return {**_NO_DELETES, "deleted_preference_versions": await runner.delete_edges(ns, pid) - dropped}
 
 
 async def _read_steps(runner: Any, ns: str, tid: str) -> list[DecisionStep]:

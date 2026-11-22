@@ -31,6 +31,7 @@ L_CHUNK = "Chunk"
 L_EVIDENCE = "Evidence"
 L_MERGE = "EntityMerge"
 L_MERGE_ENTRY = "EntityMergeEntry"
+ABOUT_DROPPED = "about_dropped"
 
 R_HAS_PROFILE = "HAS_PROFILE"
 R_PREFERS = "PREFERS"
@@ -314,8 +315,9 @@ def encode_preference_props(
     event_time: datetime | None,
     created_at: datetime,
     is_current: bool,
+    about_dropped: bool = False,
 ) -> dict[str, Any]:
-    return {
+    props = {
         "id": id,
         "ns": ns,
         "revision": revision,
@@ -328,6 +330,9 @@ def encode_preference_props(
         "event_time": to_iso(event_time),
         "created_at": to_iso(created_at),
     }
+    if about_dropped:
+        props[ABOUT_DROPPED] = True
+    return props
 
 
 def decode_preference(props: dict[str, Any], *, value_entity: str, profile_id: str, stance: str) -> Preference:

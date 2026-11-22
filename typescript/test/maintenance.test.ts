@@ -37,6 +37,7 @@ async function cascading(g: SelfGraph): Promise<void> {
   await g.relations.update(link.id, { set_properties: { v: 2 } });
   await g.preferences.create("person:keep", "tool", "person:keep", { about_entity: "temp:x" });
   await g.preferences.create("temp:y", "tool", "person:keep");
+  await g.preferences.create("person:keep", "pick", "temp:y", { about_entity: "temp:x" });
   await g.decisions.create("Keep", {
     steps: [],
     id: "decision:keep",
@@ -46,7 +47,7 @@ async function cascading(g: SelfGraph): Promise<void> {
 }
 
 async function cascadeState(g: SelfGraph): Promise<unknown[]> {
-  const pref = (await g.preferences.list("person:keep")).items[0]!;
+  const pref = (await g.preferences.list("person:keep", { key: "tool" })).items[0]!;
   return [
     (await g.entities.list()).items.map((e) => e.id),
     (await g.relations.list()).items.map((r) => [r.from_entity, r.type, r.to_entity]),
@@ -288,7 +289,7 @@ function suite(spec: StoreSpec) {
       deleted_entities: 2,
       deleted_relation_versions: 3,
       deleted_decisions: 1,
-      deleted_preference_versions: 1,
+      deleted_preference_versions: 2,
       restored_relations: 0,
     });
     const state = await cascadeState(one);
