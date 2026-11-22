@@ -3,6 +3,7 @@ import json
 import pytest
 from helpers import (
     HYDRADB,
+    KUZU,
     WORKS_AT_SPEC,
     FakeLLM,
     cli,
@@ -24,6 +25,7 @@ from selfgraph import (
     LLMResolver,
     NotFoundError,
     ResolutionDecision,
+    SelfGraph,
     ValidationError,
     decision_id,
     entity_id,
@@ -758,6 +760,89 @@ def test_hydradb_key_index_finds_alias_and_external_id_matches_and_drops_stale_k
 
     run(g.entities.delete(robert))
     assert run(g.run_cypher(keys, own)).rows == [{"n": 0}]
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_key_table_finds_alias_and_external_id_matches_and_drops_stale_keys():
+    ns = unique_ns("keys")
+    _seed(
+        new_graph(namespace=ns, resolver="default"),
+        IBM_SEED,
+        {"type": "Person", "name": "Robert Smith", "aliases": ["Bob Smith"]},
+    )
+    robert = entity_id("Person", "Robert Smith")
+    keys = "MATCH (k:K) WHERE k.ns = $ns AND k.eid = $eid RETURN count(*) AS n"
+    own = {"ns": ns, "eid": robert}
+    assert run(new_graph(namespace=ns).run_cypher(keys, own)).rows == [{"n": 2}]
+
+    g = new_graph(namespace=ns, resolver="default")
+    facts = {
+        "entities": [
+            {"type": "Person", "name": "bob smith"},
+            {"type": "Company", "name": "IBM Corp", "external_ids": {"ticker": "IBM"}},
+        ]
+    }
+    merges = run(g.insert.facts(facts)).merges
+    assert sorted((m.survivor_id, m.reason) for m in merges) == [(IBM, "external_id"), (robert, "alias")]
+
+    run(g.entities.update(robert, remove_aliases=run(g.entities.get(robert)).aliases))
+    assert run(g.insert.facts({"entities": [{"type": "Person", "name": "Bob Smith"}]})).merges == []
+    assert run(g.run_cypher(keys, own)).rows == [{"n": 1}]
+
+    run(g.entities.delete(robert))
+    assert run(g.run_cypher(keys, own)).rows == [{"n": 0}]
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_default_resolution_reads_no_entity_pages():
+    g = fresh_graph("keys", resolver="default")
+    _seed(g, *({"type": "Person", "name": f"Person {i}"} for i in range(30)))
+    read = [0]
+    real = g.store.match_nodes
+
+    async def spy(ns, label, **kwargs):
+        rows = await real(ns, label, **kwargs)
+        read[0] += len(rows) if label == "Entity" else 0
+        return rows
+
+    g.store.match_nodes = spy
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Someone New"}]}))
+    assert read[0] == 0
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_initialize_indexes_entities_stored_before_the_key_table(tmp_path):
+    from selfgraph import KuzuStore
+
+    store = KuzuStore(str(tmp_path / "graph.kuzu"), max_db_size=1 << 30)
+    g = SelfGraph(store=store, namespace="old", resolver="default")
+    run(g.initialize())
+    _seed(g, IBM_SEED)
+    run(g.run_cypher("MATCH (k:K) DELETE k"))
+    assert run(g.run_cypher("MATCH (k:K) RETURN count(*) AS n")).rows == [{"n": 0}]
+    run(store.initialize())
+    assert run(g.run_cypher("MATCH (k:K) RETURN count(*) AS n")).rows[0]["n"] > 0
+    merges = run(
+        g.insert.facts({"entities": [{"type": "Company", "name": "IBM Corp", "external_ids": {"ticker": "IBM"}}]})
+    ).merges
+    assert [(m.survivor_id, m.reason) for m in merges] == [(IBM, "external_id")]
+    run(g.close())
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_initialize_skips_a_corrupt_entity_document_while_indexing(tmp_path):
+    from selfgraph import KuzuStore
+
+    store = KuzuStore(str(tmp_path / "graph.kuzu"), max_db_size=1 << 30)
+    g = SelfGraph(store=store, namespace="old", resolver="default")
+    run(g.initialize())
+    _seed(g, IBM_SEED, {"type": "Person", "name": "Ada"})
+    run(g.run_cypher("MATCH (k:K) DELETE k"))
+    run(g.run_cypher("MATCH (n:N) WHERE n.id = $id SET n.doc = 'x'", {"id": ADA}))
+    run(store.initialize())
+    keys = run(g.run_cypher("MATCH (k:K) RETURN k.eid AS eid")).rows
+    assert {r["eid"] for r in keys} == {IBM}
+    run(g.close())
 
 
 def test_custom_resolvers_see_compatible_candidates_and_must_return_a_complete_decision():

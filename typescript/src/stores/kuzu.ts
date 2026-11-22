@@ -5,8 +5,10 @@ import { errorMessage, maskUri, SelfGraphError, StoreError, splitScheme, Validat
 import { BLANK, blankLexicalTokens } from "../internal/cypherGuard.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
-import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
-import { type CypherResult, checkResultDepth, type JsonValue } from "../models.js";
+import { comparePy, pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
+import { L_ENTITY } from "../labels.js";
+import { type CypherResult, type CypherRow, checkResultDepth, type JsonValue } from "../models.js";
+import { batches } from "../ops.js";
 import {
   DEFAULT_MATCH_LIMIT,
   type EdgeRow,
@@ -18,6 +20,8 @@ import {
   type Props,
   type UpsertNodeOptions,
 } from "../protocols.js";
+import { matchKeys } from "../resolution.js";
+import { decodeEntity } from "../serde.js";
 import { checkOptions, keysOf } from "../validate.js";
 import {
   AutoCommitStore,
@@ -29,13 +33,15 @@ import {
   whereAfter,
   writeBatches,
 } from "./cypherPrimitives.js";
-import { docs, edgeRow, firstDoc, mergedCurrentEdge } from "./docRows.js";
+import { docs, edgeRow, firstDoc, mergedCurrentEdge, parseDoc } from "./docRows.js";
 
 const SCHEMA = [
   "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
   "CREATE REL TABLE IF NOT EXISTS R(FROM N TO N, sid STRING, ns STRING, etype STRING, " +
     "is_current BOOLEAN, revision INT64, doc STRING)",
+  "CREATE NODE TABLE IF NOT EXISTS K(pk STRING, ns STRING, key STRING, eid STRING, PRIMARY KEY(pk))",
 ];
+const SEEK_BATCH = 256;
 
 interface KuzuQueryResult {
   getAll(): Promise<Array<Record<string, unknown>>>;
@@ -190,12 +196,45 @@ export function kuzuError(exc: unknown, prefix: string): StoreError {
 }
 
 const pk = (ns: string, id: string): string => `${ns}\x00${id}`;
+/**
+ * The match keys of a stored entity, none for a document that is not a readable entity.
+ *
+ * @param props (Props): the entity's encoded properties.
+ * @return (Set<string>): its keys, as matchKeys derives them.
+ */
+function entityKeys(props: Props): Set<string> {
+  try {
+    const ent = decodeEntity(props);
+    return matchKeys(ent.name, ent.aliases, ent.external_ids);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The [id, properties] pairs of stored rows whose document is valid JSON, so a corrupt row never blocks a backfill.
+ *
+ * @param rows (CypherRow[]): the rows, each with doc, stored_id, and stored_ns columns.
+ * @return (NodeRow[]): the readable entities.
+ */
+function readable(rows: CypherRow[]): NodeRow[] {
+  const out: NodeRow[] = [];
+  for (const row of rows) {
+    try {
+      out.push([row.stored_id as string, parseDoc(row)]);
+    } catch {}
+  }
+  return out;
+}
+
 const jv = (value: unknown): string => pyJsonDumps(value, { ensureAscii: false, default: pyStr });
 
 const BY_SID = "MATCH (a:N)-[r:R]->(b:N) WHERE r.ns = $ns AND r.sid = $sid";
 const UPSERT_NODES =
   "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:N {pk: k}) " +
   "SET n.id = row.id, n.ns = $ns, n.label = $label, n.doc = row.doc";
+const MERGE_KEYS =
+  "UNWIND $rows AS row WITH row, row.pk AS k MERGE (n:K {pk: k}) SET n.ns = $ns, n.key = row.key, n.eid = row.eid";
 const EDGE_ROWS =
   "UNWIND $rows AS row WITH row, row.f AS f MATCH (a:N {pk: f}) WITH a, row, row.t AS t MATCH (b:N {pk: t}) " +
   "WHERE a.label = $fl AND b.label = $tl ";
@@ -453,9 +492,82 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
   }
 
-  /** Create the node and relationship tables if they do not exist. */
+  /** Create the node, relationship, and entity key tables if they do not exist, and index entities stored before the key table. */
   async initialize(): Promise<void> {
     for (const stmt of SCHEMA) await this._run(stmt);
+    if (toCount((await this._run("MATCH (k:K) RETURN count(*) AS n")).rows)) return;
+    let after = "";
+    for (;;) {
+      const page = await this._run(
+        "MATCH (n:N) WHERE n.label = $label AND n.pk > $after RETURN n.pk AS pk, n.ns AS ns, n.id AS stored_id, " +
+          "n.ns AS stored_ns, n.doc AS doc ORDER BY n.pk LIMIT 1000",
+        { label: L_ENTITY, after },
+      );
+      if (!page.rows.length) return;
+      after = page.rows[page.rows.length - 1].pk as string;
+      for (const ns of [...new Set(page.rows.map((r) => r.ns as string))].sort(comparePy)) {
+        await this.mergeKeys(ns, readable(page.rows.filter((r) => r.ns === ns)));
+      }
+    }
+  }
+
+  /**
+   * Write the key rows of some entities, one per entity and match key, so a rewrite merges in place.
+   *
+   * @param ns (string): namespace.
+   * @param rows (readonly NodeRow[]): [entity id, encoded entity properties] pairs.
+   */
+  private async mergeKeys(ns: string, rows: readonly NodeRow[]): Promise<void> {
+    const keyed = rows.flatMap(([id, props]) =>
+      [...entityKeys(props)]
+        .sort(comparePy)
+        .map((key) => [null, { pk: `${ns}\x00${key}\x00${id}`, key, eid: id }] as const),
+    );
+    for (const [, batch] of writeBatches(keyed)) await this._run(MERGE_KEYS, { rows: batch, ns });
+  }
+
+  /**
+   * Delete the key rows of deleted entities, so the index only holds stored entities' keys.
+   *
+   * @param ns (string): namespace.
+   * @param ids (readonly string[]): the deleted entity ids.
+   */
+  private async dropKeys(ns: string, ids: readonly string[]): Promise<void> {
+    for (const batch of batches(ids, SEEK_BATCH)) {
+      await this._run("MATCH (k:K) WHERE k.ns = $ns AND k.eid IN $ids DELETE k", { ns, ids: batch });
+    }
+  }
+
+  /**
+   * Read the entities sharing a match key with some keys, through the key table instead of a scan. A key row whose entity is gone or no longer has that key, after an alias or external id was removed, is deleted on the way, so the index never grows stale.
+   *
+   * @param ns (string): the namespace.
+   * @param keys (Iterable<string>): the match keys, as matchKeys derives them.
+   * @return (Props[]): the matching entities' properties.
+   */
+  async entitiesMatching(ns: string, keys: Iterable<string>): Promise<Props[]> {
+    const hits: [string, string, string][] = [];
+    for (const batch of batches([...new Set(keys)].sort(comparePy), SEEK_BATCH)) {
+      const res = await this._run(
+        "MATCH (k:K) WHERE k.ns = $ns AND k.key IN $keys RETURN k.pk AS pk, k.key AS key, k.eid AS eid",
+        { ns, keys: batch },
+      );
+      for (const r of res.rows) hits.push([r.pk as string, r.key as string, r.eid as string]);
+    }
+    const found = new Map<string, Props>();
+    for (const batch of batches([...new Set(hits.map(([, , eid]) => eid))].sort(comparePy), SEEK_BATCH)) {
+      const res = await this._run(
+        "MATCH (n:N) WHERE n.pk IN $pks AND n.label = $label RETURN n.doc AS doc, n.id AS stored_id, n.ns AS stored_ns",
+        { pks: batch.map((eid) => pk(ns, eid)), label: L_ENTITY },
+      );
+      for (const props of docs(res.rows)) found.set(props.id as string, props);
+    }
+    const held = new Map([...found].map(([eid, props]) => [eid, entityKeys(props)]));
+    const stale = hits.filter(([, key, eid]) => !held.get(eid)?.has(key)).map(([id]) => id);
+    for (const batch of batches(stale, SEEK_BATCH)) {
+      await this._run("MATCH (k:K) WHERE k.pk IN $pks DELETE k", { pks: batch });
+    }
+    return [...found.values()];
   }
 
   /**
@@ -522,15 +634,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     props: Props,
     options: UpsertNodeOptions = {},
   ): Promise<void> {
-    if (options.extra_label != null) quoteLabel(options.extra_label);
-    requireKeys(props);
-    await this._run("MERGE (n:N {pk:$pk}) SET n.id = $id, n.ns = $ns, n.label = $label, n.doc = $doc", {
-      pk: pk(ns, id),
-      id,
-      ns,
-      label,
-      doc: jv(props),
-    });
+    await this.upsertNodes(ns, label, [[id, props]], options);
   }
 
   /**
@@ -549,6 +653,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
     for (const [, props] of rows) requireKeys(props);
+    if (label === L_ENTITY) await this.mergeKeys(ns, rows);
     for (const [, batch] of writeBatches(
       rows.map(([id, props]) => [null, { pk: pk(ns, id), id, doc: jv(props) }] as const),
     )) {
@@ -609,13 +714,14 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     return docs(res.rows);
   }
 
-  async deleteNode(ns: string, _label: string, id: string): Promise<void> {
-    await this._run("MATCH (n:N {pk:$pk}) DETACH DELETE n", { pk: pk(ns, id) });
+  async deleteNode(ns: string, label: string, id: string): Promise<void> {
+    await this.deleteNodes(ns, label, [id]);
   }
 
-  async deleteNodes(ns: string, _label: string, ids: readonly string[]): Promise<void> {
-    if (ids.length)
-      await this._run("MATCH (n:N) WHERE n.pk IN $pks DETACH DELETE n", { pks: ids.map((id) => pk(ns, id)) });
+  async deleteNodes(ns: string, label: string, ids: readonly string[]): Promise<void> {
+    if (!ids.length) return;
+    await this._run("MATCH (n:N) WHERE n.pk IN $pks DETACH DELETE n", { pks: ids.map((id) => pk(ns, id)) });
+    if (label === L_ENTITY) await this.dropKeys(ns, ids);
   }
 
   async deleteNodesBy(ns: string, label: string, equals: Props): Promise<number> {
