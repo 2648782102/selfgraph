@@ -830,3 +830,87 @@ it.each([false, true])("does not classify a reply quoting invalid API key as aut
       "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)",
   );
 });
+
+it("issue 361 extraction defaults and strength", async () => {
+  for (const strength of [null, true, false, "0.5", "0_._5", "nan", Number.NaN, Infinity, -Infinity]) {
+    const replies: Record<string, unknown[]> = {
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+      ],
+      relations: [{ from_name: "Ann", type: "WORKS_AT", to_name: "Acme" }],
+      preferences: [{ subject_name: "Ann", key: "food", value_name: "Pizza", strength }],
+      decisions: [{ title: "Choose lunch" }],
+    };
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        return { [kind]: replies[kind] ?? [] } as never;
+      },
+    };
+    const result = await open({ llm }).insert.text("Ann works at Acme and chooses lunch.");
+    expect(result.entities.map((e) => e.id)).toEqual(expect.arrayContaining(["person:ann", "company:acme"]));
+    expect(result.relations).toHaveLength(1);
+    expect(result.decisions).toHaveLength(1);
+    const invalid = ["nan", "infinity", "-infinity"].includes(String(strength).toLowerCase());
+    expect(result.preferences).toHaveLength(invalid ? 0 : 1);
+    expect(result.warnings.map((w) => w.code)).toEqual(invalid ? ["extraction_partial_failure"] : []);
+    if (!invalid) {
+      expect(result.preferences[0]!.stance).toBe("preference");
+      expect(result.preferences[0]!.strength).toBe(
+        strength === null ? null : Number(typeof strength === "string" ? strength.replaceAll("_", "") : strength),
+      );
+    }
+  }
+});
+
+it("issue 362 drops only bad extracted alias", async () => {
+  for (const alias of ["Acme\u0007Inc", "Acme\u0000Inc", "Acme\ud800Inc", "Acme\u0085Inc"]) {
+    const replies: Record<string, unknown[]> = {
+      entities: [
+        { type: "Person", name: "Ann", aliases: [] },
+        { type: "Company", name: "Acme", aliases: ["AC", alias] },
+      ],
+      relations: [{ from_name: "Ann", type: "WORKS_AT", to_name: "Acme", event_time: null }],
+    };
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        return { [kind]: replies[kind] ?? [] } as never;
+      },
+    };
+    const g = open({ llm });
+    const result = await g.insert.text("Ann works at Acme.");
+    expect(result.entities.map((e) => e.id).sort()).toEqual(["company:acme", "person:ann"]);
+    expect((await g.entities.get("company:acme"))!.aliases).toEqual(["AC"]);
+    expect(result.relations).toHaveLength(1);
+    expect(result.warnings.map((w) => [w.code, w.message])).toEqual([
+      [
+        "extraction_partial_failure",
+        "dropped an extracted alias: entity alias cannot contain control or surrogate characters",
+      ],
+    ]);
+    await expect(g.insert.facts({ entities: [{ type: "Company", name: "Other", aliases: [alias] }] })).rejects.toThrow(
+      "entity alias cannot contain",
+    );
+  }
+});
+
+it("issue 363 discards out of range extracted time", async () => {
+  for (const event_time of ["9999-12-31T23:59:59-14:00", "0001-01-01T00:00:00+14:00"]) {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        return {
+          [kind]: kind === "relations" ? [{ from_name: "Ann", type: "KNOWS", to_name: "Bob", event_time }] : [],
+        } as never;
+      },
+    };
+    const g = open({ llm });
+    const result = await g.insert.text("Ann knows Bob.");
+    expect(result.relations).toHaveLength(1);
+    expect(result.relations[0]!.event_time).toBeNull();
+    expect(result.warnings).toEqual([]);
+    expect((await g.relations.get(result.relations[0]!.id))!.event_time).toBeNull();
+  }
+});

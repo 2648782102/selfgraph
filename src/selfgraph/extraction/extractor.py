@@ -242,7 +242,7 @@ class LLMExtractor(_WarningSink):
         if not chunks:
             return Extraction()
 
-        raw_entities: list[EntityInput] = []
+        raw_entities: list[_EntityOut] = []
         raw_relations: list[_RelOut] = []
         raw_preferences: list[_PrefOut] = []
         raw_decisions: list[_DecOut] = []
@@ -277,7 +277,7 @@ class LLMExtractor(_WarningSink):
                     result = await self._llm.generate(system=system, user=user, output=schema)
                     items = getattr(_checked_output(result, schema, kind), kind)
                     if kind == "entities":
-                        return [EntityInput(type=e.type, name=e.name, aliases=e.aliases or []) for e in items]
+                        return items
                     return items
                 except ExtractionError:
                     raise
@@ -333,7 +333,7 @@ class LLMExtractor(_WarningSink):
 
     @staticmethod
     def _assemble(
-        raw_entities: list[EntityInput],
+        raw_entities: list[_EntityOut],
         raw_relations: list[_RelOut],
         raw_preferences: list[_PrefOut],
         raw_decisions: list[_DecOut],
@@ -342,7 +342,7 @@ class LLMExtractor(_WarningSink):
     ) -> Extraction:
         """Resolve extracted names to ids and assemble deduplicated facts, dropping invalid items.
 
-        @param raw_entities (list[EntityInput]): the extracted entities.
+        @param raw_entities (list[_EntityOut]): the extracted entities.
         @param raw_relations (list[_RelOut]): the extracted relations, by name.
         @param raw_preferences (list[_PrefOut]): the extracted preferences, by name.
         @param raw_decisions (list[_DecOut]): the extracted decisions, by name.
@@ -366,9 +366,16 @@ class LLMExtractor(_WarningSink):
             if _is_noise_name(ent.name) or not admit(ent):
                 continue
             key = _ids.entity_id(ent.type, ent.name)
+            clean_aliases = []
+            for alias in ent.aliases or []:
+                try:
+                    _ids._require_no_control("entity alias", alias)
+                    clean_aliases.append(alias)
+                except ValidationError as exc:
+                    _dropped(sink, "alias", exc)
             if key not in registry:
-                registry[key] = ent.model_copy(update={"aliases": []})
-            registry[key].aliases = list(dict.fromkeys([*registry[key].aliases, *ent.aliases]))
+                registry[key] = EntityInput(type=ent.type, name=ent.name, aliases=[])
+            registry[key].aliases = list(dict.fromkeys([*registry[key].aliases, *clean_aliases]))
 
         def resolve(name: str | None, types: list[str] | None = None) -> str | None:
             if name is None or not name.strip():

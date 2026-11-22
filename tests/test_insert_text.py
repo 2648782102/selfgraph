@@ -685,3 +685,33 @@ def test_extraction_revalidates_raw_items_inside_output_model():
     g = fresh_graph("raw-instance", llm=llm)
     result = run(g.insert.text("Ann knows Bob.", source_id="s"))
     assert [(r.from_entity, r.type, r.to_entity) for r in result.relations] == [("thing:ann", "KNOWS", "thing:bob")]
+
+
+@pytest.mark.parametrize("alias", ["Acme\x07Inc", "Acme\x00Inc", "Acme\ud800Inc", "Acme\x85Inc"])
+def test_issue_362_drops_only_bad_extracted_alias(alias):
+    llm = FakeLLM(
+        {
+            "_EntitiesOut": {
+                "entities": [
+                    {"type": "Person", "name": "Ann", "aliases": []},
+                    {"type": "Company", "name": "Acme", "aliases": ["AC", alias]},
+                ]
+            },
+            "_RelationsOut": {
+                "relations": [{"from_name": "Ann", "type": "WORKS_AT", "to_name": "Acme", "event_time": None}]
+            },
+        }
+    )
+    g = fresh_graph("issue-362", llm=llm)
+    result = run(g.insert.text("Ann works at Acme."))
+    assert {e.id for e in result.entities} == {"person:ann", "company:acme"}
+    assert run(g.entities.get("company:acme")).aliases == ["AC"]
+    assert len(result.relations) == 1
+    assert [(w.code, w.message) for w in result.warnings] == [
+        (
+            "extraction_partial_failure",
+            "dropped an extracted alias: entity alias cannot contain control or surrogate characters",
+        )
+    ]
+    with pytest.raises(ValidationError, match="entity alias cannot contain"):
+        EntityInput(type="Company", name="Acme", aliases=[alias])

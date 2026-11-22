@@ -4,7 +4,7 @@ import { ExtractionError, ValidationError } from "../errors.js";
 import * as ids from "../ids.js";
 import { log } from "../internal/log.js";
 import { pyRepr, pySplit, pyStrip, utf8 } from "../internal/py.js";
-import { parseIso } from "../internal/time.js";
+import { parseIso, toIso } from "../internal/time.js";
 import { EDGE_TYPES, preferenceStanceOf } from "../labels.js";
 import { summarizeError } from "../llm/index.js";
 import {
@@ -31,12 +31,15 @@ import {
   rejectProtoKeys,
   requireCleanJson,
   requireJsonMapping,
+  requireNoControl,
   requireOptionalText,
 } from "../validate.js";
 import { checkPrompts, effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
 const EntitiesOut = z.object({
-  entities: z.array(z.object({ type: z.string(), name: z.string(), aliases: z.array(z.string()).nullable() })),
+  entities: z.array(
+    z.object({ type: z.string(), name: z.string(), aliases: z.array(z.string()).nullable().default(null) }),
+  ),
 });
 
 const RelationsOut = z.object({
@@ -45,21 +48,52 @@ const RelationsOut = z.object({
       from_name: z.string(),
       type: z.string(),
       to_name: z.string(),
-      event_time: z.string().nullable(),
+      event_time: z.string().nullable().default(null),
       properties: z.record(z.string(), z.unknown()).optional(),
     }),
   ),
 });
 
+/**
+ * Coerce extracted strength like Python's lax float output field.
+ * @param value (unknown): the extracted strength.
+ * @return (unknown): the coerced number, or the original invalid value.
+ */
+function coerceStrength(value: unknown): unknown {
+  if (typeof value === "boolean") return Number(value);
+  if (typeof value === "string") {
+    const text = pyStrip(value);
+    const numeric = text.replaceAll("_", "");
+    if (!/^_|_$|__/.test(text) && /^[+-]?(?:nan|inf(?:inity)?|(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)$/i.test(numeric)) {
+      return Number(numeric);
+    }
+  }
+  return value;
+}
+
 const PreferencesOut = z.object({
   preferences: z.array(
     z.object({
       subject_name: z.string(),
-      stance: Stance,
+      stance: Stance.default("preference"),
       key: z.string(),
       value_name: z.string(),
-      about_name: z.string().nullable(),
-      strength: z.number().nullable(),
+      about_name: z.string().nullable().default(null),
+      strength: z.union([z.number(), z.boolean(), z.string()]).nullable().default(null),
+    }),
+  ),
+});
+
+const CheckedPreferencesOut = PreferencesOut.extend({
+  preferences: z.array(
+    PreferencesOut.shape.preferences.element.extend({
+      strength: z.preprocess(
+        coerceStrength,
+        z
+          .union([z.number(), z.nan(), z.literal(Infinity), z.literal(-Infinity)])
+          .nullable()
+          .default(null),
+      ),
     }),
   ),
 });
@@ -68,13 +102,13 @@ const DecisionsOut = z.object({
   decisions: z.array(
     z.object({
       title: z.string(),
-      actor_name: z.string().nullable(),
-      summary: z.string().nullable(),
-      rationale: z.string().nullable(),
-      outcome_name: z.string().nullable(),
-      alternative_names: z.array(z.string()),
-      status: Status.nullable(),
-      steps: z.array(z.object({ from_name: z.string(), type: z.string(), to_name: z.string() })),
+      actor_name: z.string().nullable().default(null),
+      summary: z.string().nullable().default(null),
+      rationale: z.string().nullable().default(null),
+      outcome_name: z.string().nullable().default(null),
+      alternative_names: z.array(z.string()).default([]),
+      status: Status.nullable().default(null),
+      steps: z.array(z.object({ from_name: z.string(), type: z.string(), to_name: z.string() })).default([]),
     }),
   ),
 });
@@ -182,7 +216,9 @@ export function lenientTime(value: string | null | undefined): Date | null {
   if (!text) return null;
   if (/^\d{4}$/.test(text)) return Number(text) >= 1 ? parseIso(`${text}-01-01`) : null;
   try {
-    return parseIso(text);
+    const parsed = parseIso(text);
+    toIso(parsed);
+    return parsed;
   } catch {
     return null;
   }
@@ -214,9 +250,12 @@ export function assembleExtraction(
   for (const ent of rawEntities) {
     if (isNoiseName(ent.name) || !admit(ent)) continue;
     const key = ids.entityId(ent.type, ent.name);
+    const cleanAliases = (ent.aliases ?? []).filter((alias) =>
+      admitted(warnings, "alias", () => requireNoControl("entity alias", alias)),
+    );
     if (!registry.has(key)) registry.set(key, { ...ent, aliases: [] });
     const kept = registry.get(key)!;
-    kept.aliases = [...new Set([...(kept.aliases ?? []), ...(ent.aliases ?? [])])];
+    kept.aliases = [...new Set([...(kept.aliases ?? []), ...cleanAliases])];
   }
 
   const resolve = (name: string | null | undefined, types: string[] = []): string | null => {
@@ -483,16 +522,17 @@ export class LLMExtractor extends WarningSink implements Extractor {
     const rawPreferences: RawPreference[] = [];
     const rawDecisions: RawDecision[] = [];
 
-    const step = <T>(
+    const step = <T, U = T>(
       kind: ObjectType,
       schema: z.ZodType<T>,
-      sink: (result: T, evidence: ChunkEvidence | null, raw: unknown) => void,
+      sink: (result: U, evidence: ChunkEvidence | null, raw: unknown) => void,
+      checked: z.ZodType<U> = schema as unknown as z.ZodType<U>,
     ) => ({
       kind,
       run: async (text: string) => {
         const [system, user] = this.messages(kind, text);
         const result = await this.llm.generate({ system, user, output: schema });
-        const parsed = schema.safeParse(result);
+        const parsed = checked.safeParse(result);
         if (!parsed.success) {
           const line = issueLine(parsed.error.issues[0]!, result);
           throw new ExtractionError(`LLM client returned an invalid result for the ${kind} pass: ${line}`, {
@@ -514,7 +554,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
           })),
         ),
       ),
-      step("preferences", PreferencesOut, (r) => rawPreferences.push(...r.preferences)),
+      step("preferences", PreferencesOut, (r) => rawPreferences.push(...r.preferences), CheckedPreferencesOut),
       step("decisions", DecisionsOut, (r, evidence) =>
         rawDecisions.push(...r.decisions.map((x) => ({ ...x, evidence }))),
       ),
