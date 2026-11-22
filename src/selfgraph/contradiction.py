@@ -37,7 +37,7 @@ def _line(edge_type: str, source: str, target: str, properties: Mapping[str, Any
     @param properties (Mapping[str, Any]): the relation's properties.
     @return (str): the fact as one line.
     """
-    props = " {" + ", ".join(f"{k}={v}" for k, v in properties.items()) + "}" if properties else ""
+    props = " {" + ", ".join(f"{k}={v}" for k, v in sorted(properties.items())) + "}" if properties else ""
     return f"{source} -[{edge_type}]-> {target}{props}"
 
 

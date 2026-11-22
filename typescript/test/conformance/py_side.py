@@ -1436,6 +1436,21 @@ async def write(graph):
     out["retrieval_overflow"] = await overflow(graph)
     out["retrieval_ppr_ties"] = await ppr_ties(graph)
     out["retrieval_passage_ranking"] = await passage_ranking(graph)
+    property_order = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_property_order")
+    await property_order.insert.facts(
+        {
+            "entities": [{"type": "Person", "name": "Ada"}, {"type": "Machine", "name": "Engine"}],
+            "relations": [
+                {
+                    "from_entity": "person:ada",
+                    "type": "WORKED_ON",
+                    "to_entity": "machine:engine",
+                    "properties": {"role": "author", "2": "b", "10": "c", "\U00010000": "astral", "\ue000": "bmp"},
+                }
+            ],
+        }
+    )
+    out["retrieval_property_order"] = (await property_order.retrieve("Ada")).context
     out["vault_names"] = await vault_names(graph)
     try:
         await graph.insert.facts(

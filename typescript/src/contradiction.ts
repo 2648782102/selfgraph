@@ -27,7 +27,7 @@ const Verdict = z.object({ retired: z.array(z.number().int()).default([]) });
  * @return (string): the fact as one line.
  */
 function line(edgeType: string, source: string, target: string, properties: JsonObject): string {
-  const entries = Object.entries(properties);
+  const entries = Object.entries(properties).sort(([a], [b]) => comparePy(a, b));
   const props = entries.length ? ` {${entries.map(([k, v]) => `${k}=${pyStr(v)}`).join(", ")}}` : "";
   return `${source} -[${edgeType}]-> ${target}${props}`;
 }

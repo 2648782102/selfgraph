@@ -1539,6 +1539,22 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   out.retrieval_overflow = await overflow(graph);
   out.retrieval_ppr_ties = await pprTies(graph);
   out.retrieval_passage_ranking = await passageRanking(graph);
+  const propertyOrder = new SelfGraph(graph.store, { namespace: `${graph.namespace}_property_order` });
+  await propertyOrder.insert.facts({
+    entities: [
+      { type: "Person", name: "Ada" },
+      { type: "Machine", name: "Engine" },
+    ],
+    relations: [
+      {
+        from_entity: "person:ada",
+        type: "WORKED_ON",
+        to_entity: "machine:engine",
+        properties: { role: "author", "2": "b", "10": "c", "\u{10000}": "astral", "\ue000": "bmp" },
+      },
+    ],
+  });
+  out.retrieval_property_order = (await propertyOrder.retrieve("Ada")).context;
   out.vault_names = await vaultNames(graph);
   try {
     await graph.insert.facts(

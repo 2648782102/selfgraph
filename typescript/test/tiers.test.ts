@@ -132,6 +132,34 @@ function suite(spec: StoreSpec): void {
     expect((await custom.insert.text("Bob")).tiers.extraction).toBe("custom");
   });
 
+  it.each([false, true])("retrieval and judge share property key order (reverse: %s)", async (reverse) => {
+    const judge = new Judge([]);
+    const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
+    const items = [
+      ["role", "author"],
+      ["2", "b"],
+      ["10", "c"],
+      ["\u{10000}", "astral"],
+      ["\ue000", "bmp"],
+    ];
+    const properties = Object.fromEntries(reverse ? items.toReversed() : items);
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX });
+    for (const [company, year] of [
+      ["acme", 2020],
+      ["globex", 2022],
+    ] as const) {
+      await g.insert.facts({ relations: [{ ...annAt(company, year), properties }] });
+    }
+    const rendered = "{10=c, 2=b, role=author, \ue000=bmp, \u{10000}=astral}";
+    expect(judge.prompts).toHaveLength(1);
+    expect(judge.prompts[0]).toContain(`New fact: Ann -[WORKS_AT]-> Globex ${rendered}\n`);
+    expect(judge.prompts[0]).toContain(`1. Ann -[WORKS_AT]-> Acme ${rendered}\n`);
+    const context = (await g.retrieve("Ann")).context;
+    for (const company of ["Acme", "Globex"]) {
+      expect(context).toContain(`GRAPH | Ann -[WORKS_AT]-> ${company} ${rendered}`);
+    }
+  });
+
   it("LLM-judged contradiction retires an older fact without a schema", async () => {
     const judge = new Judge();
     const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });

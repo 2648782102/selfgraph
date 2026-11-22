@@ -2,6 +2,8 @@ import pytest
 from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_settings, utc, works_at
 
 from selfgraph import Schema, ValidationError, ids
+from selfgraph.contradiction import _line
+from selfgraph.retrieval import _format_props
 from selfgraph.runtime import build_graph
 from selfgraph.terms import schema_forms, stem
 
@@ -102,6 +104,26 @@ def test_balanced_merges_by_alias_and_results_name_their_tiers():
     found = run(light.retrieve("Ann"))
     assert found.tiers == {"seeds": "bm25", "traversal": "bfs"}
     assert run(light.retrieve("Ann", strategy="ppr")).tiers["traversal"] == "ppr"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_retrieval_and_judge_render_properties_in_shared_key_order(reverse):
+    judge = Judge(retire=())
+    g = fresh_graph("tier", llm=judge, extraction="regex", contradiction="llm")
+    items = [("role", "author"), ("2", "b"), ("10", "c"), ("\U00010000", "astral"), ("\ue000", "bmp")]
+    properties = dict(reversed(items) if reverse else items)
+    run(g.insert.facts({"entities": ANN_ACME_GLOBEX}))
+    for company, year in (("acme", 2020), ("globex", 2022)):
+        run(g.insert.facts({"relations": [{**works_at(company, year), "properties": properties}]}))
+    rendered = "{10=c, 2=b, role=author, \ue000=bmp, \U00010000=astral}"
+    assert _format_props(properties) == rendered
+    assert _line("WORKS_AT", "Ann", "Globex", properties) == f"Ann -[WORKS_AT]-> Globex {rendered}"
+    assert len(judge.prompts) == 1
+    assert f"New fact: Ann -[WORKS_AT]-> Globex {rendered}\n" in judge.prompts[0]
+    assert f"1. Ann -[WORKS_AT]-> Acme {rendered}\n" in judge.prompts[0]
+    context = run(g.retrieve("Ann")).context
+    for company in ("Acme", "Globex"):
+        assert f"GRAPH | Ann -[WORKS_AT]-> {company} {rendered}" in context
 
 
 def test_llm_judged_contradiction_retires_an_older_fact_without_a_schema():
