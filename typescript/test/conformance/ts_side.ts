@@ -432,6 +432,7 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
+  integer_properties: Array<Array<{ code: string; message: string }>>;
   unknown_keys: string[];
   schema_types: string[];
   alias_errors: string[];
@@ -478,6 +479,14 @@ export function schemaWarnings(): {
         code: w.code,
         message: w.message,
       })),
+    ),
+    integer_properties: [-0, 1, 1.5, Number.MAX_SAFE_INTEGER].map((value) =>
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Item", name: "x", properties: { n: value } }] }),
+        Schema.parse({
+          entities: [{ name: "Item", properties: [{ name: "n", type: "integer" }] }],
+        }),
+      ).map((w) => ({ code: w.code, message: w.message })),
     ),
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
