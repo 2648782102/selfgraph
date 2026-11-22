@@ -109,6 +109,9 @@ class _Text(str):
     pass
 
 
+_FAILED_COMMAND: list[str | None] = [None]
+
+
 class _Parser(argparse.ArgumentParser):
     """An argument parser whose flag errors carry SelfGraph's code, field, and hint.
 
@@ -144,6 +147,7 @@ class _Parser(argparse.ArgumentParser):
             text = message
         field = flag.removeprefix("--").replace("-", "_") if flag else None
         code = "invalid_setting" if flag in _SETTING_FLAGS else "invalid_argument"
+        _FAILED_COMMAND[0] = self.prog
         raise ValidationError(text, code=code, field=field)
 
 
@@ -1062,7 +1066,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
     except ValidationError as exc:
-        print(error_text(exc, _command_path(parser, None)), file=sys.stderr)
+        failed = _FAILED_COMMAND[0]
+        _FAILED_COMMAND[0] = None
+        print(error_text(exc, failed or _command_path(parser, None)), file=sys.stderr)
         return 2
     settings = settings_from_env(**{key: getattr(args, key, None) for key in SETTING_KEYS})
     args.store, args.namespace = store_kind(settings), settings.namespace

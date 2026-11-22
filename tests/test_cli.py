@@ -271,6 +271,13 @@ def test_global_flags_after_the_subcommand(capsys, tmp_path):
     assert "error[invalid_argument]" in capsys.readouterr().err
 
 
+def test_a_subcommand_parse_error_names_the_full_command(capsys):
+    assert main(["entity", "list", "--limit", "x"]) == 2
+    err = capsys.readouterr().err
+    assert "command: selfgraph entity list" in err
+    assert "--limit expects an integer, got 'x'" in err
+
+
 def test_time_flags_share_one_parser(capsys):
     for text in ("2024-01-02T00:00:00Z", "2024-01-02", "2024-01-02T00:00:00", "2024-01-02T01:00:00+01:00"):
         assert parse_time(text, "event_time") == utc(2024, 1, 2)
