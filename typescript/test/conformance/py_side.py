@@ -2408,7 +2408,14 @@ async def main():
     if cmd == "kuzu_scheme_errors":
         from selfgraph import KuzuStore as LocalKuzuStore
 
-        uris = ["bolt://u:hunter2@h:1", "memgraph://h:1", "redis://h:1", "falkors://h:1", "hydradb://h:1", "https://u:hunter2@h:1"]
+        uris = [
+            "bolt://u:hunter2@h:1",
+            "memgraph://h:1",
+            "redis://h:1",
+            "falkors://h:1",
+            "hydradb://h:1",
+            "https://u:hunter2@h:1",
+        ]
         errors = []
         for uri in uris:
             try:
