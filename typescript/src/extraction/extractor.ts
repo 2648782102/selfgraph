@@ -24,7 +24,7 @@ import {
 } from "../models.js";
 import { rejectReservedRelType, validateEntityIdentity, validateStrength } from "../ops.js";
 import type { Extractor, LLMClient } from "../protocols.js";
-import { type ParsedSchema, renderSchemaCatalog } from "../schema.js";
+import { canonicalEntityType, type ParsedSchema, renderSchemaCatalog } from "../schema.js";
 import {
   checkOptions,
   keysOf,
@@ -361,7 +361,7 @@ export function assembleExtraction(
             promoted.push({
               subject_name: rel.from_name,
               stance,
-              key: value.type.toLowerCase(),
+              key: canonicalEntityType(value.type, schema).toLowerCase(),
               value_name: rel.to_name,
             });
           } else {
@@ -477,6 +477,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
   private readonly catalogs: Partial<Record<ObjectType, string>>;
   private readonly options: LLMExtractorOptions;
   private readonly sourceId: string | null;
+  private readonly schema: ParsedSchema | null;
 
   /**
    * Extract entities, relations, preferences, and decisions from text with an LLM, chunk by chunk.
@@ -502,6 +503,7 @@ export class LLMExtractor extends WarningSink implements Extractor {
     const [entities, relations] = options.schema ? renderSchemaCatalog(options.schema) : ["", ""];
     this.catalogs = { entities, relations };
     this.sourceId = options.source_id ?? null;
+    this.schema = options.schema ?? null;
   }
 
   private messages(objectType: ObjectType, text: string): [string, string] {

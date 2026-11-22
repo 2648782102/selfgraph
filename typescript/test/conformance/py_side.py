@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -469,6 +470,11 @@ def schema_warnings():
         "term_forms": to_jsonable(schema_forms(Schema.model_validate(TERMS_SPEC))),
         "shared_term_forms": to_jsonable(schema_forms(Schema.model_validate(SHARED_DEFINITION_SPEC))),
         "shared_synonym_term_forms": to_jsonable(schema_forms(Schema.model_validate(SHARED_SYNONYM_SPEC))),
+        "greek_tokens": [
+            sorted(_tokens(unicodedata.normalize(form, text)))
+            for text in ("μαΐου", "ΜΑΪ́ΟΥ", "αΰπνία", "ΑΫ́ΠΝΊΑ", "ŉ ǰ ΐ")
+            for form in ("NFC", "NFD")
+        ],
         "shared_terms": [
             sorted(expand_tokens(_tokens(q), shared_schema, _tokens))
             for shared_schema in [Schema.model_validate(SHARED_DEFINITION_SPEC)]

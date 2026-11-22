@@ -38,7 +38,7 @@ from ..models import (
     issue_line,
 )
 from ..protocols import LLMClient
-from ..schema import Schema, render_schema_catalog
+from ..schema import Schema, canonical_entity_type, render_schema_catalog
 from .chunking import chunk_text
 from .prompts import check_prompts, effective_instruction, effective_prompt, render
 
@@ -218,6 +218,7 @@ class LLMExtractor(_WarningSink):
         self._llm = llm
         self._schema = schema
         self._source_id = source_id
+        self._schema = schema
         self._client_prompts = prompts
         self._client_instructions = instructions
         self._call_prompts = call_prompts
@@ -451,7 +452,7 @@ class LLMExtractor(_WarningSink):
                     stance = preference_stance_of(_ids.normalize_rel_type(rel.type))
                     value = registry.get(to_id)
                     if stance is not None and value is not None and value.type != _FALLBACK_TYPE:
-                        key = value.type.lower()
+                        key = canonical_entity_type(value.type, schema).lower()
                         promoted.append(
                             _PrefOut(subject_name=rel.from_name, stance=stance, key=key, value_name=rel.to_name)
                         )
