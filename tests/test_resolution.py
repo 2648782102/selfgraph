@@ -20,6 +20,7 @@ from selfgraph import (
     DefaultResolver,
     Entity,
     EntityInput,
+    ExtractionError,
     LLMResolver,
     NotFoundError,
     ResolutionDecision,
@@ -1494,3 +1495,19 @@ def test_issue_386_unmerge_keeps_decision_references(write):
     assert decision.outcome_entity == ADA
     assert decision.alternative_entities == [XENA_ID]
     assert decision.summary == "later"
+
+
+@pytest.mark.parametrize("reply", [None, {"same": "false"}, _SameEntity.model_construct(same=1)])
+def test_llm_resolver_rejects_non_boolean_reply_without_merging(reply):
+    llm = FakeLLM({"_SameEntity": lambda system, user: reply})
+    g = fresh_graph("res-invalid", llm=llm, resolver="llm")
+    _seed(g, {"type": "Person", "name": "John Smith"})
+    with pytest.raises(ExtractionError) as caught:
+        run(g.insert.facts(_people("Jon Smyth")))
+    assert (caught.value.code, caught.value.field, str(caught.value)) == (
+        "invalid_llm_output",
+        "same",
+        "LLM client returned an invalid result for the resolver: same must be a boolean",
+    )
+    assert [e.id for e in run(g.entities.list()).items] == [entity_id("Person", "John Smith")]
+    assert run(g.entities.merges(entity_id("Person", "John Smith"))).items == []

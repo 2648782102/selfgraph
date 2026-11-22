@@ -562,6 +562,27 @@ describe("LLM extraction through the AI SDK", () => {
     );
   });
 
+  it.each([null, 2024])("revalidates a mutated output object: %j", async (value) => {
+    const llm: LLMClient = {
+      async generate<T>({ output }: { output: z.ZodType<T> }): Promise<T> {
+        const kind = kindOf({ responseFormat: { schema: z.toJSONSchema(output) } });
+        const result = output.parse(REPLIES[kind]);
+        if (kind === "relations") {
+          const reply = result as { relations: Array<{ event_time: unknown }> | null };
+          if (value === null) reply.relations = null;
+          else reply.relations![0]!.event_time = value;
+        }
+        return result;
+      },
+    };
+    const g = open({ llm });
+    const result = g.insert.text("Soham chose HydraDB.", { source_id: "s" });
+    await expect(result).rejects.toBeInstanceOf(ExtractionError);
+    await expect(result).rejects.toMatchObject({ code: "invalid_llm_output" });
+    expect((await g.entities.list()).items).toEqual([]);
+    expect((await g.relations.list()).items).toEqual([]);
+  });
+
   it("extracts up to llm concurrency chunks at once and merges them in chunk order", async () => {
     const text = Array.from({ length: 6 }, (_, i) => `Chunk${i} filler words here. `.repeat(300)).join(" ");
     const orders: string[][] = [];

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { NotFoundError, needsLlm, ValidationError } from "./errors.js";
+import { ExtractionError, NotFoundError, needsLlm, ValidationError } from "./errors.js";
 import { FALLBACK_TYPE } from "./extraction/extractor.js";
 import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
@@ -456,7 +456,14 @@ export class LLMResolver implements EntityResolver {
         user: question(candidate, ent),
         output: SameEntity,
       });
-      if (answer.same) return { target_id: ent.id, confidence: similarity, reason: "llm" };
+      const parsed = SameEntity.safeParse(answer);
+      if (!parsed.success) {
+        throw new ExtractionError("LLM client returned an invalid result for the resolver: same must be a boolean", {
+          code: "invalid_llm_output",
+          field: "same",
+        });
+      }
+      if (parsed.data.same) return { target_id: ent.id, confidence: similarity, reason: "llm" };
     }
     return noMatch();
   }

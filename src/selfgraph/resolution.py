@@ -29,7 +29,7 @@ from ._serde import (
     now,
     to_iso,
 )
-from .errors import NotFoundError, ValidationError, needs_llm
+from .errors import ExtractionError, NotFoundError, ValidationError, needs_llm
 from .extraction.extractor import _FALLBACK_TYPE
 from .llm.base import resolve_llm
 from .models import (
@@ -416,7 +416,14 @@ class LLMResolver:
         band = sorted(((s, e) for s, e in scored if low <= s < high), key=lambda pair: (-pair[0], pair[1].id))
         for similarity, ent in band[: self.max_questions]:
             answer = await self._llm.generate(system=_LLM_SYSTEM, user=_question(candidate, ent), output=_SameEntity)
-            if answer.same:
+            same = answer.get("same") if isinstance(answer, Mapping) else getattr(answer, "same", None)
+            if type(same) is not bool:
+                raise ExtractionError(
+                    "LLM client returned an invalid result for the resolver: same must be a boolean",
+                    code="invalid_llm_output",
+                    field="same",
+                )
+            if same:
                 return ResolutionDecision(target_id=ent.id, confidence=similarity, reason="llm")
         return _no_match()
 
