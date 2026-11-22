@@ -148,9 +148,12 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     expect(py("kuzu_isolation", "-", "-")).toEqual(result);
   });
 
-  it.skipIf(!live.get("kuzu"))("refuses a server URI with the same code, field and store name in both languages", () => {
-    expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
-  });
+  it.skipIf(!live.get("kuzu"))(
+    "refuses a server URI with the same code, field and store name in both languages",
+    () => {
+      expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
+    },
+  );
 
   it("gives every error code the same CLI exit code in both languages", () => {
     expect(exitCodes()).toEqual(py("exit_codes", "-", "-"));
