@@ -23,7 +23,7 @@ import { jsonIso } from "../../src/internal/time.js";
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
-import { parseJson } from "../../src/runtime.js";
+import { falkorCredentials, parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
 import { parseDoc } from "../../src/stores/docRows.js";
@@ -305,6 +305,32 @@ const UNKNOWN_KEY_CASES: Array<["facts" | "schema", unknown]> = [
   ["schema", { relations: [{ type: "X", from: { max_count: 2 ** 53, min_count: 1.5 } }] }],
 ];
 
+const FALKOR_CREDENTIAL_CASES: Array<[string, string | null]> = [
+  ["redis://default:100%@127.0.0.1:1", null],
+  ["redis://u:p%ff@h:1", null],
+  ["redis://u%zz:p@h:1", null],
+  ["redis://us%C3%A9r:p%40ss%3Aw0rd@h:1", null],
+  ["redis://:onlypass@h:1", null],
+  ["h:6379", null],
+  ["redis://u:bad%@h:1", "v:ok"],
+];
+
+/**
+ * Read the FalkorDB login from URLs with valid, malformed, and overridden credentials.
+ *
+ * @return (unknown[]): each case's user name and password, or the error code, field, and message.
+ */
+function falkorCredentialCases(): unknown[] {
+  return FALKOR_CREDENTIAL_CASES.map(([uri, auth]) => {
+    try {
+      return falkorCredentials(uri, auth);
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      return [exc.code, exc.field, exc.message];
+    }
+  });
+}
+
 /**
  * Parse a value with an unknown key and return the error message.
  *
@@ -448,6 +474,7 @@ export function schemaWarnings(): {
   shared_terms: string[][];
   greek_tokens: string[][];
   datetime_errors: string[];
+  falkor_credentials: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
   neo4j_dropped: string;
@@ -596,6 +623,7 @@ export function schemaWarnings(): {
       [...expandTokens(tokens(q), sharedSchema, tokens)].sort(comparePy),
     ),
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
+    falkor_credentials: falkorCredentialCases(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {
         parseTime(text, "event_time");
