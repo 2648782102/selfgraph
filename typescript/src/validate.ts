@@ -269,7 +269,9 @@ export function checkOptions(method: string, options: unknown, allowed: readonly
  * @param value (unknown): the value to check.
  */
 export function requireBool(name: string, value: unknown): asserts value is boolean {
-  if (typeof value !== "boolean") throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`);
+  if (typeof value !== "boolean") {
+    throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`, { field: name });
+  }
 }
 
 /**

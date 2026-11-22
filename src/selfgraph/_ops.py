@@ -209,7 +209,7 @@ def _require_bool(name: str, value: object) -> None:
     @return (None): nothing; raises ValidationError otherwise.
     """
     if not isinstance(value, bool):
-        raise ValidationError(f"{name} must be a boolean, got {type_name(value)}")
+        raise ValidationError(f"{name} must be a boolean, got {type_name(value)}", field=name)
 
 
 def _require_optional_text(field: str, value: Any) -> None:
