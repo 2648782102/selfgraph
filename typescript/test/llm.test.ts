@@ -110,6 +110,53 @@ function mockModel(
 const open = freshGraphs(KUZU_SPEC, "llm");
 
 describe("LLM extraction through the AI SDK", () => {
+  it("preserves source facts when one chunk call fails during replacement", async () => {
+    let calls = 0;
+    let phase = "initial";
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        if (kind === "entities")
+          return {
+            entities: [
+              { type: "Person", name: "Jane", aliases: [] },
+              { type: "Company", name: "Acme", aliases: [] },
+              { type: "Company", name: "Globex", aliases: [] },
+            ],
+          } as never;
+        if (kind !== "relations") return { [kind]: [] } as never;
+        calls += 1;
+        if (phase === "partial" && calls === 2) throw new Error("provider timed out");
+        const target = phase === "initial" && calls === 2 ? "Globex" : "Acme";
+        return { relations: [{ from_name: "Jane", type: "WORKS_AT", to_name: target, event_time: null }] } as never;
+      },
+    };
+    const g = open({ llm, resolver: "exact" });
+    const text = "Jane works at Acme and Globex." + " context".repeat(650);
+    expect((await loadTokenizer()).chunkText(text)).toHaveLength(2);
+    const options = { source_id: "doc", replace_source: true };
+    const first = await g.insert.text(text, options);
+    const prior = first.relations.map((r) => r.id).sort();
+    expect(prior).toHaveLength(2);
+    phase = "partial";
+    calls = 0;
+    const result = await g.insert.text(text + " Updated.", options);
+    expect(calls).toBe(2);
+    expect(result.warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+    expect(result.source_diff!.retired).toEqual([]);
+    expect(result.source_diff!.kept).toEqual(result.relations.map((r) => r.id).sort());
+    expect((await g.relations.list()).items.map((r) => r.id).sort()).toEqual(prior);
+    expect((await g.relations.list({ include_invalidated: true })).items.every((r) => r.is_current)).toBe(true);
+    phase = "complete";
+    calls = 0;
+    const complete = await g.insert.text(text + " Removed Globex.", options);
+    expect(calls).toBe(2);
+    const produced = complete.relations.map((r) => r.id).sort();
+    expect(complete.source_diff!.retired).toEqual(prior.filter((id) => !produced.includes(id)));
+    expect(complete.warnings.map((w) => w.code)).toEqual(["fact_retired_by_source"]);
+    expect((await g.relations.list()).items.map((r) => r.id).sort()).toEqual(produced);
+  });
+
   it.each([
     [[null, "2020-01-01"], "2020-01-01"],
     [["2020-01-01", null], "2020-01-01"],

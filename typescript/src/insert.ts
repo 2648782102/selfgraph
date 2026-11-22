@@ -290,15 +290,18 @@ export class Insert {
       if (source.replace_source && source.source_id !== null && sourceVersion !== null) {
         const produced = new Set(relations.map((r) => r.id));
         const at = source.default_event_time ?? createdAt;
-        const [retired, notes] = await ops.replaceSource(
-          tx,
-          ns,
-          source.source_id,
-          sourceVersion,
-          [...prior].filter((id) => !produced.has(id)),
-          at,
-          createdAt,
-        );
+        const incomplete = source.warnings.some((w) => w.code === "extraction_partial_failure" && w.chunk_id !== null);
+        const [retired, notes] = incomplete
+          ? [[], []]
+          : await ops.replaceSource(
+              tx,
+              ns,
+              source.source_id,
+              sourceVersion,
+              [...prior].filter((id) => !produced.has(id)),
+              at,
+              createdAt,
+            );
         found.push(...notes);
         const sorted = (keep: (id: string) => boolean) => [...produced].filter(keep).sort(comparePy);
         diff = { kept: sorted((id) => prior.has(id)), added: sorted((id) => !prior.has(id)), retired };

@@ -692,8 +692,11 @@ class SelfGraph:
             if replace_source and source_id is not None and source_version is not None:
                 produced = {r.id for r in relations}
                 at = aware(default_event_time or created_at)
-                retired, notes = await _ops.replace_source(
-                    tx, ns, source_id, source_version, prior - produced, at, created_at
+                incomplete = any(w.code == "extraction_partial_failure" and w.chunk_id is not None for w in warnings)
+                retired, notes = (
+                    ([], [])
+                    if incomplete
+                    else await _ops.replace_source(tx, ns, source_id, source_version, prior - produced, at, created_at)
                 )
                 found.extend(notes)
                 diff = SourceDiff(kept=sorted(produced & prior), added=sorted(produced - prior), retired=retired)
