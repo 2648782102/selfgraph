@@ -122,6 +122,9 @@ ANY_ENDS = {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": 
         ),
         (TYPES_SPEC, _o(_e("thing:c", "Thing", i=3.0)), []),
         (TYPES_SPEC, _o(_e("thing:d", "Thing", i=-0.0)), []),
+        (TYPES_SPEC, _o(_e("thing:e", "Thing", i=1e21)), ["property_type_mismatch"]),
+        (TYPES_SPEC, _o(_e("thing:f", "Thing", i=-1e20)), ["property_type_mismatch"]),
+        (TYPES_SPEC, _o(_e("thing:g", "Thing", i=float(2**53 - 1))), []),
         (TYPES_SPEC, _o(_e("thing:x", "Thing", b="yes", f="big", i=True, s=5, j=42)), ["property_type_mismatch"] * 4),
     ],
     ids=[
@@ -135,6 +138,9 @@ ANY_ENDS = {"entities": [{"name": "Person"}, {"name": "Company"}], "relations": 
         "valid-property-types",
         "whole-float-is-integer",
         "negative-zero-is-integer",
+        "unsafe-whole-float-rejected",
+        "unsafe-negative-whole-float-rejected",
+        "largest-safe-whole-float-accepted",
         "bad-property-types",
     ],
 )

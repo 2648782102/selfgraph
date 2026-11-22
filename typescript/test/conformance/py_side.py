@@ -454,7 +454,7 @@ def schema_warnings():
                     ),
                 )
             ]
-            for value in (-0.0, 1.0, 1.5)
+            for value in (-0.0, 1.0, 1.5, float(2**53 - 1))
         ],
         "alias_errors": alias_errors,
         "own_keys": [

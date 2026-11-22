@@ -636,7 +636,7 @@ def _type_ok(value: object, expected: PropertyType) -> bool:
         return isinstance(value, bool)
     if expected == "integer":
         return (isinstance(value, int) and not isinstance(value, bool)) or (
-            isinstance(value, float) and value.is_integer()
+            isinstance(value, float) and value.is_integer() and abs(value) <= MAX_SAFE_INTEGER
         )
     if expected == "float":
         return isinstance(value, (int, float)) and not isinstance(value, bool)

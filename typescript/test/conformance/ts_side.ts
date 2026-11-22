@@ -474,7 +474,7 @@ export function schemaWarnings(): {
         message: w.message,
       })),
     ),
-    integer_properties: [-0, 1, 1.5].map((value) =>
+    integer_properties: [-0, 1, 1.5, Number.MAX_SAFE_INTEGER].map((value) =>
       validateAgainstSchema(
         Extraction.parse({ entities: [{ type: "Item", name: "x", properties: { n: value } }] }),
         Schema.parse({
