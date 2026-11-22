@@ -137,8 +137,9 @@ def test_list_and_versions_flags_must_be_booleans(flag):
     insert(g, works_at("acme", 2020))
     insert(g, works_at("globex", 2023))
     kind = type(flag).__name__.replace("str", "string").replace("int", "number")
-    with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$"):
+    with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$") as err:
         run(g.relations.list(include_invalidated=flag))
+    assert (err.value.code, err.value.field) == ("invalid_argument", "include_invalidated")
     with pytest.raises(ValidationError, match=rf"^include_invalidated must be a boolean, got {kind}$"):
         run(collect(g.relations.iterate(include_invalidated=flag)))
     with pytest.raises(ValidationError, match=rf"^newest_first must be a boolean, got {kind}$"):
