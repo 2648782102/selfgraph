@@ -33,6 +33,8 @@ import { STORE_SPECS } from "../helpers.js";
 import { diffWindows } from "./diff.js";
 
 const LENIENT_EVENT_TIMES = [
+  "9999-12-31T23:59:59-14:00",
+  "0001-01-01T00:00:00+14:00",
   "2021",
   "0000",
   "0001",
@@ -414,7 +416,7 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
   ];
   const warnings: InsertWarning[] = [];
   const extraction = assembleExtraction(
-    [],
+    [{ type: "Person", name: "Jane", aliases: ["J", "bad\u0000alias"] }],
     rows.map((row) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", ...row })),
     [],
     [],

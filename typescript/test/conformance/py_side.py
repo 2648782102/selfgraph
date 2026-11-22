@@ -15,7 +15,7 @@ from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris
-from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
+from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
@@ -24,6 +24,8 @@ from selfgraph.schema import validate_against_schema
 from selfgraph.terms import expand_tokens, schema_forms
 
 LENIENT_EVENT_TIMES = [
+    "9999-12-31T23:59:59-14:00",
+    "0001-01-01T00:00:00+14:00",
     "2021",
     "0000",
     "0001",
@@ -364,7 +366,7 @@ def repeated_extracted_relations():
     ]
     warnings = []
     facts = LLMExtractor._assemble(
-        [],
+        [_EntityOut(type="Person", name="Jane", aliases=["J", "bad\x00alias"])],
         [_RelOut(**{"from_name": "Jane", "type": "WORKS_AT", "to_name": "Acme", **row}) for row in rows],
         [],
         [],
