@@ -52,7 +52,6 @@ const OLLAMA_BASE_URL = "http://localhost:11434/v1";
 const GOOGLE_KEY_ENV = ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"];
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape codes start with the ESC control character.
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
-const BAD_KEY = /API[_ ]KEY[_ ]INVALID|api key not valid|(?:valid|invalid|incorrect) api key/i;
 const KEY_HINT = `check the API key, set by ${KEY_SOURCES}`;
 const MISSING_KEY = /missing .*api key|api_key client option must be set|missing credentials/i;
 const KEY_VAR = /\b(?!SELFGRAPH_)[A-Z][A-Z0-9_]*_API_KEY\b/;
@@ -163,7 +162,7 @@ export function fatalError(exc: unknown, config: ErrorContext): ExtractionError 
       code: "llm_auth_failed",
     });
   }
-  if (name === "GatewayAuthenticationError" || status === 401 || BAD_KEY.test(message)) {
+  if (name === "GatewayAuthenticationError" || status === 401) {
     return new ExtractionError(`LLM authentication failed for provider ${provider}: ${KEY_HINT}`, {
       cause: exc,
       code: "llm_auth_failed",
