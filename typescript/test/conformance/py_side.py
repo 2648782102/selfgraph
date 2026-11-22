@@ -129,6 +129,9 @@ TABLES = [
     {"name": "movies"},
     {"name": "order_statuses"},
     {"name": "Companies", "columns": [{"name": "customer_id", "references": "Customers"}]},
+    {"name": "ﬂights"},
+    {"name": "ǆungla"},
+    {"name": "ß"},
 ]
 
 SCHEMA_SPEC = {
