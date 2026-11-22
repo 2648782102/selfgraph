@@ -128,6 +128,21 @@ def settings_from_env(**overrides: Any) -> GraphSettings:
     return GraphSettings(**values)
 
 
+def _stdin_utf8() -> str:
+    """Read stdin as strict UTF-8, whatever error handler the locale chose.
+
+    `sys.stdin` decodes with the locale's handler, which is surrogateescape on
+    macOS, so invalid bytes would arrive as lone surrogates instead of raising
+    and the caller could not report them as bad input.
+
+    @return (str): the decoded text.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read().encode("utf-8", "surrogateescape").decode("utf-8")
+    return buffer.read().decode("utf-8")
+
+
 def read_text(path: str) -> str:
     """Read a UTF-8 text file, or stdin when the path is '-'.
 
@@ -135,7 +150,9 @@ def read_text(path: str) -> str:
     @return (str): the text.
     """
     try:
-        return sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+        if path == "-":
+            return _stdin_utf8()
+        return Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ValidationError(
             f"cannot read {path!r}: not valid UTF-8; save the file as UTF-8 and try again",
