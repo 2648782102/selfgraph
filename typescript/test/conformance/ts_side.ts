@@ -932,6 +932,97 @@ export const STATEMENT_QUERIES = [
   "MATCH (n:N) RETURN count(*) AS c ; // trailing",
 ];
 
+export const VALUE_QUERIES: Record<string, string[]> = {
+  agree: [
+    "CREATE NODE TABLE P(pk INT64 PRIMARY KEY, d DATE, ts TIMESTAMP, iv INTERVAL, dec DECIMAL(5,2), l DATE[], u UNION(a INT64, b STRING), s STRUCT(x INT64, y DATE))",
+    "CREATE REL TABLE Q(FROM P TO P, w DECIMAL(5,2), at DATE)",
+    "CREATE NODE TABLE W(pk INT64 PRIMARY KEY, big INT64, u UNION(a INT64, b DOUBLE))",
+    "CREATE (:P {pk: 1, d: date('2024-01-02'), ts: timestamp('2024-01-01 12:34:56.789'), iv: interval('1 day'), dec: cast('1.5' AS DECIMAL(5,2)), l: [date('2024-01-03')], u: union_value(b := 'x'), s: {x: 1, y: date('2024-01-03')}})",
+    "CREATE (:P {pk: 2})",
+    "MATCH (a:P {pk: 1}), (b:P {pk: 2}) CREATE (a)-[:Q {w: cast('2.5' AS DECIMAL(5,2)), at: date('2024-01-02')}]->(b)",
+    "CREATE (:W {pk: 1, big: 9007199254740993, u: union_value(b := 1.5)})",
+    "MATCH (p:P) RETURN p ORDER BY p.pk",
+    "MATCH ()-[q:Q]->() RETURN q",
+    "MATCH p = (a:P)-[:Q*1..1]->(b:P) RETURN p",
+    "MATCH (a:P)-[:Q]->(b:P) RETURN [a, b] AS pair",
+    "MATCH (p:P {pk: 1}) RETURN p.u AS u, p.s AS s, p.l AS l",
+    "RETURN to_json({a: 1}) AS v, [to_json(1)] AS w",
+    "RETURN union_value(a := NULL) AS v",
+    "RETURN {`a, b`: 1, b: 2} AS a, {`f(`: 1, g: 2} AS b",
+    "RETURN map([timestamp('2024-01-01 12:34:56.789')], [1]) AS a, map([1.5], [1]) AS b, map([cast('2024-01-01 12:34:56+05:30' AS TIMESTAMP_TZ)], [1]) AS c",
+    "RETURN map([cast('-0.05' AS DECIMAL(5,2))], [1]) AS v",
+    "RETURN 123 AS a, 9007199254740991 AS b, -9007199254740991 AS c, 0 AS d",
+    "RETURN cast(5 AS INT8) AS a, cast(250 AS UINT8) AS b, cast(5 AS INT16) AS c, cast(5 AS INT32) AS d, cast(5 AS UINT16) AS e, cast(5 AS UINT32) AS f, cast(5 AS UINT64) AS g, cast(1.5 AS FLOAT) AS h",
+    "RETURN 2.5 AS a, true AS b, 'x' AS c, cast('abc' AS BLOB) AS d, uuid('123e4567-e89b-12d3-a456-426614174000') AS e",
+    "RETURN cast(12 AS INT128) AS a, cast('170141183460469231731687303715884105727' AS INT128) AS b",
+    "RETURN cast('1.50' AS DECIMAL(5,2)) AS a, cast('0' AS DECIMAL(5,2)) AS b, cast('5' AS DECIMAL(38,0)) AS c, cast('-0.5' AS DECIMAL(5,2)) AS d, cast('0.0000001' AS DECIMAL(10,7)) AS e, cast('1234567890123.45' AS DECIMAL(17,2)) AS f, cast('-1.05' AS DECIMAL(5,2)) AS g",
+    "RETURN date('2024-01-02') AS a, timestamp('2024-01-01 12:34:56.789') AS b, timestamp('2024-01-01 12:34:56') AS c, timestamp('1969-12-31 23:59:59.999') AS d",
+    "RETURN cast('2024-01-01 12:34:56+05:30' AS TIMESTAMP_TZ) AS a, cast('2024-01-01 12:34:56.789' AS TIMESTAMP_NS) AS b, cast('2024-01-01 12:34:56.789' AS TIMESTAMP_MS) AS c, cast('2024-01-01 12:34:56' AS TIMESTAMP_SEC) AS d",
+    "RETURN interval('1 year 2 months 3 days 4 hours') AS a, interval('1 day') AS b, interval('1500 milliseconds') AS c, interval('0 days') AS d, timestamp('2024-01-01') - timestamp('2024-01-02 00:00:01.5') AS e",
+    "RETURN union_value(a := 1) AS a, union_value(b := date('2024-01-02')) AS b",
+    "RETURN {a: 1, b: interval('1 day'), c: union_value(x := 's'), d: [date('2024-01-02')], e: cast('1.50' AS DECIMAL(5,2))} AS v",
+    "RETURN {`x, y`: date('2024-01-01'), `a b`: 1} AS v",
+    "RETURN [[date('2024-01-02')], []] AS a, cast([1, 2] AS INT64[2]) AS b, [[union_value(a := 1)]] AS c",
+    "RETURN map([1, 2], [date('2024-01-02'), date('2024-01-03')]) AS a, map(['k'], [interval('1 day')]) AS b",
+    "RETURN map([true], [1]) AS a, map([uuid('123e4567-e89b-12d3-a456-426614174000')], [1]) AS b, map([timestamp('2024-01-01 12:34:56.789123')], [1]) AS c, map([cast('0.0000001' AS DECIMAL(10,7))], [1]) AS d",
+    "RETURN cast(NULL AS DECIMAL(5,2)) AS a, cast(NULL AS INT64) AS b, cast(NULL AS DATE) AS c, cast(NULL AS INTERVAL) AS d, cast(NULL AS TIMESTAMP) AS e, [1, NULL] AS f, NULL AS g",
+    "MATCH (k:K) RETURN k ORDER BY k.pk",
+    "MATCH ()-[r:R]->() RETURN r.revision AS revision, r.is_current AS current",
+    "RETURN cast('-0.05' AS DECIMAL(5,2)) AS v",
+    "RETURN [cast('-0.001' AS DECIMAL(5,3))] AS v",
+  ],
+  wide: [
+    "RETURN 9007199254740993 AS v",
+    "RETURN -9223372036854775808 AS v",
+    "RETURN cast(18446744073709551615 AS UINT64) AS v",
+    "RETURN cast('123456789012345678.5' AS DECIMAL(38,1)) AS v",
+    "RETURN cast('99999999999999999999999999999999999999' AS DECIMAL(38,0)) AS v",
+    "RETURN cast('1.50' AS DECIMAL(38,20)) AS v",
+    "RETURN [1, 9007199254740993] AS v",
+    "RETURN {a: 9007199254740993} AS v",
+    "RETURN map([1], [9007199254740993]) AS v",
+    "RETURN union_value(a := 9007199254740993) AS v",
+    "MATCH (w:W) RETURN w",
+    "MATCH (w:W) RETURN w.u AS v",
+  ],
+  subsecond: [
+    "RETURN timestamp('2024-01-01 12:34:56.789123') AS v",
+    "RETURN timestamp('1969-12-31 23:59:59.999999') AS v",
+    "RETURN cast('2024-01-01 12:34:56.789123456' AS TIMESTAMP_NS) AS v",
+    "RETURN interval('1 microsecond') AS v",
+  ],
+};
+
+/**
+ * Run each VALUE_QUERIES entry through a fresh Kuzu store and report its rows, or its error and code.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<Record<string, unknown[]>>): the outcomes of each query group, in query order.
+ */
+export async function kuzuValues(path: string): Promise<Record<string, unknown[]>> {
+  const store = new KuzuStore(path);
+  const graph = new SelfGraph(store, { namespace: "c" });
+  await graph.initialize();
+  await graph.entities.create("A", "T", { id: "t:a" });
+  await graph.entities.create("B", "T", { id: "t:b" });
+  await graph.relations.create("t:a", "KNOWS", "t:b");
+  const outcomes: Record<string, unknown[]> = {};
+  for (const [group, queries] of Object.entries(VALUE_QUERIES)) {
+    outcomes[group] = [];
+    for (const query of queries) {
+      try {
+        outcomes[group]!.push({ rows: (await store.runCypher(query)).rows });
+      } catch (exc) {
+        if (!(exc instanceof SelfGraphError)) throw exc;
+        outcomes[group]!.push({ error: exc.message, code: exc.code });
+      }
+    }
+  }
+  await graph.close();
+  await KuzuStore.closeDatabase(path);
+  return outcomes;
+}
+
 /**
  * Run each STATEMENT_QUERIES entry through a fresh Kuzu store and report its outcome and the surviving node ids.
  *

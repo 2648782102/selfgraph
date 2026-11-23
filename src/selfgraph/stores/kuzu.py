@@ -9,6 +9,7 @@ import time
 from collections.abc import Iterable, Mapping
 from concurrent.futures import Future
 from contextvars import ContextVar
+from decimal import InvalidOperation
 from functools import partial
 from typing import Any
 
@@ -20,28 +21,9 @@ from ..models import CypherResult, JsonValue, check_options
 from ..resolution import match_keys
 from ._cypher import AutoCommitStore, count_of, require_keys, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge, parse_doc
+from ._kuzu_values import UNREADABLE_DECIMAL, normalize
 
 __all__ = ["KuzuStore"]
-
-
-def _normalize(value: Any) -> Any:
-    """Convert a Kuzu result value to a JSON-ready value, matching the Bolt store's serialization.
-
-    @param value (Any): a raw value from a Kuzu result row.
-    @return (Any): the JSON-ready equivalent (ISO strings for temporals, hex for blobs, str for the rest).
-    """
-    if isinstance(value, dict):
-        return {k if isinstance(k, str) else str(k): _normalize(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_normalize(v) for v in value]
-    if isinstance(value, bytes | bytearray):
-        return value.hex()
-    if isinstance(value, str | int | float | bool) or value is None:
-        return value
-    iso = getattr(value, "isoformat", None)
-    if callable(iso):
-        return iso()
-    return str(value)
 
 
 _SCHEMA = (
@@ -407,7 +389,11 @@ class KuzuStore(AutoCommitStore):
             columns = qr.get_column_names()
             rows = []
             while qr.has_next():
-                rows.append({k: _normalize(v) for k, v in zip(columns, qr.get_next(), strict=False)})
+                try:
+                    values = qr.get_next()
+                except InvalidOperation as exc:
+                    raise StoreError(UNREADABLE_DECIMAL, code="inexact_value") from exc
+                rows.append({k: normalize(v) for k, v in zip(columns, values, strict=False)})
             return columns, rows
 
         previous, token = self._lock._join()
