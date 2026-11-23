@@ -34,6 +34,7 @@ import {
   writeBatches,
 } from "./cypherPrimitives.js";
 import { docs, edgeRow, firstDoc, mergedCurrentEdge, parseDoc } from "./docRows.js";
+import { normalizeRow, readTables } from "./kuzuValues.js";
 
 const SCHEMA = [
   "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
@@ -46,6 +47,7 @@ const SEEK_BATCH = 256;
 interface KuzuQueryResult {
   getAll(): Promise<Array<Record<string, unknown>>>;
   getColumnNames(): Promise<string[]> | string[];
+  getColumnDataTypes(): Promise<string[]> | string[];
   close?(): void;
 }
 
@@ -128,20 +130,6 @@ function nonEmptyStatements(query: string): number {
   return blankLexicalTokens(query)
     .split(";")
     .filter((part) => part.replaceAll(BLANK, "").trim().length > 0).length;
-}
-
-function normalize(value: unknown): unknown {
-  if (value === null || value === undefined) return null;
-  if (Array.isArray(value)) return value.map(normalize);
-  if (value instanceof Uint8Array) return Array.from(value, (b) => b.toString(16).padStart(2, "0")).join("");
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "bigint") return Number.isSafeInteger(Number(value)) ? Number(value) : value.toString();
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = normalize(v);
-    return out;
-  }
-  return value;
 }
 
 /**
@@ -433,9 +421,28 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
     try {
       const columns = await res.getColumnNames();
-      const rows = (await res.getAll()).map((row) => normalize(row) as Record<string, JsonValue>);
+      const types = await res.getColumnDataTypes();
+      const all = await res.getAll();
+      const tables = await readTables(all, columns, types, (statement) => this.rowsOf(conn, statement));
+      const rows = all.map((row) => normalizeRow(row, columns, types, tables) as Record<string, JsonValue>);
       checkResultDepth(rows);
       return { columns, rows, counters: {}, warnings: [] };
+    } finally {
+      res.close?.();
+    }
+  }
+
+  /**
+   * Run a read statement and return its rows.
+   *
+   * @param conn (KuzuConnection): the connection.
+   * @param statement (string): the statement.
+   * @return (Promise<Array<Record<string, unknown>>>): the rows.
+   */
+  private async rowsOf(conn: KuzuConnection, statement: string): Promise<Array<Record<string, unknown>>> {
+    const res = (await conn.query(statement)) as KuzuQueryResult;
+    try {
+      return await res.getAll();
     } finally {
       res.close?.();
     }
@@ -448,14 +455,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
    * @return (boolean): true when a transaction is open.
    */
   private async inTransaction(conn: KuzuConnection): Promise<boolean> {
-    const now = async () => {
-      const res = (await conn.query(NOW)) as KuzuQueryResult;
-      try {
-        return JSON.stringify(await res.getAll());
-      } finally {
-        res.close?.();
-      }
-    };
+    const now = async () => JSON.stringify(await this.rowsOf(conn, NOW));
     const first = await now();
     await new Promise((resolve) => setTimeout(resolve, CLOCK_TICK_MS));
     return (await now()) === first;
