@@ -25,6 +25,7 @@ import { tokens } from "../../src/retrieval.js";
 import { parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
+import { kuzuError } from "../../src/stores/kuzu.js";
 import { expandTokens, schemaForms } from "../../src/terms.js";
 import { parseTime } from "../../src/validate.js";
 import { STORE_SPECS } from "../helpers.js";
@@ -850,6 +851,9 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
     store_refused: await errorOf(() => new SelfGraph(new Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
     list_limit_zero: await errorOf(() => graph.entities.list({ limit: 0 })),
     list_limit_text: await errorOf(() => graph.entities.list({ limit: "5" } as never)),
+    kuzu_error_escapes: await errorOf(async () => {
+      throw kuzuError(new Error("a\tb  c\x85d\u202ee"), "Kuzu query failed");
+    }),
     entity_missing_near: await errorOf(() => graph.entities.delete("person:jane-do")),
   };
 }
