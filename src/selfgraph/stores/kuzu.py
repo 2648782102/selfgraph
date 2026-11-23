@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -107,6 +108,12 @@ _NOW = "RETURN current_timestamp()"
 _CLOCK_TICK = 0.02
 
 
+# Whitespace runs collapsed after escaping: only plain spaces and Unicode spaces
+# survive escape_controls, so this set is the whole job. Keep it identical to
+# the twin pattern in typescript/src/stores/kuzu.ts.
+_WS_RUN = re.compile("[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
+
+
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     """Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
 
@@ -120,7 +127,7 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
             "process at a time",
             code="store_locked",
         )
-    message = f"{prefix}: {escape_controls(' '.join(str(exc).split()))}"
+    message = f"{prefix}: {_WS_RUN.sub(' ', escape_controls(str(exc))).strip()}"
     if "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)
