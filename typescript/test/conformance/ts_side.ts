@@ -1123,6 +1123,57 @@ async function preferenceDeleteCounts(graph: SelfGraph): Promise<Record<string, 
 }
 
 /**
+ * Replay one insert whose inputs repeat a relation id and a preference id, and read every version after each run.
+ *
+ * @param graph (SelfGraph): the graph whose store hosts the isolated case.
+ * @return (Promise<unknown[]>): the relation and preference versions after each of three runs.
+ */
+async function repeatedIdReplays(graph: SelfGraph): Promise<unknown[]> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_repeated_ids` });
+  await g.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Food", name: "Pizza" },
+      { type: "Food", name: "Pasta" },
+    ],
+    relations: [{ from_entity: "person:ann", type: "LIKES", to_entity: "food:pasta", properties: { w: 1 } }],
+    preferences: [{ subject_entity: "person:ann", key: "food", value_entity: "food:pizza" }],
+  });
+  const rel = { from_entity: "person:ann", type: "LIKES", to_entity: "food:pasta" };
+  const pref = { subject_entity: "person:ann", key: "food", value_entity: "food:pizza" };
+  const facts = {
+    relations: [
+      { ...rel, properties: { w: 2, v: 1 }, event_time: "2020-01-01T00:00:00Z" },
+      { ...rel, properties: { w: null, u: 3 } },
+    ],
+    preferences: [
+      { ...pref, strength: 0.9, about_entity: "food:pasta", properties: { a: 1 } },
+      { ...pref, strength: 0.1, properties: { a: null, b: 2 } },
+    ],
+  };
+  const rid = ids.relationId("person:ann", "LIKES", "food:pasta");
+  const pid = ids.preferenceId("person:ann", "preference", "food", "food:pizza");
+  const runs: unknown[] = [];
+  for (let i = 0; i < 3; i++) {
+    await g.insert.facts(facts);
+    runs.push({
+      relation: (await g.relations.versions(rid)).map((v) => [
+        v.revision,
+        v.properties,
+        v.event_time ? jsonIso(v.event_time) : null,
+      ]),
+      preference: (await g.preferences.versions(pid)).map((v) => [
+        v.revision,
+        v.strength,
+        v.about_entity,
+        v.properties,
+      ]),
+    });
+  }
+  return runs;
+}
+
+/**
  * Read inserted facts through helpers given noncanonical entity references.
  *
  * @param graph (SelfGraph): the graph whose store hosts the isolated case.
@@ -1913,6 +1964,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     relation: String(largeRelation?.properties.blob ?? "").length,
   };
   out.preference_delete_counts = await preferenceDeleteCounts(graph);
+  out.repeated_id_replays = await repeatedIdReplays(graph);
   return out;
 }
 

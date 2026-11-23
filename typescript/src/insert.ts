@@ -22,7 +22,6 @@ import {
   type ParsedDecisionTraceInput,
   type ParsedDocument,
   type ParsedExtraction,
-  type Preference,
   parseOrThrow,
   type SourceDiff,
   type Status,
@@ -335,10 +334,13 @@ export class Insert {
         diff = { kept: sorted((id) => prior.has(id)), added: sorted((id) => !prior.has(id)), retired };
       }
 
-      const preferences: Preference[] = [];
-      for (const pref of resolved.preferences) {
-        preferences.push(await ops.upsertPreference(tx, ns, pref, source.default_event_time, createdAt));
-      }
+      const preferences = await ops.upsertPreferences(
+        tx,
+        ns,
+        resolved.preferences,
+        source.default_event_time,
+        createdAt,
+      );
 
       const decisions = [];
       for (const given of resolved.decisions) {
