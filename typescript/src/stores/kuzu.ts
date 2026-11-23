@@ -143,7 +143,12 @@ function databasePath(path: string): string {
  * @return (StoreError): the error to throw.
  */
 export function kuzuError(exc: unknown, prefix: string): StoreError {
-  const detail = escapeControls(errorMessage(exc).split(/\s+/).join(" ").trim());
+  // Escape first so tabs and U+0085 survive as text, then collapse only the
+  // whitespace that escaping left behind. Keep this set identical to the twin
+  // pattern in src/selfgraph/stores/kuzu.py.
+  const detail = escapeControls(errorMessage(exc))
+    .replace(/[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, " ")
+    .trim();
   if (detail.includes("Could not set lock on file")) {
     return new StoreError(
       `${prefix}: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time`,
