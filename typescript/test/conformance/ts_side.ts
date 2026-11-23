@@ -483,6 +483,30 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
 }
 
 /**
+ * Assemble extracted entities where some are blank or invalid, with a relation to each, and their warnings.
+ *
+ * @return ({ extraction: unknown; warnings: unknown }): the assembled facts and the warnings for the dropped entities.
+ */
+function droppedExtractedEntities(): { extraction: unknown; warnings: unknown } {
+  const entities = [
+    { type: "Person", name: "Ann" },
+    { type: "Person", name: "" },
+    { type: "Person", name: "  " },
+    { type: " ", name: "Bob" },
+    { type: "Person", name: "Cy\u0007" },
+    { type: "Company", name: "Acme" },
+  ];
+  const relations = ["Acme", "Bob", "Cy\u0007", "Zed"].map((to_name) => ({
+    from_name: "Ann",
+    type: "WORKS_AT",
+    to_name,
+  }));
+  const warnings: InsertWarning[] = [];
+  const extraction = assembleExtraction(entities, relations, [], [], warnings);
+  return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
+}
+
+/**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
  * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; tables_errors: string[]; term_forms: unknown; terms: unknown[]; shared_term_forms: unknown; shared_terms: string[][]; neo4j_dropped: string; ossie: { doc: unknown; warnings: string } }): one list per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the forms and expansion of a definition shared by two entities, the fields the Neo4j export drops, the Ossie export document and warnings, and how NaN and Infinity parse.
@@ -518,6 +542,7 @@ export function schemaWarnings(): {
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
+  dropped_extracted_entities: { extraction: unknown; warnings: unknown };
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
   const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
@@ -739,6 +764,7 @@ export function schemaWarnings(): {
       [...expandTokens(tokens(q), subSchema, tokens)].sort(comparePy),
     ),
     repeated_extracted_relations: repeatedExtractedRelations(),
+    dropped_extracted_entities: droppedExtractedEntities(),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);
       return parsed === null ? null : jsonIso(parsed);

@@ -249,7 +249,7 @@ export function assembleExtraction(
   const admit = (ent: RawEntity): boolean =>
     admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
   for (const ent of rawEntities) {
-    if (isNoiseName(ent.name) || !admit(ent)) continue;
+    if (!admit(ent) || isNoiseName(ent.name)) continue;
     const key = ids.entityId(ent.type, ent.name);
     const cleanAliases = (ent.aliases ?? []).filter((alias) =>
       admitted(warnings, "alias", () => requireNoControl("entity alias", alias)),

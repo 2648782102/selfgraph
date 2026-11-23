@@ -279,10 +279,7 @@ class LLMExtractor(_WarningSink):
                 try:
                     system, user = self._messages(kind, chunk.text)
                     result = await self._llm.generate(system=system, user=user, output=schema)
-                    items = getattr(_checked_output(result, schema, kind), kind)
-                    if kind == "entities":
-                        return items
-                    return items
+                    return getattr(_checked_output(result, schema, kind), kind)
                 except ExtractionError:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -367,7 +364,7 @@ class LLMExtractor(_WarningSink):
             return True
 
         for ent in raw_entities:
-            if _is_noise_name(ent.name) or not admit(ent):
+            if not admit(ent) or _is_noise_name(ent.name):
                 continue
             key = _ids.entity_id(ent.type, ent.name)
             clean_aliases = []
