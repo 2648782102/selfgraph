@@ -14,6 +14,7 @@ from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _kv
 from selfgraph.errors import SelfGraphError
+from selfgraph.stores.kuzu import _kuzu_error
 from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
@@ -732,6 +733,15 @@ class Opaque:
     pass
 
 
+
+async def _raise_later(exc):
+    """Raise an error from an awaitable, so error_of can record a synchronously raised error.
+
+    @param exc (BaseException): the error to raise.
+    @return (None): nothing; always raises.
+    """
+    raise exc
+
 async def error_of(call):
     """Await a call that should fail and return its error as the wire fields both SDKs report.
 
@@ -828,6 +838,9 @@ async def choice_errors(graph):
         "list_limit_zero": await error_of(graph.entities.list(limit=0)),
         "list_limit_text": await error_of(graph.entities.list(limit="5")),
         "entity_missing_near": await error_of(graph.entities.delete("person:jane-do")),
+        "kuzu_error_escapes": await error_of(
+            _raise_later(_kuzu_error(RuntimeError("a\tb  c\x85d\u202ee"), "Kuzu query failed"))
+        ),
     }
 
 
