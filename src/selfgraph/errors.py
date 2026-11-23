@@ -606,7 +606,8 @@ def escape_controls(text: str) -> str:
 
     Engine error text can quote the query, so a raw escape byte in it would run in a
     terminal or log viewer. Newline, carriage return, and tab get their short forms;
-    other C0/C1 controls, DEL, and lone surrogates get \\xNN or \\uNNNN.
+    other C0/C1 controls, DEL, lone surrogates, and bidi/format and zero-width
+    characters get \\xNN or \\uNNNN.
 
     @param text (str): the text, such as an engine error message.
     @return (str): the text with control characters escaped.
@@ -621,7 +622,15 @@ def escape_controls(text: str) -> str:
             out.append("\\t")
         else:
             point = ord(ch)
-            if point < 0x20 or 0x7F <= point <= 0x9F or 0xD800 <= point <= 0xDFFF:
+            if (
+                point < 0x20
+                or 0x7F <= point <= 0x9F
+                or 0xD800 <= point <= 0xDFFF
+                or 0x200B <= point <= 0x200F
+                or 0x202A <= point <= 0x202E
+                or 0x2066 <= point <= 0x2069
+                or point == 0xFEFF
+            ):
                 out.append(f"\\x{point:02x}" if point < 0x100 else f"\\u{point:04x}")
             else:
                 out.append(ch)
