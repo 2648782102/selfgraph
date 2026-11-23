@@ -1029,6 +1029,23 @@ def _check_arguments(server: Any, name: str, hinted: set[str]) -> None:
     object.__setattr__(tool, "run", checked_run)
 
 
+def _check_tool_name(server: Any, hinted: set[str]) -> None:
+    """Make the server answer a call to an unregistered tool with a structured invalid_argument error result.
+
+    @param server (Any): the MCP server holding the tools.
+    @param hinted (set[str]): the codes the server's session has seen.
+    @return (None): nothing; the server's call_tool is replaced in place.
+    """
+    call_tool = server.call_tool
+
+    async def checked_call_tool(name: str, arguments: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        if server._tool_manager.get_tool(name) is None:
+            return _error_result(ValidationError(f"unknown tool {name!r}"), name, hinted)
+        return await call_tool(name, arguments, *args, **kwargs)
+
+    server.call_tool = checked_call_tool
+
+
 def build_server(name: str = "selfgraph"):
     """Create an MCP server with every tool registered. Requires selfgraph[mcp].
 
@@ -1054,6 +1071,7 @@ def build_server(name: str = "selfgraph"):
             kwargs["annotations"] = ToolAnnotations(**_annotations(fn.__name__))
         server.tool(**kwargs)(_tool(fn, hinted))
         _check_arguments(server, fn.__name__, hinted)
+    _check_tool_name(server, hinted)
     return server
 
 

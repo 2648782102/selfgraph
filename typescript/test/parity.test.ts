@@ -25,7 +25,7 @@ import {
 } from "../src/ids.js";
 import { setLogger } from "../src/index.js";
 import { log } from "../src/internal/log.js";
-import { MARK_RANGES } from "../src/internal/marks.js";
+import { FORMAT_RANGES, MARK_RANGES } from "../src/internal/marks.js";
 import { comparePy, pyFloatRepr, pyJsonDumps, pyRepr, utf8 } from "../src/internal/py.js";
 import { epochMicros, fromIso, jsonIso, parseIso, pyStrDate, toIso } from "../src/internal/time.js";
 import { lint, relevanceScore } from "../src/maintenance.js";
@@ -110,6 +110,12 @@ describe("ids match Python byte for byte", () => {
       decisionId(null, "Cafe\u0301"),
       decisionId(null, "Café"),
     ]).toEqual(fx.nfc_ids);
+  });
+
+  it("drops format characters inside a name before deriving its id", () => {
+    expect(FORMAT_RANGES).toBe(fx.format_ranges);
+    for (const name of ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme"])
+      expect(entityId("Person", name), JSON.stringify(name)).toBe("person:acme");
   });
 
   it("relation types, control and surrogate characters, and quoted labels", () => {

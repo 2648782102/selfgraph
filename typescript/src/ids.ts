@@ -2,8 +2,9 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 
 import { ValidationError } from "./errors.js";
-import { MARK_CLASS } from "./internal/marks.js";
-import { cpLen, PY_WORD_CLASS, PY_WS_CLASS, pyCollapseWs, pyRepr, pySplit, pyStrip, utf8 } from "./internal/py.js";
+import { FORMAT_CLASS, MARK_CLASS } from "./internal/marks.js";
+import { cpLen, PY_WS_CLASS, pyCollapseWs, pyRepr, pySplit, pyStrip, utf8 } from "./internal/py.js";
+import { lower, upper, WORD_CLASS } from "./internal/unicode.js";
 import type { Evidence } from "./models.js";
 import { requireStr } from "./validate.js";
 
@@ -24,8 +25,9 @@ export const RESERVED_ID_PREFIXES: ReadonlySet<string> = new Set(ID_PREFIXES);
 const tagged = (prefix: (typeof ID_PREFIXES)[number], rest: string): string => `${prefix}:${rest}`;
 
 const MARK = new RegExp(`^[${MARK_CLASS}]$`, "u");
-const PUNCT = new RegExp(`[^${PY_WORD_CLASS}${PY_WS_CLASS}${MARK_CLASS}]+`, "gu");
-const NON_IDENT = new RegExp(`[^${PY_WORD_CLASS}${MARK_CLASS}]+`, "gu");
+const FORMAT = new RegExp(`[${FORMAT_CLASS}]`, "gu");
+const PUNCT = new RegExp(`[^${WORD_CLASS}${PY_WS_CLASS}${MARK_CLASS}]+`, "gu");
+const NON_IDENT = new RegExp(`[^${WORD_CLASS}${MARK_CLASS}]+`, "gu");
 const CAMEL = /(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g;
 const DIGIT_LETTER = /(?<=[0-9])(?=[A-Z])/g;
 const ENTITY_SUFFIXES = new Set([
@@ -123,7 +125,7 @@ export function normalizeText(value: string): string {
  * @return (string): the slugified text.
  */
 export function slug(text: string): string {
-  return pyCollapseWs(pyStrip(text).toLowerCase(), "-");
+  return pyCollapseWs(lower(pyStrip(text)), "-");
 }
 
 /**
@@ -145,7 +147,7 @@ export function isOrgType(type: string): boolean {
  */
 export function canonicalName(type: string, rawName: string): string {
   const name = normalizeText(rawName);
-  let words = pySplit(pyStrip(name).toLowerCase().replace(PUNCT, " "));
+  let words = pySplit(lower(pyStrip(name.replace(FORMAT, ""))).replace(PUNCT, " "));
   if (isOrgType(type)) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);
@@ -227,8 +229,9 @@ export function canonicalEntityId(eid: unknown): string {
 export function normalizeRelType(type: string): string {
   requireStr("relation type", type);
   const split = pyStrip(normalizeText(type)).replace(CAMEL, "_");
-  const upper = pyStrip(split.toLowerCase().replace(NON_IDENT, "_"), "_").toUpperCase();
-  const normalized = normalizeText(upper.replace(DIGIT_LETTER, "_"));
+  const normalized = normalizeText(
+    upper(pyStrip(lower(split).replace(NON_IDENT, "_"), "_")).replace(DIGIT_LETTER, "_"),
+  );
   if (!normalized) {
     throw new ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'");
   }

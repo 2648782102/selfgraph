@@ -4,8 +4,10 @@ import { ValidationError } from "./errors.js";
 import { normalizeText, profileId, wordRuns } from "./ids.js";
 import { casefold } from "./internal/casefold.js";
 import { loads } from "./internal/json.js";
+import { contextPayload } from "./internal/payload.js";
 import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from "./internal/py.js";
 import { epochMicros, fromIso } from "./internal/time.js";
+import { WORD_CLASS } from "./internal/unicode.js";
 import {
   L_CHUNK,
   L_ENTITY,
@@ -43,9 +45,11 @@ const STOPWORDS = new Set(
   ).split(" "),
 );
 
-const IRREGULAR = /(?<![\p{L}\p{N}_])(?:won|can)['’ʼ]t(?![\p{L}\p{N}_])/giu;
-const CLITIC =
-  /(?<=[\p{L}\p{N}_])n['’ʼ]t(?![\p{L}\p{N}_])|(?<=[\p{L}\p{N}_])['’ʼ](?:s|ll|re|ve|d|m)(?![\p{L}\p{N}_])/giu;
+const IRREGULAR = new RegExp(`(?<![${WORD_CLASS}])(?:won|can)['’ʼ]t(?![${WORD_CLASS}])`, "gu");
+const CLITIC = new RegExp(
+  `(?<=[${WORD_CLASS}])n['’ʼ]t(?![${WORD_CLASS}])|(?<=[${WORD_CLASS}])['’ʼ](?:s|ll|re|ve|d|m)(?![${WORD_CLASS}])`,
+  "gu",
+);
 const FILLER = new Set(
   (
     "about all any can could describe does explain find give i know list many me much my our please should show " +
@@ -875,33 +879,6 @@ async function collectPreferences(
 }
 
 /**
- * Contain stored content before admitting it to the context's SDK-owned headers.
- *
- * @param text (string): a source passage or assembled graph record, never its trust header.
- * @param source (boolean): preserve passage lines and label each as source data.
- * @return (string): display-safe content with no unlabelled physical lines.
- */
-function contextPayload(text: string, source = false): string {
-  const normalized = text.replaceAll("\r\n", "\n");
-  const rows: string[] = [""];
-  for (const c of normalized) {
-    const n = c.codePointAt(0)!;
-    if ([10, 13, 11, 12, 28, 29, 30, 133, 8232, 8233].includes(n)) {
-      rows.push("");
-    } else {
-      const control =
-        (n < 32 && n !== 9) ||
-        (n >= 127 && n <= 159) ||
-        [0x061c, 0x200e, 0x200f].includes(n) ||
-        (n >= 0x202a && n <= 0x202e) ||
-        (n >= 0x2066 && n <= 0x2069);
-      rows[rows.length - 1] += control ? `\\u${n.toString(16).padStart(4, "0")}` : c;
-    }
-  }
-  return source ? rows.map((row) => `SOURCE | ${row}`).join("\n") : rows.join("\\n");
-}
-
-/**
  * Fill the token budget with passages, then relations, preferences, decisions, and entities, nearest first.
  *
  * @param passages (string[]): the ranked source passages.
@@ -1221,14 +1198,15 @@ async function run(
  * @return (string[]): the content tokens, repeats kept.
  */
 function termWords(text: string): string[] {
+  const folded = fold(text);
   const words: string[] = [];
   let last = 0;
-  for (const m of text.matchAll(IRREGULAR)) {
-    words.push(...tokenList(text.slice(last, m.index).replace(CLITIC, "")));
-    words.push(m[0].toLowerCase().replace(/[’ʼ]/g, "'"));
+  for (const m of folded.matchAll(IRREGULAR)) {
+    words.push(...tokenList(folded.slice(last, m.index).replace(CLITIC, "")));
+    words.push(m[0].replace(/[’ʼ]/g, "'"));
     last = m.index + m[0].length;
   }
-  return [...words, ...tokenList(text.slice(last).replace(CLITIC, ""))];
+  return [...words, ...tokenList(folded.slice(last).replace(CLITIC, ""))];
 }
 
 /**

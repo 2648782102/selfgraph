@@ -269,7 +269,9 @@ export function checkOptions(method: string, options: unknown, allowed: readonly
  * @param value (unknown): the value to check.
  */
 export function requireBool(name: string, value: unknown): asserts value is boolean {
-  if (typeof value !== "boolean") throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`);
+  if (typeof value !== "boolean") {
+    throw new ValidationError(`${name} must be a boolean, got ${typeName(value)}`, { field: name });
+  }
 }
 
 /**
@@ -294,7 +296,7 @@ export function requireInt(field: string, value: unknown): asserts value is numb
 export function requireUnit(label: string, value: unknown, finite = false): void {
   if (typeof value !== "number") throw new ValidationError(`${label} must be a number, got ${typeName(value)}`);
   if (finite && !Number.isFinite(value)) throw new ValidationError(`${label} must be a finite number`);
-  if (!(value >= 0 && value <= 1)) throw new ValidationError(`${label} must be between 0 and 1, got ${value}`);
+  if (!(value >= 0 && value <= 1)) throw new ValidationError(`${label} must be between 0 and 1, got ${pyRepr(value)}`);
 }
 
 /**

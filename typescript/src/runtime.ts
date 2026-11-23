@@ -27,6 +27,7 @@ import { scanEntities, scanRelations } from "./maintenance.js";
 import {
   asInput,
   type CypherResult,
+  conflictingPrefix,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertResult,
@@ -35,7 +36,6 @@ import {
   type LLMConfig,
   type PruneResult,
   type Relation,
-  requireMatchingPrefix,
 } from "./models.js";
 import { invalidatedNote } from "./ops.js";
 import type { GraphStore } from "./protocols.js";
@@ -578,7 +578,14 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
       { code: "invalid_setting", field: "llm_provider" },
     );
   }
-  requireMatchingPrefix(provider, settings.llm_model, settings.llm_base_url);
+  const prefix = conflictingPrefix(provider, settings.llm_model, settings.llm_base_url);
+  if (prefix !== null) {
+    throw new ValidationError(
+      `llm_provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}; ` +
+        `pass ${settingHint("llm_provider")} matching the model`,
+      { code: "invalid_setting", field: "llm_provider" },
+    );
+  }
   return {
     provider,
     model: settings.llm_model,

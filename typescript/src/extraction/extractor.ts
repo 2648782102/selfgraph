@@ -5,6 +5,7 @@ import * as ids from "../ids.js";
 import { log } from "../internal/log.js";
 import { pyRepr, pySplit, pyStrip, utf8 } from "../internal/py.js";
 import { parseIso, toIso } from "../internal/time.js";
+import { LETTER_CLASS, lower } from "../internal/unicode.js";
 import { EDGE_TYPES, preferenceStanceOf } from "../labels.js";
 import { summarizeError } from "../llm/index.js";
 import {
@@ -152,10 +153,10 @@ export interface RawDecision {
   evidence?: ChunkEvidence | null;
 }
 
-const HAS_LETTER = /\p{L}/u;
+const HAS_LETTER = new RegExp(`[${LETTER_CLASS}]`, "u");
 export const FALLBACK_TYPE = "Thing";
 
-const norm = (name: string): string => pyStrip(name).toLowerCase();
+const norm = (name: string): string => lower(pyStrip(name));
 
 /**
  * Report whether a name is a bare quantity or phrase fragment (empty, over six words, or without a letter) rather than an entity.
@@ -277,7 +278,7 @@ export function assembleExtraction(
     return [...canonical.values()].flatMap(({ type, names }) => names.get(ids.canonicalName(type, name)) ?? []);
   };
   for (const ent of rawEntities) {
-    if (isNoiseName(ent.name) || !admit(ent)) continue;
+    if (!admit(ent) || isNoiseName(ent.name)) continue;
     const key = ids.entityId(ent.type, ent.name);
     const cleanAliases = (ent.aliases ?? []).filter((alias) =>
       admitted(warnings, "alias", () => requireNoControl("entity alias", alias)),
@@ -397,7 +398,7 @@ export function assembleExtraction(
             promoted.push({
               subject_name: rel.from_name,
               stance,
-              key: canonicalEntityType(value.type, schema).toLowerCase(),
+              key: lower(canonicalEntityType(value.type, schema)),
               value_name: rel.to_name,
             });
           } else {

@@ -8,7 +8,8 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from ._marks import MARK_CLASS
+from ._marks import FORMAT_CLASS, MARK_CLASS
+from ._unicode import WORD_CLASS, lower, upper
 from .errors import ValidationError
 
 __all__ = [
@@ -205,8 +206,9 @@ def _require_no_control(label: str, value: str) -> None:
 _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARK = re.compile(f"[{MARK_CLASS}]")
-_PUNCT = re.compile(rf"[^\w\s{MARK_CLASS}]+")
-_NON_IDENT = re.compile(rf"[^\w{MARK_CLASS}]+")
+_FORMAT = re.compile(f"[{FORMAT_CLASS}]")
+_PUNCT = re.compile(rf"[^{WORD_CLASS}\s{MARK_CLASS}]+")
+_NON_IDENT = re.compile(rf"[^{WORD_CLASS}{MARK_CLASS}]+")
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _DIGIT_LETTER = re.compile(r"(?<=[0-9])(?=[A-Z])")
 _ENTITY_SUFFIXES = frozenset(
@@ -306,7 +308,7 @@ def slug(text: str) -> str:
     @param text (str): the text to slugify.
     @return (str): the slugified text.
     """
-    return _WS.sub("-", text.strip().lower())
+    return _WS.sub("-", lower(text.strip()))
 
 
 def _is_org_type(type: str) -> bool:
@@ -326,7 +328,7 @@ def _canonical_name(type: str, name: str) -> str:
     @return (str): the canonical hyphenated form.
     """
     name = normalize_text(name)
-    words = _PUNCT.sub(" ", name.strip().lower()).split()
+    words = _PUNCT.sub(" ", lower(_FORMAT.sub("", name).strip())).split()
     if _is_org_type(type):
         if words and words[0] == "the":
             words = words[1:]
@@ -405,7 +407,7 @@ def normalize_rel_type(type: str) -> str:
     @return (str): the canonical relation type.
     """
     _require_str("relation type", type)
-    normalized = _NON_IDENT.sub("_", _CAMEL.sub("_", normalize_text(type).strip()).lower()).strip("_").upper()
+    normalized = upper(_NON_IDENT.sub("_", lower(_CAMEL.sub("_", normalize_text(type).strip()))).strip("_"))
     normalized = normalize_text(_DIGIT_LETTER.sub("_", normalized))
     if not normalized:
         raise ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'")

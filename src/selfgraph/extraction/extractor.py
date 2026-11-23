@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,7 @@ from .._ops import (
     parse_time,
 )
 from .._serde import EDGE_TYPES, preference_stance_of
+from .._unicode import LETTER_CLASS, lower
 from ..errors import ExtractionError, ValidationError
 from ..llm.base import summarize_error
 from ..models import (
@@ -123,10 +125,11 @@ class _DecisionsOut(BaseModel):
 
 _log = logging.getLogger("selfgraph")
 _FALLBACK_TYPE = "Thing"
+_LETTER = re.compile(f"[{LETTER_CLASS}]")
 
 
 def _norm(name: str) -> str:
-    return name.strip().lower()
+    return lower(name.strip())
 
 
 def _is_noise_name(name: str) -> bool:
@@ -140,7 +143,7 @@ def _is_noise_name(name: str) -> bool:
         return True
     if len(text.split()) > 6:
         return True
-    return not any(c.isalpha() for c in text)
+    return _LETTER.search(text) is None
 
 
 def _dropped(warnings: list[InsertWarning], kind: str, exc: ValidationError, rtype: str | None = None) -> None:
@@ -276,10 +279,7 @@ class LLMExtractor(_WarningSink):
                 try:
                     system, user = self._messages(kind, chunk.text)
                     result = await self._llm.generate(system=system, user=user, output=schema)
-                    items = getattr(_checked_output(result, schema, kind), kind)
-                    if kind == "entities":
-                        return items
-                    return items
+                    return getattr(_checked_output(result, schema, kind), kind)
                 except ExtractionError:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -387,7 +387,7 @@ class LLMExtractor(_WarningSink):
             return [e for type_, names in canonical.values() for e in names.get(_ids._canonical_name(type_, name), [])]
 
         for ent in raw_entities:
-            if _is_noise_name(ent.name) or not admit(ent):
+            if not admit(ent) or _is_noise_name(ent.name):
                 continue
             key = _ids.entity_id(ent.type, ent.name)
             clean_aliases = []
@@ -479,7 +479,7 @@ class LLMExtractor(_WarningSink):
                     stance = preference_stance_of(_ids.normalize_rel_type(rel.type))
                     value = registry.get(to_id)
                     if stance is not None and value is not None and value.type != _FALLBACK_TYPE:
-                        key = canonical_entity_type(value.type, schema).lower()
+                        key = lower(canonical_entity_type(value.type, schema))
                         promoted.append(
                             _PrefOut(subject_name=rel.from_name, stance=stance, key=key, value_name=rel.to_name)
                         )

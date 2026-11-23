@@ -287,26 +287,29 @@ function suite(spec: StoreSpec) {
     },
   );
 
-  it.each(["batch", "stored"])("still merges matching preference ids (%s)", async (restate) => {
+  it("still merges matching preference ids", async () => {
     const g = fresh();
     await g.entities.create("Ada", "Person");
     await g.entities.create("Tea", "Drink");
-    const pref = { id: "preference:fav", subject_entity: "person:ada", key: "drink", value_entity: "drink:tea" };
-    let batch = [
-      { ...pref, strength: 0.2 },
-      { ...pref, strength: 0.9 },
+    const pref = { subject_entity: "person:ada", key: "drink", value_entity: "drink:tea" };
+    await g.preferences.create("person:ada", "drink", "drink:tea", { id: "preference:stored", strength: 0.2 });
+    const batch = [
+      { ...pref, id: "preference:stored", strength: 0.9 },
+      { ...pref, id: "preference:fresh", strength: 0.2 },
+      { ...pref, id: "preference:fresh", strength: 0.9 },
     ];
-    if (restate === "stored") {
-      await g.preferences.create("person:ada", "drink", "drink:tea", { id: "preference:fav", strength: 0.2 });
-      batch = [{ ...pref, strength: 0.9 }];
-    }
 
     const result = await g.insert.facts({ preferences: batch }, { source_id: "restated" });
 
-    expect(result.preferences.map((p) => p.id)).toEqual(["preference:fav"]);
-    const preference = await g.preferences.get("preference:fav");
-    expect([preference?.subject_entity, preference?.key, preference?.strength]).toEqual(["person:ada", "drink", 0.9]);
-    expect(await g.preferences.versions("preference:fav")).toHaveLength(2);
+    expect(result.preferences.map((p) => p.id)).toEqual(["preference:stored", "preference:fresh"]);
+    for (const [pid, versions] of [
+      ["preference:stored", 2],
+      ["preference:fresh", 1],
+    ] as const) {
+      const preference = await g.preferences.get(pid);
+      expect([preference?.subject_entity, preference?.key, preference?.strength]).toEqual(["person:ada", "drink", 0.9]);
+      expect(await g.preferences.versions(pid)).toHaveLength(versions);
+    }
   });
 
   it.runIf(spec.name === "kuzu")("batches relation ID preflight reads", async () => {
@@ -338,6 +341,34 @@ function suite(spec: StoreSpec) {
     } finally {
       execute.mockRestore();
     }
+  });
+
+  it("rejects a non-boolean include_invalidated or newest_first with the Python text", async () => {
+    const g = fresh();
+    await g.entities.create("X", "T", { id: "t:x" });
+    await g.entities.create("Y", "T", { id: "t:y" });
+    const rel = await g.relations.create("t:x", "KNOWS", "t:y");
+    for (const [flag, kind] of [
+      ["false", "string"],
+      ["no", "string"],
+      [0, "number"],
+      [1, "number"],
+    ] as const) {
+      const listed = new ValidationError(`include_invalidated must be a boolean, got ${kind}`, {
+        field: "include_invalidated",
+      });
+      await expect(g.relations.list({ include_invalidated: flag as never })).rejects.toThrow(listed);
+      await expect(g.relations.list({ include_invalidated: flag as never })).rejects.toMatchObject({
+        code: "invalid_argument",
+        field: "include_invalidated",
+      });
+      const order = new ValidationError(`newest_first must be a boolean, got ${kind}`, { field: "newest_first" });
+      await expect(g.relations.versions(rel.id, { newest_first: flag as never })).rejects.toThrow(order);
+      await expect(g.preferences.versions("preference:missing", { newest_first: flag as never })).rejects.toThrow(
+        order,
+      );
+    }
+    expect((await g.relations.list({ include_invalidated: false })).items.map((r) => r.id)).toEqual([rel.id]);
   });
 
   it("reports a bad stance or status with the Python text, after the id check", async () => {
