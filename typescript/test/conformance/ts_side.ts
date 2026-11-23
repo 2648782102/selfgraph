@@ -1835,6 +1835,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   await unmerged.insert.facts({ entities: people, relations: stated.slice(0, 2) });
   const joiner = { type: "Person", name: "Bob" };
   const superseding = (await unmerged.insert.facts({ entities: [joiner], relations: stated.slice(2) })).merges[0]!;
+  await unmerged.insert.facts({ relations: [{ ...stated[1]!, event_time: "2023-01-01" }] });
   await unmerged.entities.unmerge(superseding.id);
   const unmergedVersions: Record<string, unknown> = {};
   for (const r of (await unmerged.relations.list({ include_invalidated: true, limit: 100 })).items) {

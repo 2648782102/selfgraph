@@ -2545,7 +2545,8 @@ export async function resettleEndpoints(
   for (const eid of dedupList(moved.flatMap((edge) => [edge.from_id, edge.to_id]))) {
     await runner.lockNode(ns, L_ENTITY, eid);
   }
-  const found = await endpointEdges(runner, ns, limits, endsOf(moved));
+  const every = new Map<string, EdgeRow[]>();
+  const found = await endpointEdges(runner, ns, limits, endsOf(moved), every);
   const members = new Map<string, Set<string>>();
   for (const edge of [...moved, ...found.values()]) {
     for (const [slot] of slotsOf(edge)) {
@@ -2563,7 +2564,19 @@ export async function resettleEndpoints(
         return freed.has(key) && members.get(key)!.has(edge.props.invalidated_by as string);
       }),
   );
-  if (!stale.length) return 0;
+  const gone = new Set(moved.map((edge) => idOf(edge.props)));
+  const older = new Map<string, EdgeWrite>();
+  for (const [rid, edges] of inPlace ? every : []) {
+    for (const edge of edges) {
+      if (edge === found.get(rid) || !gone.has(edge.props.invalidated_by as string)) continue;
+      const props = { ...edge.props, invalidated_at: null, invalidated_by: null, invalidated_known_at: null };
+      older.set(`${rid}:${revisionOf(edge)}`, [edge.type, edge.from_id, edge.to_id, props]);
+    }
+  }
+  if (!stale.length) {
+    if (older.size) await runner.createEdges(ns, L_ENTITY, L_ENTITY, [...older.values()]);
+    return 0;
+  }
   const [tracker, read] = await contradictionCheck(
     runner,
     ns,
@@ -2594,6 +2607,7 @@ export async function resettleEndpoints(
     rows.push([edge.type, edge.from_id, edge.to_id, props]);
   }
   const restored = rows.length;
+  rows.push(...older.values());
   for (const [rid, [by, when]] of ended) {
     const edge = read.get(rid)!;
     if (by === edge.props.invalidated_by && toIso(when) === edge.props.invalidated_at) continue;

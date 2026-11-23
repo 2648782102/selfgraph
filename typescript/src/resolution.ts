@@ -1509,10 +1509,41 @@ async function leaveEntityEvidence(runner: Runner, ns: string, entityId: string,
   await writeSplit(runner, ns, split);
 }
 
+const ENDING_KEYS = ["is_current", "invalidated_at", "invalidated_by", "invalidated_known_at"];
+
+/**
+ * Whether a relation version is what the statements, landing in some order, made of the version before.
+ *
+ * Each statement writes its event time and its properties over the earlier ones, so the event time and each property of the result come from one of the statements that gave it, and from the version before when none did.
+ *
+ * @param before (Relation): the version before the statements.
+ * @param stated ({ properties: JsonObject; event_time?: Date | null }[]): the statements.
+ * @param newest (Relation): the version after them.
+ * @return (boolean): true when nothing but the statements shaped it.
+ */
+function explained(
+  before: Relation,
+  stated: { properties: JsonObject; event_time?: Date | null }[],
+  newest: Relation,
+): boolean {
+  const times = stated.map((r) => toIso(r.event_time)).filter((time) => time !== null);
+  if (!(times.length ? times : [toIso(before.event_time)]).includes(toIso(newest.event_time))) return false;
+  const keys = new Set([...Object.keys(before.properties), ...Object.keys(newest.properties)]);
+  for (const r of stated) for (const key of Object.keys(r.properties)) keys.add(key);
+  for (const key of keys) {
+    const said = stated.filter((r) => key in r.properties).map((r) => r.properties[key]);
+    const outcomes = said.length
+      ? said.map((value) => ops.mergeProps({}, { [key]: value })[key])
+      : [before.properties[key]];
+    if (!outcomes.some((outcome) => deepEqual(newest.properties[key], outcome))) return false;
+  }
+  return true;
+}
+
 /**
  * Put a relation that existed before the merge back to the version it had, when only the merge wrote after it.
  *
- * The versions the merge insert wrote carry its created_at. They are removed, and the version before them is current again, only when nothing wrote after them, nothing certified the relation, and the newest one is exactly what this merge's rewrites would have made of the version before. Otherwise a direct statement or a later write shaped the relation, and it stays as it is.
+ * The versions the merge insert wrote carry its created_at. They are removed, and the version before them takes the place of the newest one, current or retired as it was, only when nothing wrote after them, nothing certified the relation, and the newest one is what the rewrites of every merge of that insert, reverted ones included, would have made of the version before, in some order. Otherwise a direct statement or a later write shaped the relation, and it stays as it is.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -1527,29 +1558,50 @@ async function undoRevision(runner: Runner, ns: string, rec: MergeRecord, rw: Me
   if (first === 0 || !wrote.slice(first).every(Boolean)) return;
   const before = ops.relationOf(edges[first - 1]!);
   const newest = ops.relationOf(edges[edges.length - 1]!);
-  const stated = rec.rewrites
+  const rows = await ops.scan(ops.nodeListing(runner, ns, L_MERGE, { equals: { created_at: toIso(rec.created_at) } }));
+  const inserted = [rec, ...(await decodeMerges(runner, ns, rows)).filter((m) => m.id !== rec.id)];
+  const stated = inserted
+    .flatMap((m) => m.rewrites)
     .filter((r) => r.kind === rw.kind && r.id === rw.id && r.existed && !r.dropped)
     .map((r) => parseOrThrow(RelationInput, r.rewritten, "relation"));
-  let properties = before.properties;
-  let eventTime = before.event_time;
-  for (const rel of stated) {
-    properties = ops.mergeProps(properties, rel.properties);
-    eventTime = rel.event_time ?? eventTime;
-  }
   if (
     before.invalidated_at !== null ||
     before.certifications.length > 0 ||
     newest.certifications.length > 0 ||
-    !deepEqual(newest.properties, properties) ||
-    toIso(newest.event_time) !== toIso(eventTime)
+    !explained(before, stated, newest)
   ) {
     return;
   }
   const kept: EdgeWrite[] = edges.slice(0, first - 1).map((e) => [e.type, e.from_id, e.to_id, e.props]);
   const last = edges[first - 1]!;
-  kept.push([last.type, last.from_id, last.to_id, { ...last.props, is_current: true }]);
+  const ended = edges[edges.length - 1]!.props;
+  const ending = Object.fromEntries(ENDING_KEYS.map((key) => [key, ended[key] ?? null]));
+  kept.push([last.type, last.from_id, last.to_id, { ...last.props, ...ending }]);
   await runner.deleteEdges(ns, rw.id);
   await runner.createEdges(ns, L_ENTITY, L_ENTITY, kept);
+}
+
+/**
+ * The source version and time that withdrew the last of a relation's evidence, when every record was replaced.
+ *
+ * Evidence recorded by hand has no stored version and always counts, as in ops.replaceSource.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rows (Props[]): the stored evidence nodes of a relation.
+ * @return ([string, Date] | undefined): the replacing version and when it replaced, or undefined when any record stands.
+ */
+async function withdrawal(runner: Runner, ns: string, rows: Props[]): Promise<[string, Date] | undefined> {
+  const stored = await ops.nodesById(
+    runner,
+    ns,
+    L_SOURCE_VERSION,
+    ops.dedupList(rows.map((r) => r.source_version as string)),
+  );
+  const marks = rows.map((r) => stored.get(r.source_version as string));
+  if (!marks.length || !marks.every((m) => m?.replaced_by)) return undefined;
+  const last = marks.reduce((a, b) => (String(b!.replaced_at) > String(a!.replaced_at) ? b : a))!;
+  return [last.replaced_by as string, fromIso(last.replaced_at as string)!];
 }
 
 /**
@@ -1739,7 +1791,7 @@ export async function unmerge(
   const [siblings, liveMerges, liveEntries] = await siblingRewrites(runner, ns, rec.id);
   const gone: EdgeRow[] = [];
   const superseded: Array<[Relation, Relation]> = [];
-  const relations: Relation[] = [];
+  let relations: Relation[] = [];
   for (const rw of rec.rewrites.filter((r) => r.kind === "relation")) {
     const original = parseOrThrow(RelationInput, rw.original, "relation");
     const rewritten = parseOrThrow(RelationInput, rw.rewritten, "relation");
@@ -1825,6 +1877,14 @@ export async function unmerge(
     if (by === undefined || ![...slots(rel)].some((key) => slots(by).has(key))) continue;
     const edge = await runner.getCurrentEdge(ns, rel.id);
     await ops.retireRelations(runner, ns, [[edge!, by.id, old.invalidated_at!]], at);
+  }
+  for (const rid of new Set([...restored.values(), ...restored.keys()])) {
+    const edge = await runner.getCurrentEdge(ns, rid);
+    if (edge === null || (edge.props.certified_at ?? null) !== null) continue;
+    const cut = await withdrawal(runner, ns, await ops.nodesWhere(runner, ns, L_EVIDENCE, "target_id", [rid]));
+    if (cut === undefined) continue;
+    const [ended] = await ops.retireRelations(runner, ns, [[edge, ...cut]], at);
+    relations = relations.map((r) => (r.id === rid ? ended! : r));
   }
 
   const preferences: Preference[] = [];

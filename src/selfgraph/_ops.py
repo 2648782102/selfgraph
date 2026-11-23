@@ -2412,6 +2412,31 @@ async def retire_relations(
     return [_relation_of(e) for e in gone.values()]
 
 
+def _clear_older_pointers(every: dict[str, list[dict]], newest: dict[str, dict], gone: set[str]) -> list[tuple]:
+    """Edge rows for the older revisions a deleted relation retired, with that retirement taken off.
+
+    A revision that a later revision replaced is not retired by anything, so a pointer from it to a relation that
+    no longer exists would outlive that relation.
+
+    @param every (dict[str, list[dict]]): every version read by _endpoint_edges, by relation id.
+    @param newest (dict[str, dict]): each relation's newest edge row, by id.
+    @param gone (set[str]): ids of the deleted relations.
+    @return (list[tuple]): the rewritten edge rows.
+    """
+    cleared = {
+        (rid, v["props"]["revision"]): (
+            v["type"],
+            v["from_id"],
+            v["to_id"],
+            {**v["props"], "invalidated_at": None, "invalidated_by": None, "invalidated_known_at": None},
+        )
+        for rid, versions in every.items()
+        for v in versions
+        if v is not newest[rid] and v["props"].get("invalidated_by") in gone
+    }
+    return list(cleared.values())
+
+
 async def resettle_endpoints(
     runner: Any,
     ns: str,
@@ -2441,7 +2466,8 @@ async def resettle_endpoints(
         return 0
     for eid in _dedup_list(end for edge in moved for end in (edge["from_id"], edge["to_id"])):
         await runner.lock_node(ns, L_ENTITY, eid)
-    found = await _endpoint_edges(runner, ns, caps, [(e["type"], e["from_id"], e["to_id"]) for e in moved])
+    every: dict[str, list[dict]] = {}
+    found = await _endpoint_edges(runner, ns, caps, [(e["type"], e["from_id"], e["to_id"]) for e in moved], every)
     members: dict[tuple[str, str, str], set[str]] = {}
     for edge in [*moved, *found.values()]:
         for key, _ in _cap_slots(caps, edge["type"], edge["from_id"], edge["to_id"]):
@@ -2457,7 +2483,10 @@ async def resettle_endpoints(
             for key, _ in _cap_slots(caps, edge["type"], edge["from_id"], edge["to_id"])
         )
     ]
+    older = _clear_older_pointers(every, found, {e["props"]["id"] for e in moved}) if in_place else []
     if not stale:
+        if older:
+            await runner.create_edges(ns, L_ENTITY, L_ENTITY, older)
         return 0
     ends = [(e["type"], e["from_id"], e["to_id"]) for e in stale]
     tracker, found = await _contradiction_check(runner, ns, "supersede", caps, ends)
@@ -2491,6 +2520,7 @@ async def resettle_endpoints(
             )
         rows.append((edge["type"], edge["from_id"], edge["to_id"], props))
     restored = len(rows)
+    rows += older
     for rid, (by, when) in ended.items():
         edge = found[rid]
         if (by, to_iso(when)) != (edge["props"].get("invalidated_by"), edge["props"].get("invalidated_at")):

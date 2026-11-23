@@ -34,7 +34,7 @@ type Case = { name: string; inserts: Insert[]; capped?: boolean };
 const [BOB_ID, BOBBY_ID, XENA_ID, ROBERT_ID, ANN_LEE_ID, A_LEE_ID] = "Bob,Bobby,Xena,Robert,Ann Lee,A Lee"
   .split(",")
   .map((name) => entityId("Person", name));
-const [Y2020, Y2021] = [2020, 2021].map((y) => `${y}-01-01T00:00:00+00:00`);
+const [Y2020, Y2021, Y2022] = [2020, 2021, 2022].map((y) => `${y}-01-01T00:00:00+00:00`);
 const person = (name: string, aliases: string[] = []) => ({ type: "Person", name, aliases });
 const rel = (from: string, to = XENA_ID, type = "KNOWS", extra: object = {}) => ({
   from_entity: from,
@@ -102,6 +102,38 @@ const UNMERGE_CASES: Case[] = [
     inserts: [
       [[ROBERT_IN, ...COMPANY_ROWS], [worksAt(ROBERT_ID, COMPANIES[0]!, 2020)], "seed"],
       [[person("Bob")], [worksAt(BOB_ID, COMPANIES[1]!, 2021)], "s2"],
+    ],
+  },
+  {
+    name: "two candidates merged onto one relation go back to its revision 1",
+    inserts: [
+      [[ROBERT_BOBS, person("Xena")], [link(ROBERT_ID, { event_time: Y2020 })], "seed"],
+      [
+        [person("Bob"), person("Bobby")],
+        [
+          link(BOB_ID, { event_time: Y2021, properties: { a: 1 } }),
+          link(BOBBY_ID, { event_time: Y2022, properties: { b: 1 } }),
+        ],
+        "s2",
+      ],
+    ],
+  },
+  {
+    name: "a later write on a survivor relation the merge retired keeps no pointer to the removed relation",
+    capped: true,
+    inserts: [
+      [[ROBERT_IN, ...COMPANY_ROWS], [worksAt(ROBERT_ID, COMPANIES[0]!, 2020)], "seed"],
+      [[person("Bob")], [worksAt(BOB_ID, COMPANIES[1]!, 2021)], "s2"],
+      [[], [worksAt(ROBERT_ID, COMPANIES[0]!, 2023)], "s3"],
+    ],
+  },
+  {
+    name: "a later write retired the revision the merge wrote on a survivor relation",
+    capped: true,
+    inserts: [
+      [[ROBERT_IN, ...COMPANY_ROWS], [worksAt(ROBERT_ID, COMPANIES[0]!, 2020)], "seed"],
+      [[person("Bob")], [{ ...worksAt(BOB_ID, COMPANIES[0]!, 2021), properties: { title: "x" } }], "s2"],
+      [[], [worksAt(ROBERT_ID, COMPANIES[1]!, 2023)], "s3"],
     ],
   },
   {
@@ -1223,6 +1255,53 @@ function suite(spec: StoreSpec) {
 
   const versions = async (g: SelfGraph, id: string) =>
     (await g.relations.versions(id)).map((v) => [v.revision, v.certifications.length > 0]);
+
+  const unmergedAfter = async (texts: Record<string, Extraction>, steps: [string, string, boolean][]) => {
+    const extractor = { extract: async (doc: { text: string }) => texts[doc.text]! };
+    const merged = open({ resolver: "default", extractor });
+    const plain = open({ resolver: "exact", extractor });
+    const merges = new Set<string>();
+    for (const g of [merged, plain]) {
+      for (const [text, source, replace] of steps) {
+        const found = (await g.insert.text(text, { source_id: source, replace_source: replace })).merges;
+        for (const merge of found) merges.add(merge.id);
+      }
+    }
+    for (const id of merges) await merged.entities.unmerge(id);
+    return [await state(merged), await state(plain)];
+  };
+
+  it("retires a relation only a replaced source stated", async () => {
+    const [merged, plain] = await unmergedAfter(
+      {
+        seed: { entities: [ROBERT_IN, person("Xena")], relations: [link(ROBERT_ID)] } as Extraction,
+        v1: { entities: [person("Bob")], relations: [link(BOB_ID)] } as Extraction,
+        v2: { entities: [person("Bob")] } as Extraction,
+      },
+      [
+        ["seed", "seed", false],
+        ["v1", "s2", false],
+        ["v2", "s2", true],
+      ],
+    );
+    expect(merged).toEqual(plain);
+  });
+
+  it("retires a survivor relation only the merge kept current", async () => {
+    const [merged, plain] = await unmergedAfter(
+      {
+        seed: { entities: [ROBERT_IN, person("Xena")], relations: [link(ROBERT_ID)] } as Extraction,
+        v1: { entities: [person("Bob")], relations: [link(BOB_ID)] } as Extraction,
+        v2: { entities: [ROBERT_IN, person("Xena")] } as Extraction,
+      },
+      [
+        ["seed", "seed", false],
+        ["v1", "s2", false],
+        ["v2", "seed", true],
+      ],
+    );
+    expect(merged).toEqual(plain);
+  });
 
   it("restores a relation that existed unless it was certified", async () => {
     const seen: Record<string, unknown[]> = {};

@@ -1356,13 +1356,36 @@ def _backed_elsewhere(
     return any(original not in own for original in siblings.get((rw.kind, rw.id), ()))
 
 
+def _explained(before: Relation, stated: list[RelationInput], newest: Relation) -> bool:
+    """Whether a relation version is what the statements, landing in some order, made of the version before.
+
+    Each statement writes its event time and its properties over the earlier ones, so the event time and each property
+    of the result come from one of the statements that gave it, and from the version before when none did.
+
+    @param before (Relation): the version before the statements.
+    @param stated (list[RelationInput]): the statements.
+    @param newest (Relation): the version after them.
+    @return (bool): True when nothing but the statements shaped it.
+    """
+    times = {to_iso(r.event_time) for r in stated} - {None}
+    if to_iso(newest.event_time) not in (times or {to_iso(before.event_time)}):
+        return False
+    for key in {*before.properties, *newest.properties, *(k for r in stated for k in r.properties)}:
+        said = [r.properties[key] for r in stated if key in r.properties]
+        outcomes = [_ops._merge_props({}, {key: v}).get(key) for v in said] or [before.properties.get(key)]
+        if not any(_ops._json_equal(newest.properties.get(key), o) for o in outcomes):
+            return False
+    return True
+
+
 async def _undo_revision(runner: Any, ns: str, rec: MergeRecord, rw: MergeRewrite) -> None:
     """Put a relation that existed before the merge back to the version it had, when only the merge wrote after it.
 
-    The versions the merge insert wrote carry its created_at. They are removed, and the version before them is current
-    again, only when nothing wrote after them, nothing certified the relation, and the newest one is exactly what
-    this merge's rewrites would have made of the version before. Otherwise a direct statement or a later write
-    shaped the relation, and it stays as it is.
+    The versions the merge insert wrote carry its created_at. They are removed, and the version before them takes the
+    place of the newest one, current or retired as it was, only when nothing wrote after them, nothing certified the
+    relation, and the newest one is what the rewrites of every merge of that insert, reverted ones included, would have
+    made of the version before, in some order. Otherwise a direct statement or a later write shaped the relation, and
+    it stays as it is.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1376,28 +1399,45 @@ async def _undo_revision(runner: Any, ns: str, rec: MergeRecord, rw: MergeRewrit
     if first == 0 or not all(wrote[first:]):
         return
     before, newest = _ops._relation_of(edges[first - 1]), _ops._relation_of(edges[-1])
+    rows = await _ops._paged(partial(runner.match_nodes, ns, L_MERGE, equals={"created_at": to_iso(rec.created_at)}))
+    inserted = [rec, *(m for m in await decode_merges(runner, ns, rows) if m.id != rec.id)]
     stated = [
         RelationInput.model_validate(r.rewritten)
-        for r in rec.rewrites
+        for m in inserted
+        for r in m.rewrites
         if (r.kind, r.id) == (rw.kind, rw.id) and r.existed and not r.dropped
     ]
-    properties, event_time = before.properties, before.event_time
-    for rel in stated:
-        properties = _ops._merge_props(properties, rel.properties)
-        event_time = rel.event_time or event_time
     if (
         before.invalidated_at is not None
         or before.certifications
         or newest.certifications
-        or not _ops._json_equal(newest.properties, properties)
-        or to_iso(newest.event_time) != to_iso(event_time)
+        or not _explained(before, stated, newest)
     ):
         return
     kept = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in edges[: first - 1]]
-    last = edges[first - 1]
-    kept.append((last["type"], last["from_id"], last["to_id"], {**last["props"], "is_current": True}))
+    last, ended = edges[first - 1], edges[-1]["props"]
+    ending = {k: ended.get(k) for k in ("is_current", "invalidated_at", "invalidated_by", "invalidated_known_at")}
+    kept.append((last["type"], last["from_id"], last["to_id"], {**last["props"], **ending}))
     await runner.delete_edges(ns, rw.id)
     await runner.create_edges(ns, L_ENTITY, L_ENTITY, kept)
+
+
+async def _withdrawal(runner: Any, ns: str, rows: list[dict[str, Any]]) -> tuple[str, datetime] | None:
+    """The source version and time that withdrew the last of a relation's evidence, when every record was replaced.
+
+    Evidence recorded by hand has no stored version and always counts, as in _ops.replace_source.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param rows (list[dict[str, Any]]): the stored evidence nodes of a relation.
+    @return (tuple[str, datetime] | None): the replacing version and when it replaced, or None when any record stands.
+    """
+    stored = await _ops._nodes_by_id(runner, ns, L_SOURCE_VERSION, _ops._dedup_list(r["source_version"] for r in rows))
+    marks = [stored.get(r["source_version"], {}) for r in rows]
+    if not marks or not all(m.get("replaced_by") for m in marks):
+        return None
+    last = max(marks, key=lambda m: m["replaced_at"])
+    return last["replaced_by"], from_iso(last["replaced_at"])
 
 
 def _moved_to(rw: MergeRewrite, new_id: str, rewritten: dict[str, Any], existed: bool) -> MergeRewrite:
@@ -1662,6 +1702,15 @@ async def unmerge(runner: Any, ns: str, merge_id: str, caps: Mapping[str, Any] |
         if by is not None and slots(rel) & slots(by):
             edge = await runner.get_current_edge(ns, rel.id)
             await _ops.retire_relations(runner, ns, [(edge, by.id, old.invalidated_at)], at)
+
+    for rid in dict.fromkeys([*restored.values(), *restored]):
+        edge = await runner.get_current_edge(ns, rid)
+        cut = None
+        if edge is not None and edge["props"].get("certified_at") is None:
+            cut = await _withdrawal(runner, ns, await _evidence_rows(runner, ns, rid))
+        if cut is not None:
+            [ended] = await _ops.retire_relations(runner, ns, [(edge, *cut)], at)
+            relations = [ended if r.id == rid else r for r in relations]
 
     preferences = []
     for rw in (r for r in rec.rewrites if r.kind == "preference"):
