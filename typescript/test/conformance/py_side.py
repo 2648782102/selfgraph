@@ -425,6 +425,25 @@ def repeated_extracted_relations():
     return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
 
 
+def dropped_extracted_entities():
+    """Assemble extracted entities where some are blank or invalid, with a relation to each, and their warnings.
+
+    @return (dict): the assembled facts and the warnings for the dropped entities.
+    """
+    entities = [
+        _EntityOut(type="Person", name="Ann"),
+        _EntityOut(type="Person", name=""),
+        _EntityOut(type="Person", name="  "),
+        _EntityOut(type=" ", name="Bob"),
+        _EntityOut(type="Person", name="Cy\x07"),
+        _EntityOut(type="Company", name="Acme"),
+    ]
+    relations = [_RelOut(from_name="Ann", type="WORKS_AT", to_name=name) for name in ("Acme", "Bob", "Cy\x07", "Zed")]
+    warnings = []
+    facts = LLMExtractor._assemble(entities, relations, [], [], warnings)
+    return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
+
+
 def schema_warnings():
     """Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
 
@@ -622,6 +641,7 @@ def schema_warnings():
         ],
         "lenient_event_times": [json_iso(_lenient_event_time(value)) for value in LENIENT_EVENT_TIMES],
         "repeated_extracted_relations": repeated_extracted_relations(),
+        "dropped_extracted_entities": dropped_extracted_entities(),
         "credential_masking": credential_masking(),
     }
 
