@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,7 @@ from .._ops import (
     parse_time,
 )
 from .._serde import EDGE_TYPES, preference_stance_of
+from .._unicode import LETTER_CLASS, lower
 from ..errors import ExtractionError, ValidationError
 from ..llm.base import summarize_error
 from ..models import (
@@ -123,10 +125,11 @@ class _DecisionsOut(BaseModel):
 
 _log = logging.getLogger("selfgraph")
 _FALLBACK_TYPE = "Thing"
+_LETTER = re.compile(f"[{LETTER_CLASS}]")
 
 
 def _norm(name: str) -> str:
-    return name.strip().lower()
+    return lower(name.strip())
 
 
 def _is_noise_name(name: str) -> bool:
@@ -140,7 +143,7 @@ def _is_noise_name(name: str) -> bool:
         return True
     if len(text.split()) > 6:
         return True
-    return not any(c.isalpha() for c in text)
+    return _LETTER.search(text) is None
 
 
 def _dropped(warnings: list[InsertWarning], kind: str, exc: ValidationError, rtype: str | None = None) -> None:
@@ -452,7 +455,7 @@ class LLMExtractor(_WarningSink):
                     stance = preference_stance_of(_ids.normalize_rel_type(rel.type))
                     value = registry.get(to_id)
                     if stance is not None and value is not None and value.type != _FALLBACK_TYPE:
-                        key = canonical_entity_type(value.type, schema).lower()
+                        key = lower(canonical_entity_type(value.type, schema))
                         promoted.append(
                             _PrefOut(subject_name=rel.from_name, stance=stance, key=key, value_name=rel.to_name)
                         )

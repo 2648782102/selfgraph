@@ -14,6 +14,7 @@ import {
   exitCodes,
   kuzuSchemeErrors,
   kuzuStatements,
+  pinnedUnicode,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
@@ -35,6 +36,7 @@ function py(
     | "unmerge"
     | "kuzu_isolation"
     | "exit_codes"
+    | "pinned_unicode"
     | "kuzu_statements"
     | "kuzu_scheme_errors",
   store: string,
@@ -154,6 +156,12 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
     },
   );
+
+  it("derives ids, relation types, and tokens from the pinned Unicode tables in both languages", () => {
+    const pinned = pinnedUnicode();
+    expect(pinned.entity_ids.slice(0, 4)).toEqual(["person:王", "company:王", "person:王", "company:王"]);
+    expect(pinned).toEqual(py("pinned_unicode", "-", "-"));
+  });
 
   it("gives every error code the same CLI exit code in both languages", () => {
     expect(exitCodes()).toEqual(py("exit_codes", "-", "-"));

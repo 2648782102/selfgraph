@@ -30,6 +30,7 @@ from ._serde import (
     now,
     to_iso,
 )
+from ._unicode import DECIMAL_CLASS
 from .errors import ExtractionError, NotFoundError, ValidationError, needs_llm
 from .extraction.extractor import _FALLBACK_TYPE
 from .llm.base import resolve_llm
@@ -76,6 +77,7 @@ _ALIAS_CONFIDENCE = 0.95
 _PREFIX_LIMIT = 4
 _PREFIX_SCALE = 0.1
 _GENERATIONAL = frozenset({"jr", "sr", "ii", "iii", "iv"})
+_DIGITS = re.compile(f"[{DECIMAL_CLASS}]+")
 _LLM_SYSTEM = (
     "You decide whether two mentions name the same real-world entity. Answer same=true only when you are "
     "confident they are the same entity; different entities with similar names are not the same."
@@ -178,8 +180,8 @@ def _distinguishers(words: list[str]) -> tuple[list[str], list[str], list[str]]:
     @return (tuple[list[str], list[str], list[str]]): the sorted digit runs, the sorted single-letter word tokens,
         and the sorted generational suffixes (Jr, Sr, II, III, IV).
     """
-    digits = [d for w in words for d in re.findall(r"\d+", w)]
-    letters = [t for t in words if len(t) == 1 and not t.isdecimal()]
+    digits = [d for w in words for d in _DIGITS.findall(w)]
+    letters = [t for t in words if len(t) == 1 and not _DIGITS.fullmatch(t)]
     generations = [t for t in words if t in _GENERATIONAL]
     return sorted(digits), sorted(letters), sorted(generations)
 

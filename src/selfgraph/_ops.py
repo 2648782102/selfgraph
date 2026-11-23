@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable, Mapping
 from datetime import datetime
 from functools import partial
@@ -51,6 +52,7 @@ from ._serde import (
     preference_stance_of,
     to_iso,
 )
+from ._unicode import ALNUM_CLASS, casefold, lower
 from .errors import ConflictError, NotFoundError, TransientError, ValidationError
 from .ids import _has_control, _has_surrogate, type_name
 from .models import (
@@ -73,7 +75,8 @@ from .models import (
     suggest_key,
 )
 
-_RESERVED_LABELS = frozenset(t.lower() for t in LABELS)
+_RESERVED_LABELS = frozenset(lower(t) for t in LABELS)
+_ALNUM = re.compile(f"[{ALNUM_CLASS}]")
 _NO_DELETES = {
     "deleted_entities": 0,
     "deleted_relation_versions": 0,
@@ -149,20 +152,20 @@ def _validate_entity_identity(eid: str, type: str, name: str) -> None:
         raise ValidationError(
             "entity type and name cannot be empty; an entity needs both, e.g. type='Person', name='Jane Doe'"
         )
-    if type.strip().lower() in _RESERVED_LABELS:
+    if lower(type.strip()) in _RESERVED_LABELS:
         raise ValidationError(f"entity type {type!r} is reserved for internal use; choose another type")
     if "`" in type:
         raise ValidationError("entity type cannot contain a backtick")
     _ids._reject_type_colon(type)
     if _has_control(name) or _has_control(type):
         raise ValidationError("entity type and name cannot contain control or surrogate characters")
-    if not all(ch.isalnum() or ch in " _-." or _ids._is_mark(ch) for ch in type):
+    if not all(_ALNUM.match(ch) or ch in " _-." or _ids._is_mark(ch) for ch in type):
         raise ValidationError(f"entity type {type!r} can only contain letters, digits, spaces, '_', '-', and '.'")
     if _has_control(eid):
         raise ValidationError("entity id cannot contain control or surrogate characters")
     _ids._require_entity_shape(eid)
     prefix_part = eid.split(":", 1)[0]
-    if prefix_part.lower() in _ids.RESERVED_ID_PREFIXES:
+    if lower(prefix_part) in _ids.RESERVED_ID_PREFIXES:
         raise ValidationError(f"entity id prefix {prefix_part!r} is reserved for internal use")
     _require_id_size("entity", eid)
 
@@ -279,7 +282,7 @@ def _validate_own_id(kind: str, oid: str | None) -> None:
     if _has_control(oid):
         raise ValidationError(f"{kind} id cannot contain control or surrogate characters")
     _require_id_size(kind, oid)
-    prefix = oid.split(":", 1)[0].lower() if ":" in oid else ""
+    prefix = lower(oid.split(":", 1)[0]) if ":" in oid else ""
     if prefix != kind:
         raise ValidationError(f"{kind} id must start with '{kind}:', got {oid!r}")
     if not oid.split(":", 1)[1].strip():
@@ -568,7 +571,7 @@ def entity_type_key(etype: str, canonical: Callable[[str], str] | None = None) -
     @return (str): the comparison key.
     """
     etype = _clean_text(etype)
-    return (canonical(etype) if canonical is not None else etype).casefold()
+    return casefold(canonical(etype) if canonical is not None else etype)
 
 
 def unique_by_id(items: Iterable[Any]) -> list[Any]:
@@ -592,9 +595,9 @@ def _alias_list(name: str, items: Iterable[str]) -> list[str]:
     @return (list[str]): the trimmed, NFC-normalized aliases, order preserved, without duplicates, blanks, or the name
         itself ignoring case.
     """
-    own = _clean_text(name).casefold()
+    own = casefold(_clean_text(name))
     aliases = _dedup_list(_clean_text(a) for a in items)
-    return [a for a in aliases if not isinstance(a, str) or (a and a.casefold() != own)]
+    return [a for a in aliases if not isinstance(a, str) or (a and casefold(a) != own)]
 
 
 async def _paged(fetch: Callable[..., Any], cap: int | None = None, page: int = _PAGE) -> list:

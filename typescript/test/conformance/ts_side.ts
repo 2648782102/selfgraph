@@ -1,4 +1,5 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
@@ -18,9 +19,11 @@ import {
   toOssie,
   ValidationError,
 } from "../../src/index.js";
+import { casefold } from "../../src/internal/casefold.js";
 import { setLogger } from "../../src/internal/log.js";
 import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
+import { ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, lower, upper } from "../../src/internal/unicode.js";
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
@@ -757,6 +760,48 @@ function credentialMasking(): { mask: string; redact: string; redact_many: strin
     redact: redactUri(`driver error reaching ${uri}`, uri),
     redact_many: redactUris(`call to ${uri} and ${base} failed`, uri, base),
     internal: internalError(new Error(`boom at ${uri} and ${base}`), uri, base).message,
+  };
+}
+
+const PINNED_UNICODE_TEXTS = [
+  "王\u{2ebf0}",
+  "王\u{2ebf1}",
+  "王\u{323b0}",
+  "王\u{31350}",
+  "Таня \u{1c89}а",
+  "Ɤama",
+  "\u{2c2f}\u{a7c0}",
+  "ΟΔΥΣΣΕΥΣ Σ",
+  "Straße ǰ İstanbul",
+];
+
+/**
+ * Derive ids, relation types, and tokens from code points that differ across Unicode versions.
+ *
+ * @return ({ digest: string; entity_ids: string[]; relation_types: string[]; lowered: string[]; tokens: string[][] }): the entity ids, relation types, lowercased texts, and tokens of each text, and one digest of the lowercase, uppercase, and casefold mapping and the letter, alphanumeric, and decimal class of every code point.
+ */
+export function pinnedUnicode(): {
+  digest: string;
+  entity_ids: string[];
+  relation_types: string[];
+  lowered: string[];
+  tokens: string[][];
+} {
+  let every = "";
+  for (let cp = 0; cp < 0x110000; cp++) {
+    if (cp < 0xd800 || cp > 0xdfff) every += `${String.fromCodePoint(cp)}\n`;
+  }
+  const digest = createHash("sha256");
+  for (const mapped of [lower(every), upper(every), casefold(every)]) digest.update(mapped);
+  for (const body of [LETTER_CLASS, ALNUM_CLASS, DECIMAL_CLASS]) {
+    digest.update((every.match(new RegExp(`[${body}]`, "gu")) ?? []).join(""));
+  }
+  return {
+    digest: digest.digest("hex"),
+    entity_ids: PINNED_UNICODE_TEXTS.flatMap((text) => ["Person", "Company"].map((kind) => ids.entityId(kind, text))),
+    relation_types: PINNED_UNICODE_TEXTS.map((text) => ids.normalizeRelType(text)),
+    lowered: PINNED_UNICODE_TEXTS.map(lower),
+    tokens: PINNED_UNICODE_TEXTS.map((text) => [...tokens(text)].sort(comparePy)),
   };
 }
 

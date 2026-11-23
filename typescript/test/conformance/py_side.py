@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from pydantic import validate_call
 from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, SelfGraph, ValidationError, _serde, ids
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
+from selfgraph._unicode import ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, casefold, lower, upper
 from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris, surface_hint
 from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_event_time, _RelOut
@@ -640,6 +642,40 @@ def credential_masking():
         "redact": redact_uri(f"driver error reaching {uri}", uri),
         "redact_many": redact_uris(f"call to {uri} and {base} failed", uri, base),
         "internal": str(internal_error(Error(f"boom at {uri} and {base}"), uri, base)),
+    }
+
+
+PINNED_UNICODE_TEXTS = [
+    "王\U0002ebf0",
+    "王\U0002ebf1",
+    "王\U000323b0",
+    "王\U00031350",
+    "Таня \U00001c89а",
+    "Ɤama",
+    "\U00002c2f\U0000a7c0",
+    "ΟΔΥΣΣΕΥΣ Σ",
+    "Straße ǰ İstanbul",
+]
+
+
+def pinned_unicode():
+    """Derive ids, relation types, and tokens from code points that differ across Unicode versions.
+
+    @return (dict): the entity ids, relation types, lowercased texts, and tokens of each text, and one digest of the
+        lowercase, uppercase, and casefold mapping and the letter, alphanumeric, and decimal class of every code point.
+    """
+    every = "".join(f"{chr(cp)}\n" for cp in [*range(0xD800), *range(0xE000, 0x110000)])
+    digest = hashlib.sha256()
+    for mapped in (lower(every), upper(every), casefold(every)):
+        digest.update(mapped.encode())
+    for body in (LETTER_CLASS, ALNUM_CLASS, DECIMAL_CLASS):
+        digest.update("".join(re.findall(f"[{body}]", every)).encode())
+    return {
+        "digest": digest.hexdigest(),
+        "entity_ids": [ids.entity_id(kind, text) for text in PINNED_UNICODE_TEXTS for kind in ("Person", "Company")],
+        "relation_types": [ids.normalize_rel_type(text) for text in PINNED_UNICODE_TEXTS],
+        "lowered": [lower(text) for text in PINNED_UNICODE_TEXTS],
+        "tokens": [sorted(_tokens(text)) for text in PINNED_UNICODE_TEXTS],
     }
 
 
@@ -2649,6 +2685,9 @@ async def main():
     cmd = sys.argv[1]
     if cmd == "exit_codes":
         json.dump(exit_codes(), sys.stdout)
+        return
+    if cmd == "pinned_unicode":
+        json.dump(pinned_unicode(), sys.stdout, ensure_ascii=False)
         return
     if cmd == "kuzu_isolation":
         from selfgraph import KuzuStore, ValidationError
