@@ -340,6 +340,34 @@ function suite(spec: StoreSpec) {
     }
   });
 
+  it("rejects a non-boolean include_invalidated or newest_first with the Python text", async () => {
+    const g = fresh();
+    await g.entities.create("X", "T", { id: "t:x" });
+    await g.entities.create("Y", "T", { id: "t:y" });
+    const rel = await g.relations.create("t:x", "KNOWS", "t:y");
+    for (const [flag, kind] of [
+      ["false", "string"],
+      ["no", "string"],
+      [0, "number"],
+      [1, "number"],
+    ] as const) {
+      const listed = new ValidationError(`include_invalidated must be a boolean, got ${kind}`, {
+        field: "include_invalidated",
+      });
+      await expect(g.relations.list({ include_invalidated: flag as never })).rejects.toThrow(listed);
+      await expect(g.relations.list({ include_invalidated: flag as never })).rejects.toMatchObject({
+        code: "invalid_argument",
+        field: "include_invalidated",
+      });
+      const order = new ValidationError(`newest_first must be a boolean, got ${kind}`, { field: "newest_first" });
+      await expect(g.relations.versions(rel.id, { newest_first: flag as never })).rejects.toThrow(order);
+      await expect(g.preferences.versions("preference:missing", { newest_first: flag as never })).rejects.toThrow(
+        order,
+      );
+    }
+    expect((await g.relations.list({ include_invalidated: false })).items.map((r) => r.id)).toEqual([rel.id]);
+  });
+
   it("reports a bad stance or status with the Python text, after the id check", async () => {
     const g = fresh();
     await g.entities.create("X", "T", { id: "t:x" });
