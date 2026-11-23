@@ -12,7 +12,18 @@ from unittest.mock import patch
 from pydantic import ValidationError as PydanticValidationError
 from pydantic import validate_call
 
-from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, SelfGraph, ValidationError, _serde, ids
+from selfgraph import (
+    EntityInput,
+    EvidenceInput,
+    Extraction,
+    KuzuStore,
+    Neo4jStore,
+    Schema,
+    SelfGraph,
+    ValidationError,
+    _serde,
+    ids,
+)
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph._unicode import ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, casefold, lower, upper
@@ -425,6 +436,46 @@ def repeated_extracted_relations():
     return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
 
 
+RESOLVED_NAME_ENTITIES = [
+    ("Person", "Acme!"),
+    ("Company", "Acme Corp"),
+    ("Organization", "Beta"),
+    ("Company", "Beta Ltd"),
+    ("Place", "Café"),
+    ("Person", "Anchor"),
+]
+
+RESOLVED_NAMES = [
+    "ACME.",
+    "The Acme Inc",
+    "Acme",
+    "Beta Inc",
+    "The Beta",
+    "Café",
+    "CAFÉ",
+    "Gamma Inc",
+    "gamma",
+    "GAMMA INC.",
+    "Cafe\u0301",
+]
+
+
+def resolved_extracted_names():
+    """Resolve surface-variant names against registered entities, where ties and type classes decide the winner.
+
+    @return (dict): the assembled facts and the warnings for the names that match several entity types.
+    """
+    warnings = []
+    facts = LLMExtractor._assemble(
+        [EntityInput(type=t, name=n) for t, n in RESOLVED_NAME_ENTITIES],
+        [_RelOut(from_name=name, type=f"R{i}", to_name="Anchor") for i, name in enumerate(RESOLVED_NAMES)],
+        [],
+        [],
+        warnings,
+    )
+    return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
+
+
 def dropped_extracted_entities():
     """Assemble extracted entities where some are blank or invalid, with a relation to each, and their warnings.
 
@@ -641,6 +692,7 @@ def schema_warnings():
         ],
         "lenient_event_times": [json_iso(_lenient_event_time(value)) for value in LENIENT_EVENT_TIMES],
         "repeated_extracted_relations": repeated_extracted_relations(),
+        "resolved_extracted_names": resolved_extracted_names(),
         "dropped_extracted_entities": dropped_extracted_entities(),
         "credential_masking": credential_masking(),
     }

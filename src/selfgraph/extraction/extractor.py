@@ -353,6 +353,7 @@ class LLMExtractor(_WarningSink):
         """
         sink = warnings if warnings is not None else []
         registry: dict[str, EntityInput] = {}
+        canonical: dict[bool, tuple[str, dict[str, list[EntityInput]]]] = {}
         rejected: set[str] = set()
 
         def admit(ent: EntityInput) -> bool:
@@ -362,6 +363,28 @@ class LLMExtractor(_WarningSink):
                 _dropped(sink, "entity", exc)
                 return False
             return True
+
+        def register(key: str, ent: EntityInput) -> None:
+            """Add an entity to the registry and to the index of canonical names.
+
+            @param key (str): the entity id the registry stores it under.
+            @param ent (EntityInput): the entity to register.
+            @return (None): nothing.
+            """
+            _, names = canonical.setdefault(_ids._is_org_type(ent.type), (ent.type, {}))
+            names.setdefault(_ids._canonical_name(ent.type, ent.name), []).append(ent)
+            registry[key] = ent
+
+        def matching(name: str) -> list[EntityInput]:
+            """List the registered entities whose canonical name equals the canonical form of ``name``.
+
+            @param name (str): the extracted name to look up.
+            @return (list[EntityInput]): every registered entity that matches, across entity types.
+            """
+            if not registry:
+                return []
+            _ids._require_str("entity name", name)
+            return [e for type_, names in canonical.values() for e in names.get(_ids._canonical_name(type_, name), [])]
 
         for ent in raw_entities:
             if not admit(ent) or _is_noise_name(ent.name):
@@ -375,17 +398,21 @@ class LLMExtractor(_WarningSink):
                 except ValidationError as exc:
                     _dropped(sink, "alias", exc)
             if key not in registry:
-                registry[key] = EntityInput(type=ent.type, name=ent.name, aliases=[])
+                register(key, EntityInput(type=ent.type, name=ent.name, aliases=[]))
             registry[key].aliases = list(dict.fromkeys([*registry[key].aliases, *clean_aliases]))
 
         def resolve(name: str | None, types: list[str] | None = None) -> str | None:
+            """Resolve an extracted name to one registered entity id, registering a fallback entity when none match.
+
+            @param name (str | None): the extracted name.
+            @param types (list[str] | None): the endpoint types that narrow several matches to one.
+            @return (str | None): the entity id, or None when the name is blank, invalid, or matches several types.
+            """
             if name is None or not name.strip():
                 return None
             key = _norm(name)
             try:
-                matches = [
-                    e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)
-                ]
+                matches = matching(name)
                 if len(matches) > 1 and types:
                     matches = [e for e in matches if _norm(e.type) in {_norm(t) for t in types}] or matches
             except ValidationError as exc:
@@ -409,7 +436,7 @@ class LLMExtractor(_WarningSink):
                 if not admit(ent):
                     rejected.add(key)
                     return None
-                registry[_ids.entity_id(ent.type, ent.name)] = ent
+                register(_ids.entity_id(ent.type, ent.name), ent)
             return _ids.entity_id(ent.type, ent.name)
 
         def endpoint_types(rtype: str, side: str) -> list[str]:

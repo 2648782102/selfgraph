@@ -34,6 +34,7 @@ import {
   requireJsonMapping,
   requireNoControl,
   requireOptionalText,
+  requireStr,
 } from "../validate.js";
 import { checkPrompts, effectiveInstruction, effectivePrompt, type ObjectType, render } from "./prompts.js";
 
@@ -245,26 +246,61 @@ export function assembleExtraction(
   schema: ParsedSchema | null = null,
 ): ParsedExtraction {
   const registry = new Map<string, RawEntity>();
+  const canonical = new Map<boolean, { type: string; names: Map<string, RawEntity[]> }>();
   const rejected = new Set<string>();
   const admit = (ent: RawEntity): boolean =>
     admitted(warnings, "entity", () => validateEntityIdentity(ids.entityId(ent.type, ent.name), ent.type, ent.name));
+  /**
+   * Add an entity to the registry and to the index of canonical names.
+   *
+   * @param key (string): the entity id the registry stores it under.
+   * @param ent (RawEntity): the entity to register.
+   * @return (void): nothing.
+   */
+  const register = (key: string, ent: RawEntity): void => {
+    const org = ids.isOrgType(ent.type);
+    if (!canonical.has(org)) canonical.set(org, { type: ent.type, names: new Map() });
+    const { names } = canonical.get(org)!;
+    const name = ids.canonicalName(ent.type, ent.name);
+    if (!names.has(name)) names.set(name, []);
+    names.get(name)!.push(ent);
+    registry.set(key, ent);
+  };
+  /**
+   * List the registered entities whose canonical name equals the canonical form of a name.
+   *
+   * @param name (string): the extracted name to look up.
+   * @return (RawEntity[]): every registered entity that matches, across entity types.
+   */
+  const matching = (name: string): RawEntity[] => {
+    if (registry.size === 0) return [];
+    requireStr("entity name", name);
+    return [...canonical.values()].flatMap(({ type, names }) => names.get(ids.canonicalName(type, name)) ?? []);
+  };
   for (const ent of rawEntities) {
     if (!admit(ent) || isNoiseName(ent.name)) continue;
     const key = ids.entityId(ent.type, ent.name);
     const cleanAliases = (ent.aliases ?? []).filter((alias) =>
       admitted(warnings, "alias", () => requireNoControl("entity alias", alias)),
     );
-    if (!registry.has(key)) registry.set(key, { ...ent, aliases: [] });
+    if (!registry.has(key)) register(key, { ...ent, aliases: [] });
     const kept = registry.get(key)!;
     kept.aliases = [...new Set([...(kept.aliases ?? []), ...cleanAliases])];
   }
 
+  /**
+   * Resolve an extracted name to the id of one registered entity, registering a fallback entity when none match.
+   *
+   * @param name (string | null | undefined): the extracted name.
+   * @param types (string[]): the endpoint types that narrow several matches to one.
+   * @return (string | null): the entity id, or null when the name is blank, invalid, or matches several types.
+   */
   const resolve = (name: string | null | undefined, types: string[] = []): string | null => {
     if (name == null || !pyStrip(name)) return null;
     const key = norm(name);
     let matches: RawEntity[];
     try {
-      matches = [...registry.values()].filter((e) => ids.entityId(e.type, name) === ids.entityId(e.type, e.name));
+      matches = matching(name);
       if (matches.length > 1 && types.length) {
         const typed = matches.filter((e) => types.some((t) => norm(t) === norm(e.type)));
         if (typed.length) matches = typed;
@@ -294,7 +330,7 @@ export function assembleExtraction(
         rejected.add(key);
         return null;
       }
-      registry.set(ids.entityId(ent.type, ent.name), ent);
+      register(ids.entityId(ent.type, ent.name), ent);
     }
     return ids.entityId(ent.type, ent.name);
   };

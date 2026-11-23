@@ -482,6 +482,46 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
   return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
 }
 
+const RESOLVED_NAME_ENTITIES = [
+  { type: "Person", name: "Acme!" },
+  { type: "Company", name: "Acme Corp" },
+  { type: "Organization", name: "Beta" },
+  { type: "Company", name: "Beta Ltd" },
+  { type: "Place", name: "Café" },
+  { type: "Person", name: "Anchor" },
+];
+
+const RESOLVED_NAMES = [
+  "ACME.",
+  "The Acme Inc",
+  "Acme",
+  "Beta Inc",
+  "The Beta",
+  "Café",
+  "CAFÉ",
+  "Gamma Inc",
+  "gamma",
+  "GAMMA INC.",
+  "Cafe\u0301",
+];
+
+/**
+ * Resolve surface-variant names against registered entities, where ties and type classes decide the winner.
+ *
+ * @return ({ extraction: unknown; warnings: unknown }): the assembled facts and the warnings for the names that match several entity types.
+ */
+function resolvedExtractedNames(): { extraction: unknown; warnings: unknown } {
+  const warnings: InsertWarning[] = [];
+  const extraction = assembleExtraction(
+    RESOLVED_NAME_ENTITIES,
+    RESOLVED_NAMES.map((name, i) => ({ from_name: name, type: `R${i}`, to_name: "Anchor" })),
+    [],
+    [],
+    warnings,
+  );
+  return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
+}
+
 /**
  * Assemble extracted entities where some are blank or invalid, with a relation to each, and their warnings.
  *
@@ -542,6 +582,7 @@ export function schemaWarnings(): {
   json_constants: { flags: unknown[]; documents: unknown[] };
   lenient_event_times: Array<string | null>;
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
+  resolved_extracted_names: { extraction: unknown; warnings: unknown };
   dropped_extracted_entities: { extraction: unknown; warnings: unknown };
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
@@ -764,6 +805,7 @@ export function schemaWarnings(): {
       [...expandTokens(tokens(q), subSchema, tokens)].sort(comparePy),
     ),
     repeated_extracted_relations: repeatedExtractedRelations(),
+    resolved_extracted_names: resolvedExtractedNames(),
     dropped_extracted_entities: droppedExtractedEntities(),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);
