@@ -272,6 +272,10 @@ What bounds the cost:
   same facts asks nothing.
 - At most 20 rivals are listed per call, lowest id first.
 
+Each fact is sent to the LLM as one numbered line. Line breaks and control
+characters in names, types, and property keys or values are escaped there, so
+stored text cannot add a numbered fact to the prompt.
+
 The LLM can decide differently on a rerun. Use `max_count` where the rule is
 known, and keep `llm` for what a schema cannot state.
 

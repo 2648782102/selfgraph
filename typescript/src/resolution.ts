@@ -4,6 +4,7 @@ import { ExtractionError, NotFoundError, needsLlm, ValidationError } from "./err
 import { FALLBACK_TYPE } from "./extraction/extractor.js";
 import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
+import { contextPayload } from "./internal/payload.js";
 import { comparePy, cpLen, deepEqual, pyFloatRepr, pyRepr, pyStrip } from "./internal/py.js";
 import { fromIso, jsonIso, toIso } from "./internal/time.js";
 import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_SOURCE_VERSION, L_TRACE } from "./labels.js";
@@ -387,7 +388,7 @@ export interface LLMResolverOptions {
  */
 function question(candidate: ParsedEntityInput, ent: Entity): string {
   const describe = (type: string, name: string, aliases: readonly string[]): string =>
-    `${type} ${pyRepr(name)}${aliases.length ? ` (also known as ${aliases.join(", ")})` : ""}`;
+    contextPayload(`${type} ${pyRepr(name)}${aliases.length ? ` (also known as ${aliases.join(", ")})` : ""}`);
   return (
     `Mention A: ${describe(candidate.type, candidate.name, candidate.aliases)}\n` +
     `Mention B: ${describe(ent.type, ent.name, ent.aliases)}\n` +
