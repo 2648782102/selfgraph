@@ -173,8 +173,6 @@ class RelationType(InputModel):
     to: RelationEndpoint = Field(default_factory=RelationEndpoint)
     properties: list[PropertySpec] = Field(default_factory=list)
 
-    model_config = {"populate_by_name": True}
-
     _non_blank = field_validator("type")(_non_blank_name)
 
 

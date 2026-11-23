@@ -307,6 +307,8 @@ const UNKNOWN_KEY_CASES: Array<["facts" | "schema", unknown]> = [
   ["schema", { relations: [{ type: "X", to: { min_count: -1e20 } }] }],
   ["schema", { relations: [{ type: "X", from: { min_count: 2 ** 53, max_count: 5 } }] }],
   ["schema", { relations: [{ type: "X", from: { max_count: 2 ** 53, min_count: 1.5 } }] }],
+  ["schema", { relations: [{ type: "X", from_: { types: ["A"], max_count: 1 } }] }],
+  ["schema", { relations: [{ type: "X", from: { types: ["A"] }, from_: { types: ["B"] } }] }],
 ];
 
 const FALKOR_CREDENTIAL_CASES: Array<[string, string | null]> = [
