@@ -1767,3 +1767,27 @@ def test_llm_resolver_rejects_non_boolean_reply_without_merging(reply):
     )
     assert [e.id for e in run(g.entities.list()).items] == [entity_id("Person", "John Smith")]
     assert run(g.entities.merges(entity_id("Person", "John Smith"))).items == []
+
+
+def test_inputs_that_resolve_to_one_relation_or_preference_replay_without_new_revisions():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT, {"type": "Person", "name": "Ada"})
+    facts = {
+        "entities": [BOB],
+        "relations": [
+            {"from_entity": ADA, "type": "KNOWS", "to_entity": BOB_ID, "properties": {"w": 1}},
+            {"from_entity": ADA, "type": "KNOWS", "to_entity": ROBERT_ID, "properties": {"w": 2}},
+        ],
+        "preferences": [
+            {"subject_entity": ADA, "key": "contact", "value_entity": BOB_ID, "strength": 0.9},
+            {"subject_entity": ADA, "key": "contact", "value_entity": ROBERT_ID, "strength": 0.2},
+        ],
+    }
+    rid = relation_id(ADA, "KNOWS", ROBERT_ID)
+    pid = preference_id(ADA, "preference", "contact", ROBERT_ID)
+    for _ in range(3):
+        res = run(g.insert.facts(facts))
+        assert [r.id for r in res.relations] == [rid]
+        assert [p.id for p in res.preferences] == [pid]
+        assert [(v.revision, v.properties) for v in run(g.relations.versions(rid))] == [(1, {"w": 2})]
+        assert [(v.revision, v.strength) for v in run(g.preferences.versions(pid))] == [(1, 0.2)]

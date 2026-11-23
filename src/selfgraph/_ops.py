@@ -2525,6 +2525,39 @@ async def repoint_retired(runner: Any, ns: str, deleted: Iterable[dict], survivo
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
 
 
+def _fold_relations(
+    keyed: list[tuple[str, str, RelationInput, list[Evidence], list[list[str]] | None]],
+    default_event_time: datetime | None,
+) -> list[tuple[str, str, RelationInput, list[Evidence], list[list[str]] | None]]:
+    """Fold the inputs that share a relation id into one input per id, ending where applying them in turn would.
+
+    Later properties overwrite earlier ones and keep their None values so a stored key is still removed, the newest
+    named event time wins, and the evidence records and their statements are joined in input order.
+
+    @param keyed (list[tuple]): each input as (id, type, relation, evidence, statements per evidence record or None).
+    @param default_event_time (datetime | None): the event time an input without one is written at.
+    @return (list[tuple]): one entry per distinct id, in first-appearance order.
+    """
+    folded: dict[str, tuple[str, str, RelationInput, list[Evidence], list[list[str]] | None]] = {}
+    for rid, rtype, rel, evidence, statements in keyed:
+        if rid not in folded:
+            folded[rid] = (rid, rtype, rel, list(evidence), None if statements is None else list(statements))
+            continue
+        _, _, first, joined, joined_via = folded[rid]
+        named = rel.event_time if rel.event_time is not None else default_event_time
+        merged = first.model_copy(
+            update={
+                "properties": {**_canon_props(first.properties), **_canon_props(rel.properties)},
+                "event_time": first.event_time if named is None else named,
+            }
+        )
+        joined.extend(evidence)
+        if joined_via is not None and statements is not None:
+            joined_via.extend(statements)
+        folded[rid] = (rid, rtype, merged, joined, joined_via)
+    return list(folded.values())
+
+
 async def upsert_relations(
     runner: Any,
     ns: str,
@@ -2540,9 +2573,10 @@ async def upsert_relations(
 ) -> list[Relation]:
     """Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
 
-    Relations are read and written in batches; a repeated id applies after the earlier input, as sequential
-    upserts would. A relation invalidated by a contradiction is reasserted, as a new current revision, by an input
-    whose effective time is at or after its invalidation; an earlier input restates history and leaves it retired.
+    Relations are read and written in batches; inputs that share an id are folded into one input first, so a
+    repeated id writes at most one new revision, and replaying the same inputs writes none. A relation invalidated
+    by a contradiction is reasserted, as a new current revision, by an input whose effective time is at or after its
+    invalidation; an earlier input restates history and leaves it retired.
     A superseded relation is retired in place: its version keeps its revision and gains invalidated_at and
     invalidated_by, so the version list shows exactly the writes that happened. In supersede mode each constrained
     endpoint the batch touches is settled once after the whole batch (see Contradictions.settle): an input older than
@@ -2564,12 +2598,15 @@ async def upsert_relations(
     @param dry_run (bool): compute relation versions without writing them.
     @return (list[Relation]): each input's stored version, in input order.
     """
-    keyed = []
-    for rel, evidence in items:
+    inputs = []
+    for position, (rel, evidence) in enumerate(items):
         _validate_own_id("relation", rel.id)
         rtype = _ids.normalize_rel_type(rel.type)
         _reject_reserved_rel_type(rtype, rtype)
-        keyed.append((rel.id or _ids.relation_id(rel.from_entity, rtype, rel.to_entity), rtype, rel, evidence))
+        rid = rel.id or _ids.relation_id(rel.from_entity, rtype, rel.to_entity)
+        inputs.append((rid, rtype, rel, evidence, None if via is None else via[position]))
+    folded = _fold_relations(inputs, default_event_time)
+    keyed = [(rid, rtype, rel, evidence) for rid, rtype, rel, evidence, _ in folded]
     for eid in _relation_lock_ids(caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]):
         await runner.lock_node(ns, L_ENTITY, eid)
     rids = _dedup_list(rid for rid, *_ in keyed)
@@ -2579,7 +2616,7 @@ async def upsert_relations(
         ns,
         [(rid, ev) for rid, _, _, evidence in keyed for ev in evidence],
         new_targets=set(rids) - set(stored),
-        via=None if via is None else [statements for item in via for statements in item],
+        via=None if via is None else [records for *_, item in folded for records in item],
     )
     tracker, existing = await _contradiction_check(
         runner, ns, contradiction, caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]
@@ -2700,13 +2737,13 @@ async def upsert_relations(
         stored = {
             rid: await _newest_edge(runner, ns, rid, _is_relation_type) for rid in _dedup_list(r for r, _, _ in out)
         }
-        return [_relation_of(stored[rid]) for rid, _, _ in out]
+        return [_relation_of(stored[rid]) for rid, *_ in inputs]
     final = {**writes, **retires}
-    result = []
+    result = {}
     for rid, revision, rel in out:
         props = final.get((rid, revision))
-        result.append(rel if props is None else _relation_of({**current[rid], "props": props}))
-    return result
+        result[rid] = rel if props is None else _relation_of({**current[rid], "props": props})
+    return [result[rid] for rid, *_ in inputs]
 
 
 async def create_relation(
@@ -3529,6 +3566,52 @@ async def upsert_preference(
     return await _write_preference_version(
         runner, ns, profile_id, pref.value_entity, pref.stance, props, retire=current is not None
     )
+
+
+async def upsert_preferences(
+    runner: Any,
+    ns: str,
+    prefs: list[PreferenceInput],
+    *,
+    default_event_time: datetime | None,
+    created_at: datetime,
+) -> list[Preference]:
+    """Insert-semantics upsert of many preferences, folding the inputs that share an id into one write.
+
+    Later properties overwrite earlier ones and keep their None values so a stored key is still removed, and a
+    later strength, about_entity, or event time replaces an earlier one only when it is given. A repeated id writes
+    at most one new revision, and replaying the same inputs writes none.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param prefs (list[PreferenceInput]): preferences to upsert, in order.
+    @param default_event_time (datetime | None): fallback event time.
+    @param created_at (datetime): timestamp.
+    @return (list[Preference]): each input's stored current version, in input order.
+    """
+    folded: dict[str, PreferenceInput] = {}
+    order = []
+    for pref in prefs:
+        pid = pref.id or _ids.preference_id(pref.subject_entity, pref.stance, pref.key, pref.value_entity)
+        order.append(pid)
+        first = folded.get(pid)
+        if first is None:
+            folded[pid] = pref
+            continue
+        named = pref.event_time if pref.event_time is not None else default_event_time
+        folded[pid] = first.model_copy(
+            update={
+                "properties": {**_canon_props(first.properties), **_canon_props(pref.properties)},
+                "event_time": first.event_time if named is None else named,
+                "strength": first.strength if pref.strength is None else pref.strength,
+                "about_entity": first.about_entity if pref.about_entity is None else pref.about_entity,
+            }
+        )
+    stored = {
+        pid: await upsert_preference(runner, ns, pref, default_event_time=default_event_time, created_at=created_at)
+        for pid, pref in folded.items()
+    }
+    return [stored[pid] for pid in order]
 
 
 async def create_preference(

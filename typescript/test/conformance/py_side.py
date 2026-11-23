@@ -1013,6 +1013,61 @@ async def preference_delete_counts(graph):
     return out
 
 
+async def repeated_id_replays(graph):
+    """Replay one insert whose inputs repeat a relation id and a preference id, and read every version after each run.
+
+    @param graph (SelfGraph): the graph whose store hosts the isolated case.
+    @return (dict): the relation and preference versions after each of three runs.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_repeated_ids")
+    await g.insert.facts(
+        {
+            "entities": [
+                {"type": "Person", "name": "Ann"},
+                {"type": "Food", "name": "Pizza"},
+                {"type": "Food", "name": "Pasta"},
+            ],
+            "relations": [
+                {"from_entity": "person:ann", "type": "LIKES", "to_entity": "food:pasta", "properties": {"w": 1}}
+            ],
+            "preferences": [{"subject_entity": "person:ann", "key": "food", "value_entity": "food:pizza"}],
+        }
+    )
+    rel = {"from_entity": "person:ann", "type": "LIKES", "to_entity": "food:pasta"}
+    pref = {"subject_entity": "person:ann", "key": "food", "value_entity": "food:pizza"}
+    facts = {
+        "relations": [
+            {**rel, "properties": {"w": 2, "v": 1}, "event_time": "2020-01-01T00:00:00Z"},
+            {**rel, "properties": {"w": None, "u": 3}},
+        ],
+        "preferences": [
+            {**pref, "strength": 0.9, "about_entity": "food:pasta", "properties": {"a": 1}},
+            {**pref, "strength": 0.1, "properties": {"a": None, "b": 2}},
+        ],
+    }
+    rid = ids.relation_id("person:ann", "LIKES", "food:pasta")
+    pid = ids.preference_id("person:ann", "preference", "food", "food:pizza")
+    runs = []
+    for _ in range(3):
+        await g.insert.facts(facts)
+        runs.append(
+            {
+                "relation": [
+                    [
+                        v.revision,
+                        v.properties,
+                        v.event_time.isoformat().replace("+00:00", "Z") if v.event_time else None,
+                    ]
+                    for v in await g.relations.versions(rid)
+                ],
+                "preference": [
+                    [v.revision, v.strength, v.about_entity, v.properties] for v in await g.preferences.versions(pid)
+                ],
+            }
+        )
+    return runs
+
+
 async def canonical_fact_ids(graph):
     """Read inserted facts through helpers given noncanonical entity references.
 
@@ -1743,6 +1798,7 @@ async def write(graph):
         "relation": len((await graph.relations.get(large_rel.id)).properties["blob"]),
     }
     out["preference_delete_counts"] = await preference_delete_counts(graph)
+    out["repeated_id_replays"] = await repeated_id_replays(graph)
     return out
 
 

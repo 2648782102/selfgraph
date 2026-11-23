@@ -2637,12 +2637,51 @@ export async function repointRetired(
   if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
 }
 
+interface KeyedRelation {
+  rid: string;
+  rtype: string;
+  rel: ParsedRelationInput;
+  evidence: Evidence[];
+  via: Array<readonly string[]> | null;
+}
+
+/**
+ * Fold the inputs that share a relation id into one input per id, ending where applying them in turn would.
+ *
+ * Later properties overwrite earlier ones and keep their null values so a stored key is still removed, the newest
+ * named event time wins, and the evidence records and their statements are joined in input order.
+ *
+ * @param keyed (KeyedRelation[]): each input with its id, normalized type, evidence, and statements per record.
+ * @param defaultEventTime (Date | null): the event time an input without one is written at.
+ * @return (KeyedRelation[]): one entry per distinct id, in first-appearance order.
+ */
+function foldRelations(keyed: readonly KeyedRelation[], defaultEventTime: Date | null): KeyedRelation[] {
+  const folded = new Map<string, KeyedRelation>();
+  for (const { rid, rtype, rel, evidence, via } of keyed) {
+    const first = folded.get(rid);
+    if (first === undefined) {
+      folded.set(rid, { rid, rtype, rel, evidence: [...evidence], via: via === null ? null : [...via] });
+      continue;
+    }
+    const named = rel.event_time ?? defaultEventTime ?? null;
+    first.rel = {
+      ...first.rel,
+      properties: { ...canonProps(first.rel.properties), ...canonProps(rel.properties) },
+      event_time: named ?? first.rel.event_time,
+    };
+    first.evidence.push(...evidence);
+    if (first.via !== null && via !== null) first.via.push(...via);
+  }
+  return [...folded.values()];
+}
+
 /**
  * Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
  *
- * Relations are read and written in batches; a repeated id applies after the earlier input, as sequential
- * upserts would. A relation invalidated by a contradiction is reasserted, as a new current revision, by an input
- * whose effective time is at or after its invalidation; an earlier input restates history and leaves it retired.
+ * Relations are read and written in batches; inputs that share an id are folded into one input first, so a
+ * repeated id writes at most one new revision, and replaying the same inputs writes none. A relation invalidated
+ * by a contradiction is reasserted, as a new current revision, by an input whose effective time is at or after its
+ * invalidation; an earlier input restates history and leaves it retired.
  * A superseded relation is retired in place: its version keeps its revision and gains invalidated_at and
  * invalidated_by, so the version list shows exactly the writes that happened. In supersede mode each constrained
  * endpoint the batch touches is settled once after the whole batch (see Contradictions.settle): an input older than
@@ -2667,12 +2706,14 @@ export async function upsertRelations(
   createdAt: Date,
   options: ContradictionOptions = {},
 ): Promise<Relation[]> {
-  const keyed = items.map(([rel, evidence]) => {
+  const inputs = items.map(([rel, evidence], position): KeyedRelation => {
     validateOwnId("relation", rel.id);
     const rtype = ids.normalizeRelType(rel.type);
     rejectReservedRelType(rtype, rtype);
-    return { rid: rel.id || ids.relationId(rel.from_entity, rtype, rel.to_entity), rtype, rel, evidence };
+    const rid = rel.id || ids.relationId(rel.from_entity, rtype, rel.to_entity);
+    return { rid, rtype, rel, evidence, via: options.via === undefined ? null : [...options.via[position]!] };
   });
+  const keyed = foldRelations(inputs, defaultEventTime);
   for (const eid of relationLockIds(
     options.caps,
     keyed.map((k) => [k.rtype, k.rel.from_entity, k.rel.to_entity] as const),
@@ -2689,7 +2730,7 @@ export async function upsertRelations(
     ns,
     keyed.flatMap((k) => k.evidence.map((ev) => [k.rid, ev] as const)),
     new Set(rids.filter((rid) => !stored.has(rid))),
-    options.via === undefined ? null : options.via.flat(),
+    options.via === undefined ? null : keyed.flatMap((k) => k.via!),
   );
   const [tracker, existing] = await contradictionCheck(
     runner,
@@ -2819,13 +2860,15 @@ export async function upsertRelations(
     );
     const stored = new Map<string, Relation>();
     for (const rid of dedupList(out.map(([rid]) => rid))) stored.set(rid, (await newestRelation(runner, ns, rid))!);
-    return out.map(([rid]) => stored.get(rid)!);
+    return inputs.map(({ rid }) => stored.get(rid)!);
   }
-  return out.map(([rid, revision, rel]) => {
+  const result = new Map<string, Relation>();
+  for (const [rid, revision, rel] of out) {
     const key = JSON.stringify([rid, revision]);
     const final = retires.get(key) ?? writes.get(key);
-    return final === undefined ? rel : relationOf({ ...current.get(rid)!, props: final[1] });
-  });
+    result.set(rid, final === undefined ? rel : relationOf({ ...current.get(rid)!, props: final[1] }));
+  }
+  return inputs.map(({ rid }) => result.get(rid)!);
 }
 
 export interface CreateRelationArgs {
@@ -3745,6 +3788,51 @@ export async function upsertPreference(
   }
   const ends = { value_entity: pref.value_entity, profile_id: profileId, stance: pref.stance };
   return writePreferenceVersion(runner, ns, ends, props, current !== null);
+}
+
+/**
+ * Insert-semantics upsert of many preferences, folding the inputs that share an id into one write.
+ *
+ * Later properties overwrite earlier ones and keep their null values so a stored key is still removed, and a later
+ * strength, about_entity, or event time replaces an earlier one only when it is given. A repeated id writes at most
+ * one new revision, and replaying the same inputs writes none.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param prefs (readonly ParsedPreferenceInput[]): the preferences to upsert, in order.
+ * @param defaultEventTime (Date | null): the fallback event time.
+ * @param createdAt (Date): the timestamp.
+ * @return (Preference[]): each input's stored current version, in input order.
+ */
+export async function upsertPreferences(
+  runner: Runner,
+  ns: string,
+  prefs: readonly ParsedPreferenceInput[],
+  defaultEventTime: Date | null,
+  createdAt: Date,
+): Promise<Preference[]> {
+  const folded = new Map<string, ParsedPreferenceInput>();
+  const order: string[] = [];
+  for (const pref of prefs) {
+    const pid = pref.id || ids.preferenceId(pref.subject_entity, pref.stance, pref.key, pref.value_entity);
+    order.push(pid);
+    const first = folded.get(pid);
+    if (first === undefined) {
+      folded.set(pid, pref);
+      continue;
+    }
+    folded.set(pid, {
+      ...first,
+      properties: { ...canonProps(first.properties), ...canonProps(pref.properties) },
+      event_time: pref.event_time ?? defaultEventTime ?? first.event_time,
+      strength: pref.strength ?? first.strength,
+      about_entity: pref.about_entity ?? first.about_entity,
+    });
+  }
+  const stored = new Map<string, Preference>();
+  for (const [pid, pref] of folded)
+    stored.set(pid, await upsertPreference(runner, ns, pref, defaultEventTime, createdAt));
+  return order.map((pid) => stored.get(pid)!);
 }
 
 export interface CreatePreferenceArgs {

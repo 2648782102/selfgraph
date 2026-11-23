@@ -776,10 +776,9 @@ class SelfGraph:
                 found.extend(notes)
                 diff = SourceDiff(kept=sorted(produced & prior), added=sorted(produced - prior), retired=retired)
 
-            preferences = [
-                await _ops.upsert_preference(tx, ns, pref, default_event_time=default_event_time, created_at=created_at)
-                for pref in resolved.preferences
-            ]
+            preferences = await _ops.upsert_preferences(
+                tx, ns, list(resolved.preferences), default_event_time=default_event_time, created_at=created_at
+            )
 
             decisions = []
             for dec in resolved.decisions:
