@@ -1760,6 +1760,7 @@ async def write(graph):
     out["retrieval_overflow"] = await overflow(graph)
     out["retrieval_ppr_ties"] = await ppr_ties(graph)
     out["retrieval_passage_ranking"] = await passage_ranking(graph)
+    out["retrieval_plural_seeds"] = await plural_seeds(graph)
     property_order = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_property_order")
     await property_order.insert.facts(
         {
@@ -2399,6 +2400,44 @@ async def passage_ranking(graph):
         "tied": (await g.retrieve("Ann")).context,
         "ranked": {word: (await g.retrieve(f"Ann {word}")).context for word in ("word3", "word4", "word9")},
     }
+
+
+async def plural_seeds(graph):
+    """Retrieve by plural and singular words that name an entity's type, name, or a non-Latin word.
+
+    @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+    @return (dict): for each query, the seed ids, the context, and the check_answerable verdict.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_plural")
+    await g.insert.facts(
+        {
+            "entities": [
+                {"id": "engineer:bob", "type": "Engineer", "name": "Bob Ray"},
+                {"id": "company:acme", "type": "Company", "name": "Acme"},
+                {"id": "service:payment", "type": "Service", "name": "Payment API"},
+                {"id": "page:status", "type": "Page", "name": "Status"},
+                {"id": "place:daisies", "type": "Place", "name": "Ромашки"},
+            ],
+            "relations": [{"from_entity": "engineer:bob", "type": "OWNS", "to_entity": "service:payment"}],
+        }
+    )
+    queries = [
+        "who are the engineers",
+        "list all companies",
+        "who owns payments",
+        "which engineer",
+        "statuses",
+        "ромашки",
+    ]
+    out = {}
+    for query in queries:
+        result = await g.retrieve(query)
+        out[query] = {
+            "seeds": [s.id for s in result.seeds],
+            "context": result.context,
+            "verdict": (await g.check_answerable(query)).verdict,
+        }
+    return out
 
 
 async def vault_names(graph):

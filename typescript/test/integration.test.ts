@@ -936,6 +936,39 @@ function suite(spec: StoreSpec) {
     });
   }
 
+  it.each([
+    ["who are the engineers", "which engineer", "engineer:bob"],
+    ["list all companies", "list a company", "company:acme"],
+    ["who owns payments", "who owns a payment", "service:payment"],
+    ["show the libraries", "show the library", "document:libraries"],
+  ])("seeds a plural and singular word alike and agrees with checkAnswerable: %s", async (plural, singular, seed) => {
+    const g = fresh();
+    await g.insert.facts({
+      entities: [
+        { id: "engineer:bob", type: "Engineer", name: "Bob Ray" },
+        { id: "company:acme", type: "Company", name: "Acme" },
+        { id: "service:payment", type: "Service", name: "Payment API" },
+        { id: "document:libraries", type: "Document", name: "Libraries Index" },
+        { id: "person:nathan", type: "Person", name: "Nathan" },
+      ],
+      relations: [{ from_entity: "engineer:bob", type: "OWNS", to_entity: "service:payment" }],
+    });
+    const results = [await g.retrieve(plural), await g.retrieve(singular)];
+    expect(results.map((r) => r.seeds.map((s) => s.id))).toEqual([[seed], [seed]]);
+    expect(results[0]!.context).toBe(results[1]!.context);
+    expect(results[0]!.context).not.toBe("");
+    for (const query of [plural, singular]) expect((await g.checkAnswerable(query)).verdict).toBe("answerable");
+    expect((await g.retrieve("what did hans say")).seeds).toEqual([]);
+  });
+
+  it("ranks a passage by the plural form of a query word", async () => {
+    const g = fresh();
+    await g.insert.text("Ann reads one novel.", { source_id: "a" });
+    await g.insert.text("Ann reads one poem.", { source_id: "b" });
+    const passages = (await g.retrieve("Ann poems")).context.split("\n").filter((l) => l.startsWith("SOURCE | "));
+    expect(passages[0]).toBe("SOURCE | Ann reads one poem.");
+  });
+
   describe("retrieval context", () => {
     const ENTITIES = [
       { type: "Person", name: "Ann" },

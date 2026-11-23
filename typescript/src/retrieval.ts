@@ -112,6 +112,16 @@ export function tokens(text: string): Set<string> {
 }
 
 /**
+ * Reduce tokens to their singular stems, so a plural word and its singular compare equal.
+ *
+ * @param words (Iterable<string>): casefolded content tokens.
+ * @return (Set<string>): the distinct stems.
+ */
+function stemSet(words: Iterable<string>): Set<string> {
+  return new Set([...words].map(stem));
+}
+
+/**
  * The single-character tokens of a text, stopwords included, for exact matches against entity names.
  *
  * @param text (string): the text to tokenize.
@@ -142,15 +152,18 @@ export function formatProps(props: JsonObject): string {
 }
 
 /**
- * Count each query token's occurrences in a document, in first-occurrence order.
+ * Count each query stem's occurrences among a document's stemmed tokens, in first-occurrence order.
  *
- * @param query (Set<string>): the query content tokens.
+ * @param query (Set<string>): the query stems.
  * @param doc (string[]): the document's tokens.
- * @return (Map<string, number>): the count of each query token the document holds.
+ * @return (Map<string, number>): the count of each query stem the document holds.
  */
 function termCounts(query: Set<string>, doc: string[]): Map<string, number> {
   const tf = new Map<string, number>();
-  for (const token of doc) if (query.has(token)) tf.set(token, (tf.get(token) ?? 0) + 1);
+  for (const word of doc) {
+    const token = stem(word);
+    if (query.has(token)) tf.set(token, (tf.get(token) ?? 0) + 1);
+  }
   return tf;
 }
 
@@ -166,14 +179,15 @@ interface CorpusStats {
  * @param query (Set<string>): the query content tokens.
  * @param docs (Iterable<string[]>): the token list for each document.
  * @param stats (CorpusStats | null): the statistics so far, or null to start.
- * @return (CorpusStats): the document count, total length, and each query token's document frequency.
+ * @return (CorpusStats): the document count, total length, and each query stem's document frequency.
  */
 function corpusStats(query: Set<string>, docs: Iterable<string[]>, stats: CorpusStats | null = null): CorpusStats {
-  const out = stats ?? { n: 0, total: 0, df: new Map([...query].map((t) => [t, 0])) };
+  const terms = stemSet(query);
+  const out = stats ?? { n: 0, total: 0, df: new Map([...terms].map((t) => [t, 0])) };
   for (const doc of docs) {
     out.n += 1;
     out.total += doc.length;
-    for (const token of termCounts(query, doc).keys()) out.df.set(token, (out.df.get(token) ?? 0) + 1);
+    for (const token of termCounts(terms, doc).keys()) out.df.set(token, (out.df.get(token) ?? 0) + 1);
   }
   return out;
 }
@@ -196,14 +210,15 @@ function seedScores(
   const { n, total, df } = stats;
   const avgdl = (n ? total / n : 0) || 1.0;
   const idf = new Map([...df].map(([t, d]) => [t, Math.log(1 + (n - d + 0.5) / (d + 0.5))]));
+  const terms = stemSet(queryTokens);
   const scored: Array<[Entity, number]> = [];
   for (const entity of entities) {
     const text = entityText(entity);
     let bm25 = 0;
-    if (queryTokens.size) {
+    if (terms.size) {
       const doc = tokenList(text);
       const norm = BM25_K1 * (1 - BM25_B + (BM25_B * doc.length) / avgdl);
-      for (const [t, f] of termCounts(queryTokens, doc)) bm25 += ((idf.get(t) ?? 0) * f * (BM25_K1 + 1)) / (f + norm);
+      for (const [t, f] of termCounts(terms, doc)) bm25 += ((idf.get(t) ?? 0) * f * (BM25_K1 + 1)) / (f + norm);
     }
     const named = exact.has(fold(entity.name)) ? 1 : 0;
     const score = bm25 + GREP_WEIGHT * (grepScore(queryTokens, fold(text)) + named);
@@ -815,6 +830,7 @@ async function collectPassages(
   asOf: ops.AsOf | null = null,
 ): Promise<string[]> {
   const distOf = distanceIn(dist);
+  const terms = stemSet(queryTokens);
   const svDist = new Map<string, number>();
   const usable = new Map<string, boolean>();
   for (const e of [...entities].sort((a, b) => distOf(a.id) - distOf(b.id))) {
@@ -844,7 +860,7 @@ async function collectPassages(
     for (const [sv, texts] of await chunkTexts(store, ns, batch)) {
       for (const text of texts) {
         let score = 0;
-        for (const t of tokens(text)) if (queryTokens.has(t)) score++;
+        for (const t of stemSet(tokens(text))) if (terms.has(t)) score++;
         if (score > 0 && !best.has(text)) best.set(text, [-score, svDist.get(sv)!, order++]);
       }
     }
