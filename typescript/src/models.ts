@@ -470,19 +470,32 @@ const KNOWN_PROVIDERS = [
 const SAME_PROVIDER: Record<string, string> = { google: "gemini" };
 
 /**
- * Reject a model prefixed with another provider than a first-party provider's own, such as anthropic with gemini/x. Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed models, so only a first-party provider without a base_url is checked, and only against a known provider prefix.
+ * Find a known provider prefix on a first-party provider's model that names another provider, such as gemini/x. Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed models, so only a first-party provider without a base_url is checked, and only against a known provider prefix.
+ *
+ * @param provider (string): the configured provider.
+ * @param model (string): the configured model.
+ * @param baseUrl (string | null | undefined): the configured base URL.
+ * @return (string | null): the conflicting prefix as written in the model, or null when there is no conflict.
+ */
+export function conflictingPrefix(provider: string, model: string, baseUrl: string | null | undefined): string | null {
+  const i = model.indexOf("/");
+  const prefix = model.slice(0, i);
+  const own = provider.toLowerCase();
+  const other = prefix.toLowerCase();
+  if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return null;
+  return (SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other) ? prefix : null;
+}
+
+/**
+ * Reject a model prefixed with another provider than a first-party provider's own, such as anthropic with gemini/x.
  *
  * @param provider (string): the configured provider.
  * @param model (string): the configured model.
  * @param baseUrl (string | null | undefined): the configured base URL.
  */
 export function requireMatchingPrefix(provider: string, model: string, baseUrl: string | null | undefined): void {
-  const i = model.indexOf("/");
-  const prefix = model.slice(0, i);
-  const own = provider.toLowerCase();
-  const other = prefix.toLowerCase();
-  if (i < 0 || baseUrl || !DIRECT_PROVIDERS.includes(own) || !KNOWN_PROVIDERS.includes(other)) return;
-  if ((SAME_PROVIDER[own] ?? own) !== (SAME_PROVIDER[other] ?? other)) {
+  const prefix = conflictingPrefix(provider, model, baseUrl);
+  if (prefix !== null) {
     throw new ValidationError(`provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}`, {
       code: "invalid_setting",
       field: "provider",

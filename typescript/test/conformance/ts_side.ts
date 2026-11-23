@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 
 import { exitCodeFor, kv } from "../../src/cli.js";
-import { HINTS, internalError, maskUri, redactUri, redactUris } from "../../src/errors.js";
+import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
@@ -24,7 +24,7 @@ import { jsonIso } from "../../src/internal/time.js";
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
-import { falkorCredentials, parseJson } from "../../src/runtime.js";
+import { buildLlm, DEFAULT_SETTINGS, falkorCredentials, parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
 import { parseDoc } from "../../src/stores/docRows.js";
@@ -337,6 +337,28 @@ function falkorCredentialCases(): unknown[] {
   });
 }
 
+const LLM_PREFIX_CASES: Array<[string, string]> = [
+  ["openai", "anthropic/claude"],
+  ["anthropic", "gemini/x"],
+  ["gemini", "google/x"],
+];
+
+/**
+ * Build the LLM from provider and model settings whose prefixes conflict or match.
+ *
+ * @return (unknown[]): each case's built provider, or the error code, field, and message as the CLI words it.
+ */
+function llmPrefixErrors(): unknown[] {
+  return LLM_PREFIX_CASES.map(([llm_provider, llm_model]) => {
+    try {
+      return buildLlm({ ...DEFAULT_SETTINGS, llm_provider, llm_model })?.provider;
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      return [exc.code, exc.field, surfaceHint(exc.message)];
+    }
+  });
+}
+
 /**
  * Parse a value with an unknown key and return the error message.
  *
@@ -485,6 +507,7 @@ export function schemaWarnings(): {
   greek_tokens: string[][];
   datetime_errors: string[];
   falkor_credentials: unknown[];
+  llm_prefix_errors: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
   neo4j_dropped: string;
@@ -691,6 +714,7 @@ export function schemaWarnings(): {
     ),
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
     falkor_credentials: falkorCredentialCases(),
+    llm_prefix_errors: llmPrefixErrors(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {
         parseTime(text, "event_time");

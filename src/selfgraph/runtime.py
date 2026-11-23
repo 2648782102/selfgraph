@@ -46,6 +46,7 @@ from .models import (
     Relation,
     as_input,
     check_options,
+    conflicting_prefix,
 )
 from .protocols import GraphStore
 from .resolution import require_resolver
@@ -533,6 +534,14 @@ def _build_llm(settings: GraphSettings) -> LLMConfig | None:
         raise ValidationError(
             f"an LLM needs a provider; pass {setting_hint('llm_provider')}, or a provider-prefixed "
             "model such as openai/gpt-4o-mini",
+            code="invalid_setting",
+            field="llm_provider",
+        )
+    prefix = conflicting_prefix(provider, settings.llm_model, settings.llm_base_url)
+    if prefix is not None:
+        raise ValidationError(
+            f"llm_provider {provider!r} conflicts with model prefix {prefix!r}; "
+            f"pass {setting_hint('llm_provider')} matching the model",
             code="invalid_setting",
             field="llm_provider",
         )
