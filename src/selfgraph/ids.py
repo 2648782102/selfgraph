@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from ._marks import MARK_CLASS
+from ._marks import FORMAT_CLASS, MARK_CLASS
 from .errors import ValidationError
 
 __all__ = [
@@ -205,6 +205,7 @@ def _require_no_control(label: str, value: str) -> None:
 _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARK = re.compile(f"[{MARK_CLASS}]")
+_FORMAT = re.compile(f"[{FORMAT_CLASS}]")
 _PUNCT = re.compile(rf"[^\w\s{MARK_CLASS}]+")
 _NON_IDENT = re.compile(rf"[^\w{MARK_CLASS}]+")
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -317,7 +318,7 @@ def _canonical_name(type: str, name: str) -> str:
     @return (str): the canonical hyphenated form.
     """
     name = normalize_text(name)
-    words = _PUNCT.sub(" ", name.strip().lower()).split()
+    words = _PUNCT.sub(" ", _FORMAT.sub("", name).strip().lower()).split()
     if slug(type) in _ORG_TYPES:
         if words and words[0] == "the":
             words = words[1:]

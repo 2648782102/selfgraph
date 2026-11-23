@@ -2,7 +2,7 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 
 import { ValidationError } from "./errors.js";
-import { MARK_CLASS } from "./internal/marks.js";
+import { FORMAT_CLASS, MARK_CLASS } from "./internal/marks.js";
 import { cpLen, PY_WORD_CLASS, PY_WS_CLASS, pyCollapseWs, pyRepr, pySplit, pyStrip, utf8 } from "./internal/py.js";
 import type { Evidence } from "./models.js";
 import { requireStr } from "./validate.js";
@@ -24,6 +24,7 @@ export const RESERVED_ID_PREFIXES: ReadonlySet<string> = new Set(ID_PREFIXES);
 const tagged = (prefix: (typeof ID_PREFIXES)[number], rest: string): string => `${prefix}:${rest}`;
 
 const MARK = new RegExp(`^[${MARK_CLASS}]$`, "u");
+const FORMAT = new RegExp(`[${FORMAT_CLASS}]`, "gu");
 const PUNCT = new RegExp(`[^${PY_WORD_CLASS}${PY_WS_CLASS}${MARK_CLASS}]+`, "gu");
 const NON_IDENT = new RegExp(`[^${PY_WORD_CLASS}${MARK_CLASS}]+`, "gu");
 const CAMEL = /(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g;
@@ -128,7 +129,7 @@ export function slug(text: string): string {
 
 function canonicalName(type: string, rawName: string): string {
   const name = normalizeText(rawName);
-  let words = pySplit(pyStrip(name).toLowerCase().replace(PUNCT, " "));
+  let words = pySplit(pyStrip(name.replace(FORMAT, "")).toLowerCase().replace(PUNCT, " "));
   if (ORG_TYPES.has(slug(type))) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);

@@ -46,6 +46,10 @@ NAMES = [
     "AT&T",
     "x​y",
     "a﻿b",
+    "Ac\u200dme",
+    "Ac\u00adme",
+    "Ac\u2060me",
+    "\u200b",
     "Tab\tSeparated\x1cName",
     "İstanbul",
     "ΣΊΣΥΦΟΣ",
@@ -1218,6 +1222,7 @@ def main():
     out = {
         "slug": {t: attempt(ids.slug, t) for t in TYPES + NAMES},
         "mark_ranges": _marks.MARK_RANGES,
+        "format_ranges": _marks.FORMAT_RANGES,
         "is_mark": {ch: ids._is_mark(ch) for ch in MARK_CHARS},
         "entity_id": [[t, n, attempt(ids.entity_id, t, n)] for t in TYPES for n in NAMES],
         "normalize_rel_type": {t: ids.normalize_rel_type(t) for t in REL_TYPES if t.strip(" !")},
