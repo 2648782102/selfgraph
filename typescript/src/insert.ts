@@ -231,10 +231,12 @@ export class Insert {
     };
     return this.graph.write(async (tx, ns) => {
       const canonical = await ops.validateFacts(tx, ns, facts, (o) => canonicalizeTypes(o, activeSchema));
+      const stamped = {
+        ...canonical,
+        relations: canonical.relations.map((r) => ({ ...r, event_time: r.event_time ?? source.default_event_time })),
+      };
       let resolution =
-        activeResolver === null
-          ? null
-          : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt);
+        activeResolver === null ? null : await planResolution(tx, ns, stamped, activeResolver, activeSchema, createdAt);
       let resolved = resolution?.facts ?? canonical;
       let dropped: InsertWarning[] = [];
       if (extracted && mode === "strict") {
@@ -298,6 +300,7 @@ export class Insert {
         [...baseEvidence],
         createdAt,
         new Set(activeSchema?.entities.map((t) => t.name) ?? []),
+        resolution?.entity_via ?? null,
       );
       const items = resolved.relations.map(
         (rel) => [rel, ops.relationEvidence(rel.evidence, baseEvidence, source.source_id, sourceVersion)] as const,
@@ -359,7 +362,10 @@ export class Insert {
         );
       }
 
-      const merges = resolution === null ? [] : await saveMerges(tx, ns, resolution, source.source_id, createdAt);
+      const merges =
+        resolution === null
+          ? []
+          : await saveMerges(tx, ns, resolution, source.source_id, sourceVersion, baseEvidence, createdAt);
       return {
         source_id: source.source_id,
         source_version: sourceVersion,

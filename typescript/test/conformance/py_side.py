@@ -1347,22 +1347,43 @@ async def write(graph):
         )
     reciprocal = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_reciprocal", resolver="default")
     await reciprocal.entities.create("Robert", "Person", aliases=["Bob"])
-    for source, target in (
-        ("person:bob", "person:robert"),
-        ("person:robert", "person:bob"),
-        ("person:bob", "person:robert"),
+    for n, (source, target) in enumerate(
+        (("person:bob", "person:robert"), ("person:robert", "person:bob"), ("person:bob", "person:robert"))
     ):
         await reciprocal.insert.facts(
             {
                 "entities": [{"type": "Person", "name": "Bob"}],
                 "relations": [{"from_entity": source, "type": "KNOWS", "to_entity": target}],
-            }
+            },
+            source_id=f"s{n}",
         )
     record = (await reciprocal.entities.merges("person:robert")).items[0]
     restored = await reciprocal.entities.unmerge(record.id)
     out["reciprocal_merge"] = {
         "rewrites": len(record.rewrites),
         "relations": sorted(r.id for r in restored.relations),
+        "counts": sorted([r.revision, r.source_count] for r in restored.relations),
+        "dropped": sorted(sorted(ev.source_id for ev in rw.evidence) for rw in record.rewrites if rw.dropped),
+    }
+    unmerged = SelfGraph(
+        store=graph.store,
+        namespace=f"{graph.namespace}_unmerge_supersede",
+        resolver="default",
+        schema=USES_SPEC,
+        contradiction="supersede",
+    )
+    stated = [
+        {"from_entity": f"person:{who}", "type": "USES", "to_entity": f"tool:{tool}", "event_time": f"{year}-01-01"}
+        for who, tool, year in (("robert", "a", 2020), ("robert", "b", 2021), ("bob", "c", 2022))
+    ]
+    entities = [{"type": "Person", "name": "Robert", "aliases": ["Bob"]}, *({"type": "Tool", "name": n} for n in "abc")]
+    await unmerged.insert.facts({"entities": entities, "relations": stated[:2]})
+    joiner = {"type": "Person", "name": "Bob"}
+    [superseding] = (await unmerged.insert.facts({"entities": [joiner], "relations": stated[2:]})).merges
+    await unmerged.entities.unmerge(superseding.id)
+    out["unmerge_supersede"] = {
+        r.id: [[v.revision, v.is_current, v.invalidated_by] for v in await unmerged.relations.versions(r.id)]
+        for r in (await unmerged.relations.list(include_invalidated=True, limit=100)).items
     }
     mixed = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_mixed_case", resolver="fuzzy")
     await mixed.insert.facts({"entities": [{"type": "Person", "name": "Jane Doe", "aliases": ["JD"]}]})

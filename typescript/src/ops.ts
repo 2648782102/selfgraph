@@ -976,6 +976,7 @@ export async function preserveEntityWrites(
  * @param evidence (Evidence[]): evidence recorded for every entity.
  * @param createdAt (Date): the timestamp for the created and updated fields.
  * @param schemaTypes (ReadonlySet<string>): the schema's entity type names, which a stored entity's type may adopt.
+ * @param via (ReadonlyMap<string, Iterable<string>> | null): the statements behind each entity's evidence (see evidenceVia), by entity id; an entity not listed, or null, records direct statements.
  * @return (Entity[]): each input's stored entity, in input order.
  */
 export async function upsertEntities(
@@ -985,6 +986,7 @@ export async function upsertEntities(
   evidence: Evidence[],
   createdAt: Date,
   schemaTypes: ReadonlySet<string> = new Set(),
+  via: ReadonlyMap<string, Iterable<string>> | null = null,
 ): Promise<Entity[]> {
   const keyed = ents.map((ent) => {
     const etype = cleanText(ent.type);
@@ -1002,6 +1004,7 @@ export async function upsertEntities(
     ns,
     eids.flatMap((eid) => evidence.map((ev) => [eid, ev] as const)),
     new Set(eids.filter((eid) => !stored.has(eid))),
+    via === null ? null : eids.flatMap((eid) => evidence.map(() => [...(via.get(eid) ?? [DIRECT])])),
   );
 
   const current = new Map(stored);
@@ -1686,6 +1689,18 @@ async function writeRelationVersion(
 const revisionOf = (e: EdgeRow): number => Math.trunc(Number(e.props.revision));
 
 /**
+ * Every stored version of a relation as an edge row, oldest first.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param rid (string): the relation id.
+ * @return (Promise<EdgeRow[]>): the versions, empty when the id names a different edge type.
+ */
+export async function relationEdges(runner: Runner, ns: string, rid: string): Promise<EdgeRow[]> {
+  return (await typedEdgeVersions(runner, ns, rid, isRelationType)).sort((a, b) => revisionOf(a) - revisionOf(b));
+}
+
+/**
  * Keep an edge version by id when it has a higher revision than the one kept so far.
  *
  * @param found (Map<string, EdgeRow>): the newest edge row by id, updated in place.
@@ -1934,7 +1949,7 @@ function compareRanked(a: readonly [Rank, string], b: readonly [Rank, string]): 
  * @param toEntity (string): the destination entity id.
  * @return (Array<[Slot, number]>): ((canonical type, side, endpoint), max_count) pairs.
  */
-function capSlots(
+export function capSlots(
   caps: ReadonlyMap<string, RelationCap>,
   rtype: string,
   fromEntity: string,
@@ -2351,9 +2366,10 @@ export async function requireMaxCount(
  * @param by (string): the id of the relation that superseded it.
  * @param at (Date): the superseding relation's effective time.
  * @param known (Date): when the retirement is written, for reads with known_at.
+ * @param inPlace (boolean): rewrite an already retired version under its own revision instead of adding one.
  * @return (EdgeRow): the edge row with its version retired.
  */
-function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow {
+function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date, inPlace = false): EdgeRow {
   const props: Record<string, unknown> = {
     ...edge.props,
     is_current: false,
@@ -2361,7 +2377,7 @@ function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow 
     invalidated_by: by,
     invalidated_known_at: toIso(known),
   };
-  if (!edge.props.is_current) {
+  if (!edge.props.is_current && !inPlace) {
     props.revision = (edge.props.revision as number) + 1;
     props.created_at = toIso(known);
     props.event_time = edge.props.event_time || edge.props.created_at;
@@ -2485,11 +2501,14 @@ export async function retireRelations(
 /**
  * Settle again each max_count endpoint a deleted or moved relation sat at, as supersede would settle it now.
  *
+ * A relation that comes back is a new current revision. With inPlace the retired version becomes current again under its own revision, and one another relation still retires keeps its revision with the new pointer.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param given (Iterable<EdgeRow>): the edge rows of the deleted relations, read before they were deleted, or of the new versions of the moved ones.
  * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
  * @param at (Date): the write's timestamp, the created_at of each restored revision.
+ * @param inPlace (boolean): undo a retirement inside the version list instead of adding a revision, as unmerge does.
  * @return (number): how many relations came back.
  */
 export async function resettleEndpoints(
@@ -2498,6 +2517,7 @@ export async function resettleEndpoints(
   given: Iterable<EdgeRow>,
   caps: ReadonlyMap<string, RelationCap> | null | undefined,
   at: Date,
+  inPlace = false,
 ): Promise<number> {
   const limits = caps ?? new Map<string, RelationCap>();
   const slotsOf = (edge: EdgeRow) => capSlots(limits, edge.type, edge.from_id, edge.to_id);
@@ -2541,23 +2561,25 @@ export async function resettleEndpoints(
   for (const edge of stale) {
     if (ended.has(idOf(edge.props))) continue;
     const rel = relationOf(edge);
-    const props = encodeRelationProps({
-      ns,
-      id: rel.id,
-      revision: rel.revision + 1,
-      properties: rel.properties,
-      event_time: effectiveTime(rel),
-      created_at: at,
-      is_current: true,
-      source_count: rel.source_count,
-    });
+    const props = inPlace
+      ? { ...edge.props, is_current: true, invalidated_at: null, invalidated_by: null, invalidated_known_at: null }
+      : encodeRelationProps({
+          ns,
+          id: rel.id,
+          revision: rel.revision + 1,
+          properties: rel.properties,
+          event_time: effectiveTime(rel),
+          created_at: at,
+          is_current: true,
+          source_count: rel.source_count,
+        });
     rows.push([edge.type, edge.from_id, edge.to_id, props]);
   }
   const restored = rows.length;
   for (const [rid, [by, when]] of ended) {
     const edge = read.get(rid)!;
     if (by === edge.props.invalidated_by && toIso(when) === edge.props.invalidated_at) continue;
-    const gone = retiredEdge(edge, by, when, at);
+    const gone = retiredEdge(edge, by, when, at, inPlace);
     rows.push([gone.type, gone.from_id, gone.to_id, gone.props]);
   }
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);

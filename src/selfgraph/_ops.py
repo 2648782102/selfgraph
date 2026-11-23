@@ -1061,6 +1061,7 @@ async def upsert_entities(
     evidence: list[Evidence],
     created_at: datetime,
     schema_types: Collection[str] = (),
+    via: Mapping[str, Iterable[str]] | None = None,
 ) -> list[Entity]:
     """Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
 
@@ -1070,6 +1071,8 @@ async def upsert_entities(
     @param evidence (list[Evidence]): evidence recorded for every entity.
     @param created_at (datetime): timestamp for created and updated fields.
     @param schema_types (Collection[str]): the schema's entity type names, which a stored entity's type may adopt.
+    @param via (Mapping[str, Iterable[str]] | None): the statements behind each entity's evidence (see
+        evidence_via), by entity id; an entity not listed, or None, records direct statements.
     @return (list[Entity]): each input's stored entity, in input order.
     """
     keyed = []
@@ -1084,7 +1087,11 @@ async def upsert_entities(
         await runner.lock_node(ns, L_ENTITY, eid)
     stored = {eid: decode_entity(p) for eid, p in (await _nodes_by_id(runner, ns, L_ENTITY, eids)).items()}
     records, gained = await _plan_evidence(
-        runner, ns, [(eid, ev) for eid in eids for ev in evidence], new_targets=set(eids) - set(stored)
+        runner,
+        ns,
+        [(eid, ev) for eid in eids for ev in evidence],
+        new_targets=set(eids) - set(stored),
+        via=None if via is None else [list(via.get(eid, [DIRECT])) for eid in eids for _ in evidence],
     )
 
     current: dict[str, Entity] = dict(stored)
@@ -2224,13 +2231,14 @@ async def require_max_count(
         admitted.add(rid)
 
 
-def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
+def _retired(edge: dict, by: str, at: datetime, known: datetime, *, in_place: bool = False) -> dict:
     """Mark a relation version as no longer current because a newer relation superseded it.
 
     @param edge (dict): the edge row, current or already retired.
     @param by (str): the id of the relation that superseded it.
     @param at (datetime): the superseding relation's effective time.
     @param known (datetime): when the retirement is written, for reads with known_at.
+    @param in_place (bool): rewrite an already retired version under its own revision instead of adding one.
     @return (dict): the edge row with its version retired.
     """
     props = {
@@ -2240,7 +2248,7 @@ def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
         "invalidated_by": by,
         "invalidated_known_at": to_iso(known),
     }
-    if not edge["props"]["is_current"]:
+    if not edge["props"]["is_current"] and not in_place:
         props.update(
             revision=int(edge["props"]["revision"]) + 1,
             created_at=to_iso(known),
@@ -2384,9 +2392,18 @@ async def retire_relations(
 
 
 async def resettle_endpoints(
-    runner: Any, ns: str, moved: Iterable[dict], caps: Mapping[str, RelationCap] | None, at: datetime
+    runner: Any,
+    ns: str,
+    moved: Iterable[dict],
+    caps: Mapping[str, RelationCap] | None,
+    at: datetime,
+    *,
+    in_place: bool = False,
 ) -> int:
     """Settle again each max_count endpoint a deleted or moved relation sat at, as supersede would settle it now.
+
+    A relation that comes back is a new current revision. With in_place the retired version becomes current again
+    under its own revision, and one another relation still retires keeps its revision with the new pointer.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -2394,6 +2411,7 @@ async def resettle_endpoints(
         new versions of the moved ones.
     @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits, or None without a schema.
     @param at (datetime): the write's timestamp, the created_at of each restored revision.
+    @param in_place (bool): undo a retirement inside the version list instead of adding a revision, as unmerge does.
     @return (int): how many relations came back.
     """
     caps = caps or {}
@@ -2431,22 +2449,31 @@ async def resettle_endpoints(
         if edge["props"]["id"] in ended:
             continue
         rel = _relation_of(edge)
-        props = encode_relation_props(
-            ns=ns,
-            id=rel.id,
-            revision=rel.revision + 1,
-            properties=rel.properties,
-            event_time=effective_time(rel),
-            created_at=at,
-            is_current=True,
-            source_count=rel.source_count,
-        )
+        if in_place:
+            props = {
+                **edge["props"],
+                "is_current": True,
+                "invalidated_at": None,
+                "invalidated_by": None,
+                "invalidated_known_at": None,
+            }
+        else:
+            props = encode_relation_props(
+                ns=ns,
+                id=rel.id,
+                revision=rel.revision + 1,
+                properties=rel.properties,
+                event_time=effective_time(rel),
+                created_at=at,
+                is_current=True,
+                source_count=rel.source_count,
+            )
         rows.append((edge["type"], edge["from_id"], edge["to_id"], props))
     restored = len(rows)
     for rid, (by, when) in ended.items():
         edge = found[rid]
         if (by, to_iso(when)) != (edge["props"].get("invalidated_by"), edge["props"].get("invalidated_at")):
-            gone = _retired(edge, by, when, at)
+            gone = _retired(edge, by, when, at, in_place=in_place)
             rows.append((gone["type"], gone["from_id"], gone["to_id"], gone["props"]))
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, rows)
     if rows:
