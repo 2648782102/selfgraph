@@ -829,6 +829,23 @@ _KNOWN_PROVIDERS = _DIRECT_PROVIDERS | {
 _SAME_PROVIDER = {"google": "gemini"}
 
 
+def conflicting_prefix(provider: str, model: str, base_url: str | None) -> str | None:
+    """Find a known provider prefix on a first-party provider's model that names another provider, such as gemini/x.
+
+    Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed
+    models, so only a first-party provider without a base_url is checked, and only against a known prefix.
+
+    @param provider (str): the configured provider.
+    @param model (str): the configured model.
+    @param base_url (str | None): the configured base URL.
+    @return (str | None): the conflicting prefix as written in the model, or None when there is no conflict.
+    """
+    prefix, sep, _ = model.partition("/")
+    own, other = provider.lower(), prefix.lower()
+    known = sep and not base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
+    return prefix if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other) else None
+
+
 class LLMConfig(TopInputModel):
     input_label: ClassVar[str] = "llm config"
 
@@ -845,15 +862,10 @@ class LLMConfig(TopInputModel):
     def _matching_prefix(self) -> "LLMConfig":
         """Reject a first-party provider's model prefixed with another provider, such as anthropic with gemini/x.
 
-        Routers (openrouter, groq, together, and the like) and any provider with a base_url take vendor-prefixed
-        models, so only a first-party provider without a base_url is checked, and only against a known prefix.
-
         @return (LLMConfig): the config; raises ValidationError on a conflict.
         """
-        prefix, sep, _ = self.model.partition("/")
-        own, other = self.provider.lower(), prefix.lower()
-        known = sep and not self.base_url and own in _DIRECT_PROVIDERS and other in _KNOWN_PROVIDERS
-        if known and _SAME_PROVIDER.get(own, own) != _SAME_PROVIDER.get(other, other):
+        prefix = conflicting_prefix(self.provider, self.model, self.base_url)
+        if prefix is not None:
             raise ValidationError(
                 f"provider {self.provider!r} conflicts with model prefix {prefix!r}",
                 code="invalid_setting",

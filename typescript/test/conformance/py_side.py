@@ -15,12 +15,12 @@ from selfgraph import EvidenceInput, Extraction, KuzuStore, Neo4jStore, Schema, 
 from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _USAGE_CODES, _kv
-from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris
+from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris, surface_hint
 from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
-from selfgraph.runtime import _falkor_credentials, parse_json, to_jsonable
+from selfgraph.runtime import GraphSettings, _build_llm, _falkor_credentials, parse_json, to_jsonable
 from selfgraph.schema import validate_against_schema
 from selfgraph.terms import expand_tokens, schema_forms
 
@@ -286,6 +286,23 @@ def falkor_credentials():
             out.append(list(_falkor_credentials(uri, auth)))
         except ValidationError as exc:
             out.append([exc.code, exc.field, str(exc)])
+    return out
+
+
+LLM_PREFIX_CASES = [["openai", "anthropic/claude"], ["anthropic", "gemini/x"], ["gemini", "google/x"]]
+
+
+def llm_prefix_errors():
+    """Build the LLM from provider and model settings whose prefixes conflict or match.
+
+    @return (list): each case's built provider, or the error code, field, and message as the CLI words it.
+    """
+    out = []
+    for provider, model in LLM_PREFIX_CASES:
+        try:
+            out.append(_build_llm(GraphSettings(llm_provider=provider, llm_model=model)).provider)
+        except ValidationError as exc:
+            out.append([exc.code, exc.field, surface_hint(str(exc))])
     return out
 
 
@@ -579,6 +596,7 @@ def schema_warnings():
         ],
         "datetime_errors": datetime_errors(),
         "falkor_credentials": falkor_credentials(),
+        "llm_prefix_errors": llm_prefix_errors(),
         "iso_times": iso_times(),
         "terms_subtypes": [
             sorted(expand_tokens(_tokens(q), sub_schema, _tokens))
