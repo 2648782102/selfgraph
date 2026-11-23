@@ -303,7 +303,13 @@ def test_settings_fail_with_a_narrow_code(settings, code, field):
 
 def test_query_failed_escapes_control_characters():
     assert escape_controls("a\x1b[2Jb\nc\td\x00\x7f\x85e") == "a\\x1b[2Jb\\nc\\td\\x00\\x7f\\x85e"
+    assert escape_controls("a\u202eb") == "a\\u202eb"
+    assert escape_controls("a\u200bb\u200cc\u200dd\ufeffe") == "a\\u200bb\\u200cc\\u200dd\\ufeffe"
+    assert escape_controls("a\u2066b\u2069c") == "a\\u2066b\\u2069c"
     assert escape_controls("hello world") == "hello world"
+    detail = _kuzu_error(RuntimeError("a\tb  c\x85d\u202ee"), "Kuzu query failed")
+    assert str(detail) == "Kuzu query failed: a\\tb c\\x85d\\u202ee"
+    assert "\t" not in str(detail) and "\x85" not in str(detail) and "\u202e" not in str(detail)
     with pytest.raises(StoreError) as exc:
         run(new_graph().run_cypher("RETURN (\x1b[2J"))
     assert exc.value.code == "query_failed"
