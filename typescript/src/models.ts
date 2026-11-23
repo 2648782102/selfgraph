@@ -217,6 +217,7 @@ export interface MergeRewrite {
   rewritten: JsonObject;
   existed: boolean;
   dropped: boolean;
+  evidence: Evidence[];
 }
 
 export interface MergeRecord {

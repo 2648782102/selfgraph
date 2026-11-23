@@ -1555,6 +1555,140 @@ def test_unmerging_one_merge_keeps_the_relation_another_live_merge_rewrote_onto(
     assert ends() == [(BOB_ID, xena), (bobby, xena)]
 
 
+Y2020, Y2021 = (f"{y}-01-01T00:00:00+00:00" for y in (2020, 2021))
+BOBBY_ID, ANN_LEE_ID, A_LEE_ID = (entity_id("Person", n) for n in ("Bobby", "Ann Lee", "A Lee"))
+COMPANIES = [{"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")]
+ROBERT_BOBS = {**ROBERT, "aliases": ["Bob", "Bobby"]}
+BOBBY = {"type": "Person", "name": "Bobby"}
+ANN_LEE = {"type": "Person", "name": "Ann Lee"}
+A_LEE = {"type": "Person", "name": "A Lee", "aliases": ["Ann Lee"]}
+
+
+def _rel(source, target=XENA_ID, rtype="KNOWS", **extra):
+    return {"from_entity": source, "type": rtype, "to_entity": target, **extra}
+
+
+def _case(name, *inserts, spec=None):
+    return pytest.param(inserts, spec, id=name)
+
+
+UNMERGE_CASES = [
+    _case("survivor drops the evidence the merge brought in", ([ROBERT], [], "seed"), ([BOB], [], "s2")),
+    _case(
+        "a relation that existed goes back to revision 1",
+        ([ROBERT, XENA], [_rel(ROBERT_ID, event_time=Y2020)], "seed"),
+        ([BOB], [_rel(BOB_ID, event_time=Y2021)], "s2"),
+    ),
+    _case(
+        "a relation that existed drops the properties the merge added",
+        ([ROBERT, XENA], [_rel(ROBERT_ID, properties={"since": 2020})], "seed"),
+        ([BOB], [_rel(BOB_ID, properties={"role": "peer"})], "s2"),
+    ),
+    _case(
+        "a direct statement in the merge insert keeps the relation as the replay has it",
+        ([ROBERT, XENA], [_rel(ROBERT_ID, event_time=Y2020)], "seed"),
+        ([BOB], [_rel(BOB_ID, event_time=Y2021), _rel(ROBERT_ID, event_time=Y2021)], "s2"),
+    ),
+    _case(
+        "a dropped self-loop with an explicit id comes back with its own quote",
+        ([ANN_LEE], [], "seed"),
+        ([A_LEE], [_rel(A_LEE_ID, ANN_LEE_ID, id="relation:loop", evidence=[{"source_id": "s2", "quote": "q"}])], "s2"),
+    ),
+    _case(
+        "a dropped self-loop repeated by a second source",
+        ([ANN_LEE], [], "seed"),
+        ([A_LEE], [_rel(A_LEE_ID, ANN_LEE_ID)], "s2"),
+        ([A_LEE], [_rel(A_LEE_ID, ANN_LEE_ID)], "s3"),
+    ),
+    _case(
+        "the merge insert supersedes a survivor relation",
+        ([ROBERT, *COMPANIES], [works_at("acme", 2020, person="robert")], "seed"),
+        ([BOB], [works_at("globex", 2021, person="bob")], "s2"),
+        spec=WORKS_AT_SPEC,
+    ),
+    _case(
+        "the merge insert supersedes one of its own relations",
+        ([ROBERT, *COMPANIES], [], "seed"),
+        ([BOB], [works_at("globex", 2021, person="bob"), works_at("initech", 2022, person="bob")], "s2"),
+        spec=WORKS_AT_SPEC,
+    ),
+    _case(
+        "the insert's default event time reaches the restored relation",
+        ([ROBERT, XENA], [], "seed"),
+        ([BOB], [_rel(BOB_ID)], "s2", Y2021),
+    ),
+]
+
+
+def _state(g):
+    """Entities, relations with every version, and their evidence as the public API reads them, without timestamps."""
+    entities, relations = {}, {}
+    for ent in run(g.entities.list(limit=1000)).items:
+        evidence = sorted((e.source_id, e.quote) for e in run(g.entities.evidence(ent.id)).items)
+        fields = (ent.type, ent.name, sorted(ent.aliases), ent.external_ids, ent.properties, ent.source_count)
+        entities[ent.id] = (*fields, evidence)
+    for rel in run(g.relations.list(include_invalidated=True, limit=1000)).items:
+        evidence = sorted((e.source_id, e.quote) for e in run(g.relations.evidence(rel.id)).items)
+        keys = ("revision", "is_current", "event_time", "properties", "source_count", "invalidated_by")
+        versions = [tuple(getattr(v, k) for k in keys) for v in run(g.relations.versions(rel.id))]
+        relations[rel.id] = (versions, evidence)
+    return entities, relations
+
+
+@pytest.mark.parametrize("inserts, spec", UNMERGE_CASES)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unmerge_leaves_what_the_inserts_write_without_the_merge(inserts, spec, reverse):
+    options = {"schema": spec, "contradiction": "supersede"} if spec else {}
+    merged, plain = fresh_graph("res", resolver="default", **options), fresh_graph("res", resolver="exact", **options)
+    merges = {}
+    for entities, relations, source, *when in inserts:
+        facts, options = (
+            {"entities": entities, "relations": relations},
+            {"source_id": source, "event_time": next(iter(when), None)},
+        )
+        merges |= {m.id: None for m in run(merged.insert.facts(facts, **options)).merges}
+        run(plain.insert.facts(facts, **options))
+    assert merges
+    for merge_id in reversed(merges) if reverse else merges:
+        run(merged.entities.unmerge(merge_id))
+    assert _state(merged) == _state(plain)
+
+
+def _versions(g, rid):
+    return [(v.revision, bool(v.certifications)) for v in run(g.relations.versions(rid))]
+
+
+def test_unmerge_restores_a_relation_that_existed_unless_it_was_certified():
+    seen = {}
+    for certified in (False, True):
+        g = fresh_graph("res", resolver="default")
+        _seed(g, ROBERT, XENA)
+        run(g.insert.facts({"relations": [_rel(ROBERT_ID, event_time=Y2020)]}, source_id="seed"))
+        facts = {"entities": [BOB], "relations": [_rel(BOB_ID, event_time=Y2021)]}
+        [merge] = run(g.insert.facts(facts, source_id="s2")).merges
+        if certified:
+            run(g.relations.certify(ROBERT_XENA, by="ops"))
+        before = _versions(g, ROBERT_XENA)
+        run(g.entities.unmerge(merge.id))
+        seen[certified] = (before, _versions(g, ROBERT_XENA))
+    assert seen[False][1] == [(1, False)]
+    assert seen[True][1] == seen[True][0]
+
+
+def test_unmerging_one_merge_keeps_the_revision_another_live_merge_wrote():
+    g = fresh_graph("res", resolver="default")
+    _seed(g, ROBERT_BOBS, XENA)
+    run(g.insert.facts({"relations": [_rel(ROBERT_ID, event_time=Y2020)]}, source_id="seed"))
+    facts = {"entities": [BOB, BOBBY], "relations": [_rel(BOB_ID, event_time=Y2021), _rel(BOBBY_ID, event_time=Y2021)]}
+    merges = run(g.insert.facts(facts, source_id="s2")).merges
+    before = _versions(g, ROBERT_XENA)
+
+    run(g.entities.unmerge(merges[0].id))
+    assert _versions(g, ROBERT_XENA) == before
+    run(g.entities.unmerge(merges[1].id))
+    assert _versions(g, ROBERT_XENA) == [(1, False)]
+
+
 @pytest.mark.parametrize("write", ["insert", "update"])
 @pytest.mark.parametrize("value", [1, 2])
 def test_issue_386_unmerge_keeps_survivor_writes(write, value):

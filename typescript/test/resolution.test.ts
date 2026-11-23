@@ -28,6 +28,123 @@ const BIG_BLUE = entityId("Company", "Big Blue");
 const ADA = entityId("Person", "Ada");
 const IBM_SEED = { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } };
 
+type Insert = [entities: object[], relations: object[], source: string, when?: string];
+type Case = { name: string; inserts: Insert[]; capped?: boolean };
+
+const [BOB_ID, BOBBY_ID, XENA_ID, ROBERT_ID, ANN_LEE_ID, A_LEE_ID] = "Bob,Bobby,Xena,Robert,Ann Lee,A Lee"
+  .split(",")
+  .map((name) => entityId("Person", name));
+const [Y2020, Y2021] = [2020, 2021].map((y) => `${y}-01-01T00:00:00+00:00`);
+const person = (name: string, aliases: string[] = []) => ({ type: "Person", name, aliases });
+const rel = (from: string, to = XENA_ID, type = "KNOWS", extra: object = {}) => ({
+  from_entity: from,
+  type,
+  to_entity: to,
+  ...extra,
+});
+const link = (from: string, extra: object = {}) => rel(from, XENA_ID, "KNOWS", extra);
+const ROBERT_IN = person("Robert", ["Bob"]);
+const ROBERT_BOBS = person("Robert", ["Bob", "Bobby"]);
+const A_LEE = person("A Lee", ["Ann Lee"]);
+const COMPANIES = ["Acme", "Globex", "Initech"].map((name) => entityId("Company", name));
+const COMPANY_ROWS = ["Acme", "Globex", "Initech"].map((name) => ({ type: "Company", name }));
+const UNMERGE_CASES: Case[] = [
+  {
+    name: "survivor drops the evidence the merge brought in",
+    inserts: [
+      [[ROBERT_IN], [], "seed"],
+      [[person("Bob")], [], "s2"],
+    ],
+  },
+  {
+    name: "a relation that existed goes back to revision 1",
+    inserts: [
+      [[ROBERT_IN, person("Xena")], [link(ROBERT_ID, { event_time: Y2020 })], "seed"],
+      [[person("Bob")], [link(BOB_ID, { event_time: Y2021 })], "s2"],
+    ],
+  },
+  {
+    name: "a relation that existed drops the properties the merge added",
+    inserts: [
+      [[ROBERT_IN, person("Xena")], [link(ROBERT_ID, { properties: { since: 2020 } })], "seed"],
+      [[person("Bob")], [link(BOB_ID, { properties: { role: "peer" } })], "s2"],
+    ],
+  },
+  {
+    name: "a direct statement in the merge insert keeps the relation as the replay has it",
+    inserts: [
+      [[ROBERT_IN, person("Xena")], [link(ROBERT_ID, { event_time: Y2020 })], "seed"],
+      [[person("Bob")], [link(BOB_ID, { event_time: Y2021 }), link(ROBERT_ID, { event_time: Y2021 })], "s2"],
+    ],
+  },
+  {
+    name: "a dropped self-loop with an explicit id comes back with its own quote",
+    inserts: [
+      [[person("Ann Lee")], [], "seed"],
+      [
+        [A_LEE],
+        [rel(A_LEE_ID, ANN_LEE_ID, "KNOWS", { id: "relation:loop", evidence: [{ source_id: "s2", quote: "q" }] })],
+        "s2",
+      ],
+    ],
+  },
+  {
+    name: "a dropped self-loop repeated by a second source",
+    inserts: [
+      [[person("Ann Lee")], [], "seed"],
+      [[A_LEE], [rel(A_LEE_ID, ANN_LEE_ID)], "s2"],
+      [[A_LEE], [rel(A_LEE_ID, ANN_LEE_ID)], "s3"],
+    ],
+  },
+  {
+    name: "the merge insert supersedes a survivor relation",
+    capped: true,
+    inserts: [
+      [[ROBERT_IN, ...COMPANY_ROWS], [worksAt(ROBERT_ID, COMPANIES[0]!, 2020)], "seed"],
+      [[person("Bob")], [worksAt(BOB_ID, COMPANIES[1]!, 2021)], "s2"],
+    ],
+  },
+  {
+    name: "the merge insert supersedes one of its own relations",
+    capped: true,
+    inserts: [
+      [[ROBERT_IN, ...COMPANY_ROWS], [], "seed"],
+      [[person("Bob")], [worksAt(BOB_ID, COMPANIES[1]!, 2021), worksAt(BOB_ID, COMPANIES[2]!, 2022)], "s2"],
+    ],
+  },
+  {
+    name: "the insert's default event time reaches the restored relation",
+    inserts: [
+      [[ROBERT_IN, person("Xena")], [], "seed"],
+      [[person("Bob")], [rel(BOB_ID)], "s2", Y2021],
+    ],
+  },
+];
+const UNMERGE_ROWS = UNMERGE_CASES.flatMap((row) => [false, true].map((reverse) => ({ ...row, reverse })));
+
+const state = async (g: SelfGraph) => {
+  const entities: Record<string, unknown> = {};
+  for (const ent of (await g.entities.list({ limit: 1000 })).items) {
+    const evidence = (await g.entities.evidence(ent.id)).items.map((e) => [e.source_id, e.quote]).sort();
+    const { type, name, external_ids, properties, source_count } = ent;
+    entities[ent.id] = [type, name, [...ent.aliases].sort(), external_ids, properties, source_count, evidence];
+  }
+  const relations: Record<string, unknown> = {};
+  for (const r of (await g.relations.list({ include_invalidated: true, limit: 1000 })).items) {
+    const evidence = (await g.relations.evidence(r.id)).items.map((e) => [e.source_id, e.quote]).sort();
+    const versions = (await g.relations.versions(r.id)).map((v) => [
+      v.revision,
+      v.is_current,
+      v.event_time?.toISOString() ?? null,
+      v.properties,
+      v.source_count,
+      v.invalidated_by,
+    ]);
+    relations[r.id] = [versions, evidence];
+  }
+  return [entities, relations];
+};
+
 const input = (value: EntityInput) => EntityInput.parse(value);
 
 class FakeLLM implements LLMClient {
@@ -1086,6 +1203,58 @@ function suite(spec: StoreSpec) {
       [BOB, xena],
       [bobby, xena],
     ]);
+  });
+
+  it.each(UNMERGE_ROWS)("unmerge matches the no-merge replay: $name ($reverse)", async (row) => {
+    const options = row.capped ? { contradiction: "supersede" as const, schema: SINGLE_EMPLOYER } : {};
+    const merged = open({ resolver: "default", ...options });
+    const plain = open({ resolver: "exact", ...options });
+    const merges = new Set<string>();
+    for (const [entities, relations, source, when] of row.inserts) {
+      const facts = { entities, relations } as Extraction;
+      const write = { source_id: source, event_time: when ?? null };
+      for (const merge of (await merged.insert.facts(facts, write)).merges) merges.add(merge.id);
+      await plain.insert.facts(facts, write);
+    }
+    expect(merges.size).toBeGreaterThan(0);
+    for (const id of row.reverse ? [...merges].reverse() : merges) await merged.entities.unmerge(id);
+    expect(await state(merged)).toEqual(await state(plain));
+  });
+
+  const versions = async (g: SelfGraph, id: string) =>
+    (await g.relations.versions(id)).map((v) => [v.revision, v.certifications.length > 0]);
+
+  it("restores a relation that existed unless it was certified", async () => {
+    const seen: Record<string, unknown[]> = {};
+    for (const certified of [false, true]) {
+      const g = open({ resolver: "default" });
+      await seedRobert(g);
+      await g.insert.facts({ relations: [link(ROBERT_ID, { event_time: Y2020 })] }, { source_id: "seed" });
+      const facts = { entities: [person("Bob")], relations: [link(BOB_ID, { event_time: Y2021 })] } as Extraction;
+      const merge = (await g.insert.facts(facts, { source_id: "s2" })).merges[0]!;
+      if (certified) await g.relations.certify(ROBERT_XENA, { by: "ops" });
+      const before = await versions(g, ROBERT_XENA);
+      await g.entities.unmerge(merge.id);
+      seen[String(certified)] = [before, await versions(g, ROBERT_XENA)];
+    }
+    expect(seen.false![1]).toEqual([[1, false]]);
+    expect(seen.true![1]).toEqual(seen.true![0]);
+  });
+
+  it("keeps the revision another live merge wrote until that merge is unmerged", async () => {
+    const g = open({ resolver: "default" });
+    await seed(g, ROBERT_BOBS, person("Xena"));
+    await g.insert.facts({ relations: [link(ROBERT_ID, { event_time: Y2020 })] }, { source_id: "seed" });
+    const facts = {
+      entities: [person("Bob"), person("Bobby")],
+      relations: [link(BOB_ID, { event_time: Y2021 }), link(BOBBY_ID, { event_time: Y2021 })],
+    } as Extraction;
+    const { merges } = await g.insert.facts(facts, { source_id: "s2" });
+    const before = await versions(g, ROBERT_XENA);
+    await g.entities.unmerge(merges[0]!.id);
+    expect(await versions(g, ROBERT_XENA)).toEqual(before);
+    await g.entities.unmerge(merges[1]!.id);
+    expect(await versions(g, ROBERT_XENA)).toEqual([[1, false]]);
   });
 
   it("lists each inserted entity and relation once and keeps the merge", async () => {
