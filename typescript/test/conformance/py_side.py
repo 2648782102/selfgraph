@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from pydantic import ValidationError as PydanticValidationError
@@ -955,6 +955,44 @@ async def choice_errors(graph):
     }
 
 
+async def preference_delete_counts(graph):
+    """Count the preference versions deleted with a preference's value entity, in each delete order and in a prune.
+
+    @param graph (SelfGraph): the graph whose store hosts the isolated cases.
+    @return (dict): deleted_preference_versions of each delete, by case.
+    """
+    out = {}
+    for case, order in (
+        ("about_first", ["topic:x", "company:y"]),
+        ("value_first", ["company:y", "topic:x"]),
+        ("prune", []),
+    ):
+        g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_pref_delete_{case}")
+        await g.insert.facts(
+            {
+                "entities": [
+                    {"type": "Person", "name": "A"},
+                    {"type": "Company", "name": "Y"},
+                    {"type": "Topic", "name": "X"},
+                ],
+                "preferences": [
+                    {
+                        "subject_entity": "person:a",
+                        "key": "pick",
+                        "value_entity": "company:y",
+                        "about_entity": "topic:x",
+                    }
+                ],
+            }
+        )
+        out[case] = [(await g.entities.delete(eid)).deleted_preference_versions for eid in order]
+        if not order:
+            later = datetime.now(timezone.utc) + timedelta(seconds=30)
+            done = await g.maintenance.prune(older_than=later, types=["Company", "Topic"], dry_run=False)
+            out[case] = [done.deleted.deleted_preference_versions]
+    return out
+
+
 async def canonical_fact_ids(graph):
     """Read inserted facts through helpers given noncanonical entity references.
 
@@ -1651,6 +1689,7 @@ async def write(graph):
         "entity": len((await graph.entities.get("note:large-doc")).properties["blob"]),
         "relation": len((await graph.relations.get(large_rel.id)).properties["blob"]),
     }
+    out["preference_delete_counts"] = await preference_delete_counts(graph)
     return out
 
 

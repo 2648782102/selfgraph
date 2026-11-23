@@ -71,9 +71,7 @@ SHAPES = {
     "value_is_about": (0, 1, 1),
     "no_about": (0, 1, None),
 }
-SUBSETS = [
-    pytest.param(s, id="".join("abc"[i] for i in s)) for s in ((0,), (1,), (2,), (0, 1), (0, 2), (1, 2), (0, 1, 2))
-]
+SUBSETS = ((0,), (1,), (2,), (0, 1), (0, 2), (1, 2), (0, 1, 2))
 AUTHORED = 2
 
 
@@ -119,26 +117,30 @@ def _check_state(g, pid, bystander, shape, gone, removed):
     assert len(run(g.preferences.versions(pid))) == AUTHORED + dropped
 
 
-@pytest.mark.parametrize("shape", SHAPES.values(), ids=SHAPES.keys())
-@pytest.mark.parametrize("gone", SUBSETS)
-def test_deleted_preference_versions_is_the_same_in_every_delete_order_and_in_prune(shape, gone):
-    removed, count = _expected(shape, gone)
-    for order in itertools.permutations(gone):
-        g, pid, bystander = _pool_graph(shape)
-        total = [run(g.entities.delete(POOL[i])).deleted_preference_versions for i in order]
-        assert sum(total) == count, order
-        _check_state(g, pid, bystander, shape, gone, removed)
-    g, pid, bystander = _pool_graph(shape)
-    done = run(g.maintenance.prune(older_than=_later(), types=[f"Kind{i}" for i in gone], dry_run=False))
-    assert done.entity_ids == sorted(POOL[i] for i in gone)
-    assert done.deleted.deleted_preference_versions == count
-    _check_state(g, pid, bystander, shape, gone, removed)
+def test_deleted_preference_versions_is_the_same_in_every_delete_order_and_in_prune():
+    for name, shape in SHAPES.items():
+        for gone in SUBSETS:
+            removed, count = _expected(shape, gone)
+            for order in itertools.permutations(gone):
+                g, pid, bystander = _pool_graph(shape)
+                total = [run(g.entities.delete(POOL[i])).deleted_preference_versions for i in order]
+                assert sum(total) == count, (name, order)
+                _check_state(g, pid, bystander, shape, gone, removed)
+            g, pid, bystander = _pool_graph(shape)
+            done = run(g.maintenance.prune(older_than=_later(), types=[f"Kind{i}" for i in gone], dry_run=False))
+            assert done.entity_ids == sorted(POOL[i] for i in gone), (name, gone)
+            assert done.deleted.deleted_preference_versions == count, (name, gone)
+            _check_state(g, pid, bystander, shape, gone, removed)
 
 
-def test_delete_after_a_user_update_counts_the_update_but_not_the_about_cleanup():
+def test_user_updates_are_counted_but_the_about_cleanup_is_not():
     g, pid, _ = _pool_graph(SHAPES["distinct"])
     assert run(g.entities.delete("kind2:c")).deleted_preference_versions == 0
     run(g.preferences.update(pid, strength=0.9))
+    assert run(g.entities.delete("kind1:b")).deleted_preference_versions == AUTHORED + 1
+    assert run(g.preferences.get(pid)) is None
+    g, pid, _ = _pool_graph(SHAPES["distinct"])
+    run(g.preferences.update(pid, clear=["about_entity"]))
     assert run(g.entities.delete("kind1:b")).deleted_preference_versions == AUTHORED + 1
     assert run(g.preferences.get(pid)) is None
 
@@ -149,9 +151,3 @@ def test_deleting_a_preference_does_not_count_the_about_cleanup_version():
     assert len(run(g.preferences.versions(pid))) == AUTHORED + 1
     assert run(g.preferences.delete(pid)).deleted_preference_versions == AUTHORED
     assert run(g.preferences.get(pid)) is None
-
-
-def test_a_cleared_about_by_the_user_is_counted():
-    g, pid, _ = _pool_graph(SHAPES["distinct"])
-    run(g.preferences.update(pid, clear=["about_entity"]))
-    assert run(g.entities.delete("kind1:b")).deleted_preference_versions == AUTHORED + 1

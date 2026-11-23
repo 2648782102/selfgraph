@@ -62,16 +62,16 @@ async function expectState(
 function suite(spec: StoreSpec) {
   const open = freshGraphs(spec, "pc");
 
-  for (const [name, shape] of Object.entries(SHAPES)) {
-    for (const gone of SUBSETS) {
-      it(`counts preference versions the same in every delete order and in prune: ${name} ${gone.join("")}`, async () => {
+  it("counts preference versions the same in every delete order and in prune", async () => {
+    for (const [name, shape] of Object.entries(SHAPES)) {
+      for (const gone of SUBSETS) {
         const [subject, value] = shape;
         const count = gone.includes(subject) || gone.includes(value) ? AUTHORED : 0;
         for (const order of permutations(gone)) {
           const { g, pid, bystander } = await poolGraph(open, shape);
           let total = 0;
           for (const i of order) total += (await g.entities.delete(POOL[i]!)).deleted_preference_versions;
-          expect(total).toBe(count);
+          expect(total, `${name} ${order.join("")}`).toBe(count);
           await expectState(g, pid, bystander, shape, gone);
         }
         const { g, pid, bystander } = await poolGraph(open, shape);
@@ -80,19 +80,23 @@ function suite(spec: StoreSpec) {
           types: gone.map((i) => `Kind${i}`),
           dry_run: false,
         });
-        expect(done.entity_ids).toEqual(gone.map((i) => POOL[i]!).sort());
-        expect(done.deleted!.deleted_preference_versions).toBe(count);
+        expect(done.entity_ids, `${name} ${gone.join("")}`).toEqual(gone.map((i) => POOL[i]!).sort());
+        expect(done.deleted!.deleted_preference_versions, `${name} ${gone.join("")}`).toBe(count);
         await expectState(g, pid, bystander, shape, gone);
-      });
+      }
     }
-  }
+  });
 
-  it("counts a user update after an about cleanup but not the cleanup", async () => {
-    const { g, pid } = await poolGraph(open, SHAPES.distinct!);
-    expect((await g.entities.delete("kind2:c")).deleted_preference_versions).toBe(0);
-    await g.preferences.update(pid, { strength: 0.9 });
-    expect((await g.entities.delete("kind1:b")).deleted_preference_versions).toBe(AUTHORED + 1);
-    expect(await g.preferences.get(pid)).toBeNull();
+  it("counts user updates but not the about cleanup", async () => {
+    const first = await poolGraph(open, SHAPES.distinct!);
+    expect((await first.g.entities.delete("kind2:c")).deleted_preference_versions).toBe(0);
+    await first.g.preferences.update(first.pid, { strength: 0.9 });
+    expect((await first.g.entities.delete("kind1:b")).deleted_preference_versions).toBe(AUTHORED + 1);
+    expect(await first.g.preferences.get(first.pid)).toBeNull();
+    const cleared = await poolGraph(open, SHAPES.distinct!);
+    await cleared.g.preferences.update(cleared.pid, { clear: ["about_entity"] });
+    expect((await cleared.g.entities.delete("kind1:b")).deleted_preference_versions).toBe(AUTHORED + 1);
+    expect(await cleared.g.preferences.get(cleared.pid)).toBeNull();
   });
 
   it("does not count the about cleanup when the preference is deleted by id", async () => {
@@ -101,12 +105,6 @@ function suite(spec: StoreSpec) {
     expect(await g.preferences.versions(pid)).toHaveLength(AUTHORED + 1);
     expect((await g.preferences.delete(pid)).deleted_preference_versions).toBe(AUTHORED);
     expect(await g.preferences.get(pid)).toBeNull();
-  });
-
-  it("counts an about the user cleared", async () => {
-    const { g, pid } = await poolGraph(open, SHAPES.distinct!);
-    await g.preferences.update(pid, { clear: ["about_entity"] });
-    expect((await g.entities.delete("kind1:b")).deleted_preference_versions).toBe(AUTHORED + 1);
   });
 }
 

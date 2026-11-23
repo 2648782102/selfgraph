@@ -37,7 +37,6 @@ async function cascading(g: SelfGraph): Promise<void> {
   await g.relations.update(link.id, { set_properties: { v: 2 } });
   await g.preferences.create("person:keep", "tool", "person:keep", { about_entity: "temp:x" });
   await g.preferences.create("temp:y", "tool", "person:keep");
-  await g.preferences.create("person:keep", "pick", "temp:y", { about_entity: "temp:x" });
   await g.decisions.create("Keep", {
     steps: [],
     id: "decision:keep",
@@ -47,7 +46,7 @@ async function cascading(g: SelfGraph): Promise<void> {
 }
 
 async function cascadeState(g: SelfGraph): Promise<unknown[]> {
-  const pref = (await g.preferences.list("person:keep", { key: "tool" })).items[0]!;
+  const pref = (await g.preferences.list("person:keep")).items[0]!;
   return [
     (await g.entities.list()).items.map((e) => e.id),
     (await g.relations.list()).items.map((r) => [r.from_entity, r.type, r.to_entity]),
@@ -267,6 +266,7 @@ function suite(spec: StoreSpec) {
   it("plans a prune, then applies it in batches with the same cascades as deleting one by one", async () => {
     const one = open();
     await cascading(one);
+    await one.preferences.create("person:keep", "pick", "temp:y", { about_entity: "temp:x" });
     const counts = { ...NO_DELETES };
     for (const eid of ["temp:x", "temp:y"]) {
       const removed = await one.entities.delete(eid);
@@ -274,6 +274,7 @@ function suite(spec: StoreSpec) {
     }
     const batched = open();
     await cascading(batched);
+    await batched.preferences.create("person:keep", "pick", "temp:y", { about_entity: "temp:x" });
     const cutoff = later(0.0005);
     const plan = await batched.maintenance.prune({ older_than: cutoff, types: ["Temp"] });
     expect([plan.dry_run, plan.entity_ids, plan.deleted]).toEqual([true, ["temp:x", "temp:y"], undefined]);

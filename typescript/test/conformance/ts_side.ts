@@ -1045,6 +1045,41 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
 }
 
 /**
+ * Count the preference versions deleted with a preference's value entity, in each delete order and in a prune.
+ *
+ * @param graph (SelfGraph): the graph whose store hosts the isolated cases.
+ * @return (Promise<Record<string, number[]>>): deleted_preference_versions of each delete, by case.
+ */
+async function preferenceDeleteCounts(graph: SelfGraph): Promise<Record<string, number[]>> {
+  const out: Record<string, number[]> = {};
+  const cases = [
+    ["about_first", ["topic:x", "company:y"]],
+    ["value_first", ["company:y", "topic:x"]],
+    ["prune", []],
+  ] as const;
+  for (const [name, order] of cases) {
+    const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_pref_delete_${name}` });
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "A" },
+        { type: "Company", name: "Y" },
+        { type: "Topic", name: "X" },
+      ],
+      preferences: [{ subject_entity: "person:a", key: "pick", value_entity: "company:y", about_entity: "topic:x" }],
+    });
+    const counts: number[] = [];
+    for (const eid of order) counts.push((await g.entities.delete(eid)).deleted_preference_versions);
+    if (!order.length) {
+      const later = new Date(Date.now() + 30_000);
+      const done = await g.maintenance.prune({ older_than: later, types: ["Company", "Topic"], dry_run: false });
+      counts.push(done.deleted!.deleted_preference_versions);
+    }
+    out[name] = counts;
+  }
+  return out;
+}
+
+/**
  * Read inserted facts through helpers given noncanonical entity references.
  *
  * @param graph (SelfGraph): the graph whose store hosts the isolated case.
@@ -1774,6 +1809,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     entity: String(largeEntity?.properties.blob ?? "").length,
     relation: String(largeRelation?.properties.blob ?? "").length,
   };
+  out.preference_delete_counts = await preferenceDeleteCounts(graph);
   return out;
 }
 

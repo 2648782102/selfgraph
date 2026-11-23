@@ -335,6 +335,22 @@ def encode_preference_props(
     is_current: bool,
     about_dropped: bool = False,
 ) -> dict[str, Any]:
+    """Encode one preference version as stored edge properties, flagging a version only written to drop about_entity.
+
+    @param ns (str): namespace.
+    @param id (str): preference id.
+    @param revision (int): version number.
+    @param subject_entity (str): the entity that holds the preference.
+    @param key (str): the preference key.
+    @param about_entity (str | None): the entity the preference is about.
+    @param strength (float | None): preference strength.
+    @param properties (dict[str, Any]): free-form properties.
+    @param event_time (datetime | None): valid time.
+    @param created_at (datetime): when this version was written.
+    @param is_current (bool): whether this is the current version.
+    @param about_dropped (bool): True when an entity delete wrote the version to drop a deleted about_entity.
+    @return (dict[str, Any]): the stored property map.
+    """
     props = {
         "id": id,
         "ns": ns,
