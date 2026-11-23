@@ -21,6 +21,7 @@ from selfgraph import (
     DefaultResolver,
     Entity,
     EntityInput,
+    Extraction,
     ExtractionError,
     LLMResolver,
     NotFoundError,
@@ -1555,7 +1556,7 @@ def test_unmerging_one_merge_keeps_the_relation_another_live_merge_rewrote_onto(
     assert ends() == [(BOB_ID, xena), (bobby, xena)]
 
 
-Y2020, Y2021 = (f"{y}-01-01T00:00:00+00:00" for y in (2020, 2021))
+Y2020, Y2021, Y2022 = (f"{y}-01-01T00:00:00+00:00" for y in (2020, 2021, 2022))
 BOBBY_ID, ANN_LEE_ID, A_LEE_ID = (entity_id("Person", n) for n in ("Bobby", "Ann Lee", "A Lee"))
 COMPANIES = [{"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")]
 ROBERT_BOBS = {**ROBERT, "aliases": ["Bob", "Bobby"]}
@@ -1604,6 +1605,32 @@ UNMERGE_CASES = [
         "the merge insert supersedes a survivor relation",
         ([ROBERT, *COMPANIES], [works_at("acme", 2020, person="robert")], "seed"),
         ([BOB], [works_at("globex", 2021, person="bob")], "s2"),
+        spec=WORKS_AT_SPEC,
+    ),
+    _case(
+        "two candidates merged onto one relation go back to its revision 1",
+        ([ROBERT_BOBS, XENA], [_rel(ROBERT_ID, event_time=Y2020)], "seed"),
+        (
+            [BOB, BOBBY],
+            [
+                _rel(BOB_ID, event_time=Y2021, properties={"a": 1}),
+                _rel(BOBBY_ID, event_time=Y2022, properties={"b": 1}),
+            ],
+            "s2",
+        ),
+    ),
+    _case(
+        "a later write on a survivor relation the merge retired keeps no pointer to the removed relation",
+        ([ROBERT, *COMPANIES], [works_at("acme", 2020, person="robert")], "seed"),
+        ([BOB], [works_at("globex", 2021, person="bob")], "s2"),
+        ([], [works_at("acme", 2023, person="robert")], "s3"),
+        spec=WORKS_AT_SPEC,
+    ),
+    _case(
+        "a later write retired the revision the merge wrote on a survivor relation",
+        ([ROBERT, *COMPANIES], [works_at("acme", 2020, person="robert")], "seed"),
+        ([BOB], [works_at("acme", 2021, person="bob", properties={"title": "x"})], "s2"),
+        ([], [works_at("globex", 2023, person="robert")], "s3"),
         spec=WORKS_AT_SPEC,
     ),
     _case(
@@ -1656,6 +1683,46 @@ def test_unmerge_leaves_what_the_inserts_write_without_the_merge(inserts, spec, 
 
 def _versions(g, rid):
     return [(v.revision, bool(v.certifications)) for v in run(g.relations.versions(rid))]
+
+
+class _Replay:
+    def __init__(self, facts):
+        self.facts = facts
+
+    async def extract(self, document):
+        return Extraction.model_validate(self.facts[document.text])
+
+
+def _unmerged_after(texts, steps):
+    merged, plain = (fresh_graph("res", resolver=r, extractor=_Replay(texts)) for r in ("default", "exact"))
+    merges = {}
+    for g in (merged, plain):
+        for text, source, replace in steps:
+            found = run(g.insert.text(text, source_id=source, replace_source=replace)).merges
+            merges.update({m.id: m for m in found})
+    for merge_id in merges:
+        run(merged.entities.unmerge(merge_id))
+    return _state(merged), _state(plain)
+
+
+def test_unmerge_retires_a_relation_only_a_replaced_source_stated():
+    texts = {
+        "seed": {"entities": [ROBERT, XENA], "relations": [_rel(ROBERT_ID)]},
+        "v1": {"entities": [BOB], "relations": [_rel(BOB_ID)]},
+        "v2": {"entities": [BOB]},
+    }
+    merged, plain = _unmerged_after(texts, [("seed", "seed", False), ("v1", "s2", False), ("v2", "s2", True)])
+    assert merged == plain
+
+
+def test_unmerge_retires_a_survivor_relation_only_the_merge_kept_current():
+    texts = {
+        "seed": {"entities": [ROBERT, XENA], "relations": [_rel(ROBERT_ID)]},
+        "v1": {"entities": [BOB], "relations": [_rel(BOB_ID)]},
+        "v2": {"entities": [ROBERT, XENA]},
+    }
+    merged, plain = _unmerged_after(texts, [("seed", "seed", False), ("v1", "s2", False), ("v2", "seed", True)])
+    assert merged == plain
 
 
 def test_unmerge_restores_a_relation_that_existed_unless_it_was_certified():

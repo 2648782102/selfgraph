@@ -1653,6 +1653,7 @@ async def write(graph):
     await unmerged.insert.facts({"entities": entities, "relations": stated[:2]})
     joiner = {"type": "Person", "name": "Bob"}
     [superseding] = (await unmerged.insert.facts({"entities": [joiner], "relations": stated[2:]})).merges
+    await unmerged.insert.facts({"relations": [{**stated[1], "event_time": "2023-01-01"}]})
     await unmerged.entities.unmerge(superseding.id)
     out["unmerge_supersede"] = {
         r.id: [[v.revision, v.is_current, v.invalidated_by] for v in await unmerged.relations.versions(r.id)]
