@@ -124,6 +124,12 @@ and any decision trace that references it. Two exceptions:
 - A decision that only considered it as an alternative drops that alternative.
 - A preference only about it gets a new version without `about_entity`.
 
+The result's `deleted_preference_versions` counts the versions of each preference
+removed with its subject or value entity, once per preference however many of
+its entities go. The version a delete writes to drop an `about_entity` is never
+counted, so the total is the same in any delete order, in one batch, and in
+`maintenance.prune`. `preferences.delete` follows the same rule.
+
 Deleting a relation at an endpoint the schema's `max_count` constrains settles
 that endpoint again, as [`supersede`](schema.md#contradictions) would have
 settled it without the deleted relation. This covers `relations.delete`, a
