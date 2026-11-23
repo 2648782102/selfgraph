@@ -149,6 +149,11 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
           code: "invalid_argument",
           field: "x",
         }),
+        sorted_map: expect.objectContaining({
+          error: "parameter 'x.1' is an empty map, which Kuzu cannot type; pass a non-empty map",
+          code: "invalid_argument",
+          field: "x",
+        }),
       });
     },
   );

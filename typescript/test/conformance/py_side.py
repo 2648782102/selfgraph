@@ -801,6 +801,7 @@ async def kuzu_param_errors():
         "map": {"x": {}},
         "nested_list": {"x": {"a": []}},
         "nested_map": {"x": {"a": {}}},
+        "sorted_map": {"x": {"2": [], "1": {}}},
     }
     return {name: await error_of(store.run_cypher("RETURN $x AS x", params)) for name, params in calls.items()}
 

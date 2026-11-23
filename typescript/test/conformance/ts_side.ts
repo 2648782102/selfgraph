@@ -919,6 +919,7 @@ export async function kuzuParamErrors(): Promise<Record<string, object | string>
     map: { x: {} },
     nested_list: { x: { a: [] } },
     nested_map: { x: { a: {} } },
+    sorted_map: { x: { 2: [], 1: {} } },
   };
   return Object.fromEntries(
     await Promise.all(

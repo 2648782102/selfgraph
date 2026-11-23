@@ -133,6 +133,10 @@ function nonEmptyStatements(query: string): number {
 /**
  * Find the first empty list or map in a parameter value, depth first.
  *
+ * Map keys are sorted before the walk so both SDKs report the same first empty
+ * container: a JS object puts integer-like keys first, while the Python SDK
+ * keeps insertion order.
+ *
  * @param value (unknown): the parameter value or a nested value.
  * @param path (string): where the value sits in the parameter.
  * @return ([string, string] | null): the kind, "list" or "map", and its path, or null when every container has a value.
@@ -145,10 +149,10 @@ function emptyContainer(value: unknown, path: string): [string, string] | null {
       if (found) return found;
     }
   } else if (value && typeof value === "object" && !(value instanceof Date)) {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (!entries.length) return ["map", path];
-    for (const [key, item] of entries) {
-      const found = emptyContainer(item, `${path}.${key}`);
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    if (!keys.length) return ["map", path];
+    for (const key of keys) {
+      const found = emptyContainer((value as Record<string, unknown>)[key], `${path}.${key}`);
       if (found) return found;
     }
   }

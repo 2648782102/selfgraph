@@ -145,6 +145,10 @@ def _require_typed_params(params: Mapping[str, Any] | None) -> None:
 def _empty_container(value: Any, path: str) -> tuple[str, str] | None:
     """Find the first empty list or map in a parameter value, depth first.
 
+    Map keys are sorted before the walk so both SDKs report the same first empty
+    container: Python keeps insertion order while a JS object puts integer-like
+    keys first.
+
     @param value (Any): the parameter value or a nested value.
     @param path (str): where the value sits in the parameter.
     @return (tuple[str, str] | None): the kind, "list" or "map", and its path, or None when every container has a value.
@@ -159,7 +163,8 @@ def _empty_container(value: Any, path: str) -> tuple[str, str] | None:
     elif isinstance(value, Mapping):
         if not value:
             return "map", path
-        for key, item in value.items():
+        for key in sorted(value, key=str):
+            item = value[key]
             found = _empty_container(item, f"{path}.{key}")
             if found is not None:
                 return found
