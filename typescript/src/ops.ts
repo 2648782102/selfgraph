@@ -4,6 +4,7 @@ import { casefold } from "./internal/casefold.js";
 import { dumps, loads } from "./internal/json.js";
 import { comparePy, deepEqual, isPlainObject, pyRepr, pyStrip, utf8 } from "./internal/py.js";
 import { epochMicros, fromIso, jsonIso, toIso } from "./internal/time.js";
+import { ALNUM_CLASS, lower } from "./internal/unicode.js";
 import {
   childEdgeId,
   EDGE_TYPES,
@@ -102,7 +103,8 @@ export const NO_DELETES: Readonly<DeleteResult> = Object.freeze({
   restored_relations: 0,
 });
 
-const RESERVED_LABELS = new Set(LABELS.map((t) => t.toLowerCase()));
+const RESERVED_LABELS = new Set(LABELS.map(lower));
+const TYPE_CHAR = new RegExp(`[${ALNUM_CLASS} _.-]`, "u");
 const ENTITY_UPDATE_FIELDS = keysOf<UpdateEntityFields>({
   type: true,
   name: true,
@@ -208,7 +210,7 @@ export function validateEntityIdentity(eid: unknown, type: unknown, name: unknow
       "entity type and name cannot be empty; an entity needs both, e.g. type='Person', name='Jane Doe'",
     );
   }
-  if (RESERVED_LABELS.has(pyStrip(type).toLowerCase())) {
+  if (RESERVED_LABELS.has(lower(pyStrip(type)))) {
     throw new ValidationError(`entity type ${pyRepr(type)} is reserved for internal use; choose another type`);
   }
   if (type.includes("`")) throw new ValidationError("entity type cannot contain a backtick");
@@ -216,7 +218,7 @@ export function validateEntityIdentity(eid: unknown, type: unknown, name: unknow
   if (hasControl(name) || hasControl(type)) {
     throw new ValidationError("entity type and name cannot contain control or surrogate characters");
   }
-  if (![...type].every((ch) => /[\p{L}\p{N} _.-]/u.test(ch) || ids.isMark(ch))) {
+  if (![...type].every((ch) => TYPE_CHAR.test(ch) || ids.isMark(ch))) {
     throw new ValidationError(
       `entity type ${pyRepr(type)} can only contain letters, digits, spaces, '_', '-', and '.'`,
     );
@@ -224,7 +226,7 @@ export function validateEntityIdentity(eid: unknown, type: unknown, name: unknow
   if (hasControl(eid)) throw new ValidationError("entity id cannot contain control or surrogate characters");
   ids.requireEntityShape(eid);
   const prefix = eid.slice(0, eid.indexOf(":"));
-  if (ids.RESERVED_ID_PREFIXES.has(prefix.toLowerCase())) {
+  if (ids.RESERVED_ID_PREFIXES.has(lower(prefix))) {
     throw new ValidationError(`entity id prefix ${pyRepr(prefix)} is reserved for internal use`);
   }
   requireIdSize("entity", eid);
@@ -247,7 +249,7 @@ export function validateOwnId(kind: string, oid: unknown): void {
   if (hasControl(oid)) throw new ValidationError(`${kind} id cannot contain control or surrogate characters`);
   requireIdSize(kind, oid);
   const sep = oid.indexOf(":");
-  const prefix = sep >= 0 ? oid.slice(0, sep).toLowerCase() : "";
+  const prefix = sep >= 0 ? lower(oid.slice(0, sep)) : "";
   if (prefix !== kind) throw new ValidationError(`${kind} id must start with '${kind}:', got ${pyRepr(oid)}`);
   if (!pyStrip(oid.slice(sep + 1))) {
     throw new ValidationError(`${kind} id must have a non-empty name after '${kind}:', got ${pyRepr(oid)}`);

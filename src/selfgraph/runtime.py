@@ -17,6 +17,7 @@ from ._cypher_guard import blank_lexical_tokens
 from ._maintenance import scan_entities, scan_relations
 from ._ops import DECISION_CLEARABLE, PREFERENCE_CLEARABLE, invalidated_note, parse_time, require_changes
 from ._serde import EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES
+from ._unicode import casefold
 from .client import SelfGraph
 from .errors import (
     MALFORMED_USERINFO_ESCAPE,
@@ -219,7 +220,7 @@ def _squash(text: str) -> str:
     @param text (str): the text.
     @return (str): the squashed text.
     """
-    return " ".join(text.split()).casefold()
+    return casefold(" ".join(text.split()))
 
 
 async def _cypher_notes(graph: SelfGraph, query: str) -> list[str]:

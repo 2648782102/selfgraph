@@ -26,6 +26,7 @@ from ._serde import (
     from_iso,
     preference_edge_type,
 )
+from ._unicode import WORD_CLASS, casefold
 from .errors import ValidationError
 from .extraction.chunking import count_tokens
 from .ids import _word_runs, normalize_text, profile_id
@@ -128,8 +129,10 @@ _FILLER = frozenset(
         "your",
     }
 )
-_IRREGULAR = re.compile(r"(?<!\w)(?:won|can)['’ʼ]t(?!\w)", re.IGNORECASE)
-_CLITIC = re.compile(r"(?<=\w)n['’ʼ]t(?!\w)|(?<=\w)['’ʼ](?:s|ll|re|ve|d|m)(?!\w)", re.IGNORECASE)
+_IRREGULAR = re.compile(rf"(?<![{WORD_CLASS}])(?:won|can)['’ʼ]t(?![{WORD_CLASS}])")
+_CLITIC = re.compile(
+    rf"(?<=[{WORD_CLASS}])n['’ʼ]t(?![{WORD_CLASS}])|(?<=[{WORD_CLASS}])['’ʼ](?:s|ll|re|ve|d|m)(?![{WORD_CLASS}])"
+)
 _PAGE = 500
 _MAX_POOL = 5000
 _SEED_PAGE = 5000
@@ -158,7 +161,7 @@ def _fold(text: str) -> str:
     @param text (str): the text to fold.
     @return (str): the NFC-normalized, casefolded text.
     """
-    return normalize_text(normalize_text(text).casefold())
+    return normalize_text(casefold(normalize_text(text)))
 
 
 def _token_list(text: str) -> list[str]:
@@ -1100,13 +1103,14 @@ def _term_words(text: str) -> list[str]:
     @param text (str): the question, name, or synonym.
     @return (list[str]): the content tokens, repeats kept.
     """
+    folded = _fold(text)
     words: list[str] = []
     last = 0
-    for m in _IRREGULAR.finditer(text):
-        words += _token_list(_CLITIC.sub("", text[last : m.start()]))
-        words.append(m.group().casefold().replace("’", "'").replace("ʼ", "'"))
+    for m in _IRREGULAR.finditer(folded):
+        words += _token_list(_CLITIC.sub("", folded[last : m.start()]))
+        words.append(m.group().replace("’", "'").replace("ʼ", "'"))
         last = m.end()
-    return words + _token_list(_CLITIC.sub("", text[last:]))
+    return words + _token_list(_CLITIC.sub("", folded[last:]))
 
 
 def _question_terms(question: str, names: Iterable[str]) -> list[str]:

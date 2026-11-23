@@ -7,6 +7,7 @@ import { dumps, loads } from "./internal/json.js";
 import { contextPayload } from "./internal/payload.js";
 import { comparePy, cpLen, deepEqual, pyFloatRepr, pyRepr, pyStrip } from "./internal/py.js";
 import { fromIso, jsonIso, toIso } from "./internal/time.js";
+import { DECIMAL_CLASS } from "./internal/unicode.js";
 import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_SOURCE_VERSION, L_TRACE } from "./labels.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import { scanLiveMerges } from "./maintenance.js";
@@ -148,7 +149,8 @@ export function nameSimilarity(a: string, b: string): number {
   return Math.max(jaroWinkler(folded(a), folded(b)), tokenJaccard(a, b));
 }
 
-const DIGITS = /\p{Nd}+/gu;
+const DIGITS = new RegExp(`[${DECIMAL_CLASS}]+`, "gu");
+const DECIMAL_CHAR = new RegExp(`^[${DECIMAL_CLASS}]$`, "u");
 
 /**
  * Collect the tokens that tell apart otherwise similar names: digit runs, single-letter words, and generations.
@@ -158,7 +160,7 @@ const DIGITS = /\p{Nd}+/gu;
  */
 function distinguishers(tokens: string[]): [string[], string[], string[]] {
   const digits = tokens.flatMap((t) => [...t.matchAll(DIGITS)].map((m) => m[0])).sort(comparePy);
-  const letters = tokens.filter((t) => cpLen(t) === 1 && !/^\p{Nd}$/u.test(t)).sort(comparePy);
+  const letters = tokens.filter((t) => cpLen(t) === 1 && !DECIMAL_CHAR.test(t)).sort(comparePy);
   const generations = tokens.filter((t) => GENERATIONAL.has(t)).sort(comparePy);
   return [digits, letters, generations];
 }

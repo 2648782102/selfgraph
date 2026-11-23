@@ -2178,6 +2178,41 @@
    "U\u0308ber",
    "\uff21\uff43\uff4d\uff45",
    "\u00fcber:\uff41\uff43\uff4d\uff45"
+  ],
+  [
+   "Person",
+   "\u738b\ud87a\udff0",
+   "person:\u738b"
+  ],
+  [
+   "Person",
+   "\u738b\ud888\udfb0",
+   "person:\u738b"
+  ],
+  [
+   "Person",
+   "\u738b\ud884\udf50",
+   "person:\u738b\ud884\udf50"
+  ],
+  [
+   "Person",
+   "\u0422\u0430\u043d\u044f \u1c89\u0430",
+   "person:\u0442\u0430\u043d\u044f-\u0430"
+  ],
+  [
+   "Person",
+   "\ua7cbama",
+   "person:ama"
+  ],
+  [
+   "Person",
+   "\u2c2f\ua7c0",
+   "person:\u2c5f\ua7c1"
+  ],
+  [
+   "Person",
+   "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03a3",
+   "person:\u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c2-\u03c3"
   ]
  ],
  "normalize_rel_type": {
@@ -2207,7 +2242,14 @@
   "Has2FA": "HAS2_FA",
   "x2\u00df": "X2_SS",
   "\u00df\u0307": "S\u1e60",
-  "56\u0130": "56_\u0130"
+  "56\u0130": "56_\u0130",
+  "\u738b\ud87a\udff0": "\u738b",
+  "\u738b\ud888\udfb0": "\u738b",
+  "\u738b\ud884\udf50": "\u738b\ud884\udf50",
+  "\u0422\u0430\u043d\u044f \u1c89\u0430": "\u0422\u0410\u041d\u042f_\u0410",
+  "\ua7cbama": "AMA",
+  "\u2c2f\ua7c0": "\u2c2f\ua7c0",
+  "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03a3": "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3_\u03a3"
  },
  "canonical_entity_id": [
   [
@@ -4140,6 +4182,29 @@
    "\u01f0",
    "\u02bcn",
    "\u0390"
+  ],
+  "\u738b\ud87a\udff0": [
+   "\u738b"
+  ],
+  "\u738b\ud888\udfb0": [
+   "\u738b"
+  ],
+  "\u738b\ud884\udf50": [
+   "\u738b\ud884\udf50"
+  ],
+  "\u0422\u0430\u043d\u044f \u1c89\u0430": [
+   "\u0430",
+   "\u0442\u0430\u043d\u044f"
+  ],
+  "\ua7cbama": [
+   "ama"
+  ],
+  "\u2c2f\ua7c0": [
+   "\u2c5f\ua7c1"
+  ],
+  "\u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03a3": [
+   "\u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c3",
+   "\u03c3"
   ]
  },
  "fold": {

@@ -7,6 +7,7 @@ import { loads } from "./internal/json.js";
 import { contextPayload } from "./internal/payload.js";
 import { comparePy, cpLen, NON_ASCII, pyFloatRepr, pyRepr, pyStr, pyStrip } from "./internal/py.js";
 import { epochMicros, fromIso } from "./internal/time.js";
+import { WORD_CLASS } from "./internal/unicode.js";
 import {
   L_CHUNK,
   L_ENTITY,
@@ -44,9 +45,11 @@ const STOPWORDS = new Set(
   ).split(" "),
 );
 
-const IRREGULAR = /(?<![\p{L}\p{N}_])(?:won|can)['’ʼ]t(?![\p{L}\p{N}_])/giu;
-const CLITIC =
-  /(?<=[\p{L}\p{N}_])n['’ʼ]t(?![\p{L}\p{N}_])|(?<=[\p{L}\p{N}_])['’ʼ](?:s|ll|re|ve|d|m)(?![\p{L}\p{N}_])/giu;
+const IRREGULAR = new RegExp(`(?<![${WORD_CLASS}])(?:won|can)['’ʼ]t(?![${WORD_CLASS}])`, "gu");
+const CLITIC = new RegExp(
+  `(?<=[${WORD_CLASS}])n['’ʼ]t(?![${WORD_CLASS}])|(?<=[${WORD_CLASS}])['’ʼ](?:s|ll|re|ve|d|m)(?![${WORD_CLASS}])`,
+  "gu",
+);
 const FILLER = new Set(
   (
     "about all any can could describe does explain find give i know list many me much my our please should show " +
@@ -1195,14 +1198,15 @@ async function run(
  * @return (string[]): the content tokens, repeats kept.
  */
 function termWords(text: string): string[] {
+  const folded = fold(text);
   const words: string[] = [];
   let last = 0;
-  for (const m of text.matchAll(IRREGULAR)) {
-    words.push(...tokenList(text.slice(last, m.index).replace(CLITIC, "")));
-    words.push(m[0].toLowerCase().replace(/[’ʼ]/g, "'"));
+  for (const m of folded.matchAll(IRREGULAR)) {
+    words.push(...tokenList(folded.slice(last, m.index).replace(CLITIC, "")));
+    words.push(m[0].replace(/[’ʼ]/g, "'"));
     last = m.index + m[0].length;
   }
-  return [...words, ...tokenList(text.slice(last).replace(CLITIC, ""))];
+  return [...words, ...tokenList(folded.slice(last).replace(CLITIC, ""))];
 }
 
 /**
