@@ -112,6 +112,12 @@ describe("ids match Python byte for byte", () => {
     ]).toEqual(fx.nfc_ids);
   });
 
+  it("drops format characters inside a name before deriving its id", () => {
+    expect(FORMAT_RANGES).toBe(fx.format_ranges);
+    for (const name of ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme"])
+      expect(entityId("Person", name), JSON.stringify(name)).toBe("person:acme");
+  });
+
   it("relation types, control and surrogate characters, and quoted labels", () => {
     for (const [input, expected] of Object.entries(fx.normalize_rel_type)) {
       expect(normalizeRelType(input)).toBe(expected);
@@ -133,12 +139,6 @@ describe("ids match Python byte for byte", () => {
     expect(MARK_RANGES).toBe(fx.mark_ranges);
     for (const [ch, expected] of Object.entries(fx.is_mark)) expect(isMark(ch), JSON.stringify(ch)).toBe(expected);
     expect(() => quoteLabel("   ")).toThrow();
-  });
-
-  it("drops format characters inside a name before deriving its id", () => {
-    expect(FORMAT_RANGES).toBe(fx.format_ranges);
-    for (const name of ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme"])
-      expect(entityId("Person", name), JSON.stringify(name)).toBe("person:acme");
   });
 });
 
