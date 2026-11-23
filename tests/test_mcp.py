@@ -388,6 +388,25 @@ def test_number_arguments_and_steps_are_checked_like_typescript(server, tool, ar
     }
 
 
+@needs_mcp
+def test_unknown_tool_is_a_structured_invalid_argument_error(server):
+    assert tool_failure(server, "list_entitys", {}) == {
+        "error": "unknown tool 'list_entitys'",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "retryable": False,
+        **error_links("invalid_argument"),
+        "tool": "list_entitys",
+    }
+    assert tool_failure(server, "nonexistent_tool", {"a": 1}) == {
+        "error": "unknown tool 'nonexistent_tool'",
+        "error_type": "ValidationError",
+        "code": "invalid_argument",
+        "retryable": False,
+        "tool": "nonexistent_tool",
+    }
+
+
 def test_a_session_gets_each_code_hint_once_and_each_new_warning_code_hint(server):
     schema = {"entities": [{"name": "Person"}]}
     first = run(
