@@ -57,6 +57,35 @@ describe("built CLI against Kuzu", () => {
     }
   });
 
+  it("stores a __proto__ metadata key that Python stores too", () => {
+    const proto = cli([
+      ...kuzu,
+      "insert",
+      "text",
+      "Ada met Charles.",
+      "--source-id",
+      "s1",
+      "--metadata",
+      '{"__proto__":{"x":1},"a":1}',
+    ]);
+    expect(proto.code).toBe(0);
+    const kvForm = cli([
+      ...kuzu,
+      "insert",
+      "text",
+      "Ada met Charles.",
+      "--source-id",
+      "s2",
+      "--metadata",
+      '__proto__={"x":1}',
+      "--metadata",
+      "a=1",
+    ]);
+    expect(kvForm.code).toBe(0);
+    expect(proto.out).toMatchObject({ source_id: "s1" });
+    expect(kvForm.out).toMatchObject({ source_id: "s2" });
+  });
+
   it("prints diff summaries and JSON", () => {
     const ns = ["--namespace", "cli_diff"];
     seed(ns, "Ann", "Anvil");
@@ -586,6 +615,24 @@ describe("CLI settings", () => {
     expect(storeKind({ ...DEFAULT_SETTINGS })).toBe("kuzu");
     expect(storeKind({ ...DEFAULT_SETTINGS, uri: "bolt://x:1" })).toBe("hydradb");
     expect(storeKind({ ...DEFAULT_SETTINGS, store: "Neo4j", uri: "bolt://x:1" })).toBe("neo4j");
+  });
+
+  it("rejects a malformed escape in FalkorDB URL credentials without quoting them", () => {
+    for (const userinfo of ["default:100%", "u:%ff", "u%zz:p", "u:%e2%82"]) {
+      let caught: unknown;
+      try {
+        buildGraph({ ...DEFAULT_SETTINGS, store: "falkordb", uri: `redis://${userinfo}@db:6390` });
+      } catch (exc) {
+        caught = exc;
+      }
+      expect(caught, userinfo).toBeInstanceOf(ValidationError);
+      const err = caught as ValidationError;
+      expect([err.code, err.field]).toEqual(["invalid_setting", "uri"]);
+      expect(err.message).toBe(
+        "the store URI has a malformed percent escape in its user or password; " +
+          "write a literal % as %25 and percent-encode other characters as UTF-8",
+      );
+    }
   });
 
   it("passes FalkorDB credentials and the graph name from settings", () => {

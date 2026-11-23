@@ -94,7 +94,7 @@ def _json_result(result: Any, *, error: bool = False) -> Any:
     """
     from mcp.types import CallToolResult
 
-    text = json.dumps(result, indent=2, ensure_ascii=False)
+    text = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False)
     structured = result if isinstance(result, dict) else {"result": result}
     return CallToolResult.model_validate(
         {"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": error}

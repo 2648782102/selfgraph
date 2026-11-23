@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -15,15 +16,17 @@ from selfgraph._ops import parse_time
 from selfgraph._serde import json_iso
 from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris
-from selfgraph.extraction.extractor import LLMExtractor, _lenient_event_time, _RelOut
+from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
-from selfgraph.runtime import parse_json, to_jsonable
+from selfgraph.runtime import _falkor_credentials, parse_json, to_jsonable
 from selfgraph.schema import validate_against_schema
 from selfgraph.terms import expand_tokens, schema_forms
 
 LENIENT_EVENT_TIMES = [
+    "9999-12-31T23:59:59-14:00",
+    "0001-01-01T00:00:00+14:00",
     "2021",
     "0000",
     "0001",
@@ -126,6 +129,9 @@ TABLES = [
     {"name": "movies"},
     {"name": "order_statuses"},
     {"name": "Companies", "columns": [{"name": "customer_id", "references": "Customers"}]},
+    {"name": "ﬂights"},
+    {"name": "ǆungla"},
+    {"name": "ß"},
 ]
 
 SCHEMA_SPEC = {
@@ -256,6 +262,31 @@ UNKNOWN_KEY_CASES = [
 ]
 
 
+FALKOR_CREDENTIAL_CASES = [
+    ["redis://default:100%@127.0.0.1:1", None],
+    ["redis://u:p%ff@h:1", None],
+    ["redis://u%zz:p@h:1", None],
+    ["redis://us%C3%A9r:p%40ss%3Aw0rd@h:1", None],
+    ["redis://:onlypass@h:1", None],
+    ["h:6379", None],
+    ["redis://u:bad%@h:1", "v:ok"],
+]
+
+
+def falkor_credentials():
+    """Read the FalkorDB login from URLs with valid, malformed, and overridden credentials.
+
+    @return (list): each case's user name and password, or the error code, field, and message.
+    """
+    out = []
+    for uri, auth in FALKOR_CREDENTIAL_CASES:
+        try:
+            out.append(list(_falkor_credentials(uri, auth)))
+        except ValidationError as exc:
+            out.append([exc.code, exc.field, str(exc)])
+    return out
+
+
 def unknown_key_error(kind, value):
     """Parse a value with an unknown key and return the error message.
 
@@ -364,7 +395,7 @@ def repeated_extracted_relations():
     ]
     warnings = []
     facts = LLMExtractor._assemble(
-        [],
+        [_EntityOut(type="Person", name="Jane", aliases=["J", "bad\x00alias"])],
         [_RelOut(**{"from_name": "Jane", "type": "WORKS_AT", "to_name": "Acme", **row}) for row in rows],
         [],
         [],
@@ -381,10 +412,36 @@ def schema_warnings():
     schema = Schema.model_validate(SCHEMA_SPEC)
     cases = [Extraction.model_validate(case) for case in SCHEMA_CASES]
     alias_errors = []
+    consistency_errors = []
+    neo4j_description_errors = []
+    for source in ("node_types", "relationship_types"):
+        for property_description in (False, True):
+            for description in (False, 0, {}, []):
+                body = {"label": "Person" if source == "node_types" else "KNOWS"}
+                if property_description:
+                    body["properties"] = [{"name": "note", "description": description}]
+                else:
+                    body["description"] = description
+                try:
+                    Schema.from_neo4j_ontology({source: [body]})
+                except ValidationError as exc:
+                    neo4j_description_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
+    for spec in [
+        {"entities": [{"name": "Person"}, {"name": "Person"}]},
+        {"entities": [{"name": "Employee", "parent": "Persn"}]},
+        {"entities": [{"name": "Person"}], "relations": [{"type": "WORKS_AT", "to": {"types": ["Company"]}}]},
+        {"relations": [{"type": "KNOWS"}, {"type": "knows"}]},
+        {"relations": [{"type": "X", "from": {"max_count": 0}}]},
+    ]:
+        try:
+            Schema.model_validate(spec)
+        except ValidationError as exc:
+            consistency_errors.append({"code": exc.code, "field": exc.field, "message": str(exc)})
     for spec in [
         {"entities": [{"name": "Person"}, {"name": "Company", "aliases": ["Person"]}]},
         {"entities": [{"name": "Company", "aliases": ["org"]}, {"name": "Team", "aliases": ["Org"]}]},
         {"entities": [{"name": "Straße"}, {"name": "Company", "aliases": ["STRASSE"]}]},
+        *({"relations": [{"type": value}]} for value in ("!!!", "___", " - / ", "💥")),
         {"relations": [{"type": "WORKS_AT"}, {"type": "OWNS", "aliases": ["works at"]}]},
         {"relations": [{"type": "OWNS", "aliases": ["works-at"]}, {"type": "WORKS_AT"}]},
         {"relations": [{"type": "OWNS", "aliases": ["employed by"]}, {"type": "WORKS_AT", "aliases": ["employed-by"]}]},
@@ -442,7 +499,23 @@ def schema_warnings():
             ]
             for facts in cases
         ],
+        "integer_properties": [
+            [
+                {"code": w.code, "message": w.message}
+                for w in validate_against_schema(
+                    Extraction.model_validate(
+                        {"entities": [{"type": "Item", "name": "x", "properties": {"n": value}}]}
+                    ),
+                    Schema.model_validate(
+                        {"entities": [{"name": "Item", "properties": [{"name": "n", "type": "integer"}]}]}
+                    ),
+                )
+            ]
+            for value in (-0.0, 1.0, 1.5, float(2**53 - 1))
+        ],
         "alias_errors": alias_errors,
+        "consistency_errors": consistency_errors,
+        "neo4j_description_errors": neo4j_description_errors,
         "own_keys": [
             [{"code": w.code, "message": w.message} for w in validate_against_schema(facts, own_key_schema)]
             for own_key_schema in [Schema.model_validate(OWN_KEY_SPEC)]
@@ -451,11 +524,26 @@ def schema_warnings():
         "parents": [parent_outcome(spec) for spec in parent_specs],
         "endpoint_types": [endpoint_outcome(spec) for spec in endpoint_specs],
         "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
+        "schema_types": [
+            unknown_key_error("schema", spec)
+            for value in ("false", 0, 1)
+            for spec in (
+                {"entities": [{"name": "T", "certified": value}]},
+                {"entities": [{"name": "T", "properties": [{"name": "p", "required": value}]}]},
+                {"relations": [{"type": "R", "certified": value}]},
+            )
+        ],
         "tables": to_jsonable(Schema.from_tables(TABLES, name="sales")),
         "tables_errors": tables_reference_errors(),
+        "qualified_tables": to_jsonable(Schema.from_tables([{"name": "sales.users"}, {"name": "support.users"}])),
         "term_forms": to_jsonable(schema_forms(Schema.model_validate(TERMS_SPEC))),
         "shared_term_forms": to_jsonable(schema_forms(Schema.model_validate(SHARED_DEFINITION_SPEC))),
         "shared_synonym_term_forms": to_jsonable(schema_forms(Schema.model_validate(SHARED_SYNONYM_SPEC))),
+        "greek_tokens": [
+            sorted(_tokens(unicodedata.normalize(form, text)))
+            for text in ("μαΐου", "ΜΑΪ́ΟΥ", "αΰπνία", "ΑΫ́ΠΝΊΑ", "ŉ ǰ ΐ")
+            for form in ("NFC", "NFD")
+        ],
         "shared_terms": [
             sorted(expand_tokens(_tokens(q), shared_schema, _tokens))
             for shared_schema in [Schema.model_validate(SHARED_DEFINITION_SPEC)]
@@ -470,6 +558,7 @@ def schema_warnings():
             for q in TERM_QUESTIONS
         ],
         "datetime_errors": datetime_errors(),
+        "falkor_credentials": falkor_credentials(),
         "iso_times": iso_times(),
         "terms_subtypes": [
             sorted(expand_tokens(_tokens(q), sub_schema, _tokens))
@@ -645,6 +734,11 @@ FACTS = {
 _JOINED = {"from_entity": "company:acme", "type": "JOINED", "to_entity": "person:jane-doe"}
 _LIKES = {"subject_entity": "person:jane-doe", "key": "employer", "value_entity": "company:acme"}
 FACTS_TYPE_CASES = [
+    *[
+        {"relations": [{**_JOINED, "evidence": [{"source_id": "s", offset: value}]}]}
+        for offset in ("start_offset", "end_offset")
+        for value in ("2", True, False)
+    ],
     {"relations": [{**_JOINED, "event_time": "2021"}]},
     {"relations": [{**_JOINED, "event_time": 2021}]},
     {"relations": [{**_JOINED, "event_time": True}]},
@@ -657,6 +751,13 @@ FACTS_TYPE_CASES = [
     {"relations": [{**_JOINED, "event_time": "2021-02-29"}]},
     {"relations": [{**_JOINED, "event_time": "2021-01-01T00:00:00+05:60"}]},
     {"preferences": [{**_LIKES, "event_time": "9999-12-31T23:59:59-05:00"}]},
+]
+
+STATEMENT_QUERIES = [
+    "RETURN 1 AS a; MATCH (n:N) DETACH DELETE n",
+    "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})",
+    "RETURN 'a; b' AS s",
+    "MATCH (n:N) RETURN count(*) AS c ; // trailing",
 ]
 
 MCP_ARGUMENT_CASES = [
@@ -897,6 +998,19 @@ async def write(graph):
         except SelfGraphError as exc:
             depth_errors.append([exc.code, exc.field, str(exc)])
     out = {"result_depth_errors": depth_errors, "entity_type_errors": []}
+    from selfgraph.stores._docrows import parse_doc
+
+    out["stored_errors"] = []
+    for doc in ("x", "{}", "[]", "null"):
+        try:
+            parse_doc({"doc": doc, "stored_id": "person:ada", "stored_ns": "conformance"})
+        except SelfGraphError as exc:
+            out["stored_errors"].append([exc.code, exc.field, str(exc), exc.hint])
+    try:
+        await graph.relations.certify("relation:missing", by="a\ud83dlonely")
+    except SelfGraphError as exc:
+        out["surrogate_error"] = [exc.code, exc.field, str(exc), exc.hint]
+
     for bad_type in (":a", "a:b", "Person:"):
         try:
             ids.entity_id(bad_type, "X")
@@ -1174,7 +1288,7 @@ async def write(graph):
     original_step = ids.relation_id("person:bob", "USES", "tool:hammer")
     edited_merge = await edited_graph.insert.facts(
         {
-            "entities": [{"type": "Person", "name": "Bob"}],
+            "entities": [{"type": "Person", "name": "Bob", "aliases": ["Bobby"], "properties": {"k": 1}}],
             "relations": [
                 {"from_entity": "person:bob", "type": "USES", "to_entity": "tool:hammer"},
                 {"from_entity": "person:ada", "type": "CHECKED", "to_entity": "tool:hammer"},
@@ -1186,12 +1300,22 @@ async def write(graph):
         ids.relation_id("person:ada", "CHECKED", "tool:hammer"),
         ids.relation_id("person:robert", "USES", "tool:hammer"),
     ]
-    await edited_graph.decisions.update(edited_merge.decisions[0].id, steps=edited_steps)
+    await edited_graph.decisions.update(
+        edited_merge.decisions[0].id,
+        steps=edited_steps,
+        outcome_entity="person:ada",
+        alternative_entities=["tool:hammer"],
+    )
+    await edited_graph.entities.update("person:robert", aliases=["Bobby"], properties={"k": 2})
     edited_undo = await edited_graph.entities.unmerge(edited_merge.merges[0].id)
     edited_read = await edited_graph.decisions.get(ids.decision_id("person:bob", "Pick"))
     out["unmerge_edited_steps"] = {
         "returned": [s.relation_id for s in edited_undo.decisions[0].steps],
         "stored": [s.relation_id for s in edited_read.steps],
+        "outcome": edited_read.outcome_entity,
+        "alternatives": edited_read.alternative_entities,
+        "aliases": edited_undo.survivor.aliases,
+        "properties": edited_undo.survivor.properties,
     }
     out["repeated_merges"] = {}
     first = {
@@ -1342,6 +1466,21 @@ async def write(graph):
     out["retrieval_overflow"] = await overflow(graph)
     out["retrieval_ppr_ties"] = await ppr_ties(graph)
     out["retrieval_passage_ranking"] = await passage_ranking(graph)
+    property_order = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_property_order")
+    await property_order.insert.facts(
+        {
+            "entities": [{"type": "Person", "name": "Ada"}, {"type": "Machine", "name": "Engine"}],
+            "relations": [
+                {
+                    "from_entity": "person:ada",
+                    "type": "WORKED_ON",
+                    "to_entity": "machine:engine",
+                    "properties": {"role": "author", "2": "b", "10": "c", "\U00010000": "astral", "\ue000": "bmp"},
+                }
+            ],
+        }
+    )
+    out["retrieval_property_order"] = (await property_order.retrieve("Ada")).context
     out["vault_names"] = await vault_names(graph)
     try:
         await graph.insert.facts(
@@ -2367,6 +2506,47 @@ async def main():
                 result.append("no error")
         await first.close()
         json.dump(result, sys.stdout)
+        return
+    if cmd == "kuzu_statements":
+        import tempfile
+
+        from selfgraph import KuzuStore
+
+        store = KuzuStore(os.path.join(tempfile.mkdtemp(prefix="sg-conf-stmt-"), "g.kuzu"))
+        graph = SelfGraph(store=store, namespace="c")
+        await graph.initialize()
+        await graph.entities.create("A", "T", id="t:a")
+        await graph.entities.create("B", "T", id="t:b")
+        outcomes = []
+        for query in STATEMENT_QUERIES:
+            try:
+                outcomes.append({"rows": (await store.run_cypher(query)).rows})
+            except SelfGraphError as exc:
+                outcomes.append({"error": str(exc), "code": exc.code})
+        ids = [r["id"] for r in (await store.run_cypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows]
+        await graph.close()
+        json.dump({"outcomes": outcomes, "ids": ids}, sys.stdout, ensure_ascii=False)
+        return
+    if cmd == "kuzu_scheme_errors":
+        from selfgraph import KuzuStore as LocalKuzuStore
+
+        uris = [
+            "bolt://u:hunter2@h:1",
+            "memgraph://h:1",
+            "redis://h:1",
+            "falkors://h:1",
+            "hydradb://h:1",
+            "https://u:hunter2@h:1",
+        ]
+        errors = []
+        for uri in uris:
+            try:
+                LocalKuzuStore(uri)
+            except SelfGraphError as exc:
+                errors.append([exc.code, exc.field, str(exc)])
+            else:
+                errors.append("no error")
+        json.dump(errors, sys.stdout, ensure_ascii=False)
         return
     if cmd == "schema":
         json.dump(schema_warnings(), sys.stdout, sort_keys=True, ensure_ascii=False)

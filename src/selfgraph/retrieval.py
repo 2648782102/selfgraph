@@ -158,7 +158,7 @@ def _fold(text: str) -> str:
     @param text (str): the text to fold.
     @return (str): the NFC-normalized, casefolded text.
     """
-    return normalize_text(text).casefold()
+    return normalize_text(normalize_text(text).casefold())
 
 
 def _token_list(text: str) -> list[str]:
@@ -207,7 +207,7 @@ def _format_props(props: dict) -> str:
     """
     if not props:
         return ""
-    return "{" + ", ".join(f"{k}={v}" for k, v in props.items()) + "}"
+    return "{" + ", ".join(f"{k}={v}" for k, v in sorted(props.items())) + "}"
 
 
 def _term_counts(query: set[str], doc: list[str]) -> dict[str, int]:

@@ -3,6 +3,7 @@ import json
 import pytest
 from helpers import (
     HYDRADB,
+    KUZU,
     WORKS_AT_SPEC,
     FakeLLM,
     cli,
@@ -20,9 +21,11 @@ from selfgraph import (
     DefaultResolver,
     Entity,
     EntityInput,
+    ExtractionError,
     LLMResolver,
     NotFoundError,
     ResolutionDecision,
+    SelfGraph,
     ValidationError,
     decision_id,
     entity_id,
@@ -759,6 +762,89 @@ def test_hydradb_key_index_finds_alias_and_external_id_matches_and_drops_stale_k
     assert run(g.run_cypher(keys, own)).rows == [{"n": 0}]
 
 
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_key_table_finds_alias_and_external_id_matches_and_drops_stale_keys():
+    ns = unique_ns("keys")
+    _seed(
+        new_graph(namespace=ns, resolver="default"),
+        IBM_SEED,
+        {"type": "Person", "name": "Robert Smith", "aliases": ["Bob Smith"]},
+    )
+    robert = entity_id("Person", "Robert Smith")
+    keys = "MATCH (k:K) WHERE k.ns = $ns AND k.eid = $eid RETURN count(*) AS n"
+    own = {"ns": ns, "eid": robert}
+    assert run(new_graph(namespace=ns).run_cypher(keys, own)).rows == [{"n": 2}]
+
+    g = new_graph(namespace=ns, resolver="default")
+    facts = {
+        "entities": [
+            {"type": "Person", "name": "bob smith"},
+            {"type": "Company", "name": "IBM Corp", "external_ids": {"ticker": "IBM"}},
+        ]
+    }
+    merges = run(g.insert.facts(facts)).merges
+    assert sorted((m.survivor_id, m.reason) for m in merges) == [(IBM, "external_id"), (robert, "alias")]
+
+    run(g.entities.update(robert, remove_aliases=run(g.entities.get(robert)).aliases))
+    assert run(g.insert.facts({"entities": [{"type": "Person", "name": "Bob Smith"}]})).merges == []
+    assert run(g.run_cypher(keys, own)).rows == [{"n": 1}]
+
+    run(g.entities.delete(robert))
+    assert run(g.run_cypher(keys, own)).rows == [{"n": 0}]
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_default_resolution_reads_no_entity_pages():
+    g = fresh_graph("keys", resolver="default")
+    _seed(g, *({"type": "Person", "name": f"Person {i}"} for i in range(30)))
+    read = [0]
+    real = g.store.match_nodes
+
+    async def spy(ns, label, **kwargs):
+        rows = await real(ns, label, **kwargs)
+        read[0] += len(rows) if label == "Entity" else 0
+        return rows
+
+    g.store.match_nodes = spy
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Someone New"}]}))
+    assert read[0] == 0
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_initialize_indexes_entities_stored_before_the_key_table(tmp_path):
+    from selfgraph import KuzuStore
+
+    store = KuzuStore(str(tmp_path / "graph.kuzu"), max_db_size=1 << 30)
+    g = SelfGraph(store=store, namespace="old", resolver="default")
+    run(g.initialize())
+    _seed(g, IBM_SEED)
+    run(g.run_cypher("MATCH (k:K) DELETE k"))
+    assert run(g.run_cypher("MATCH (k:K) RETURN count(*) AS n")).rows == [{"n": 0}]
+    run(store.initialize())
+    assert run(g.run_cypher("MATCH (k:K) RETURN count(*) AS n")).rows[0]["n"] > 0
+    merges = run(
+        g.insert.facts({"entities": [{"type": "Company", "name": "IBM Corp", "external_ids": {"ticker": "IBM"}}]})
+    ).merges
+    assert [(m.survivor_id, m.reason) for m in merges] == [(IBM, "external_id")]
+    run(g.close())
+
+
+@pytest.mark.skipif(not KUZU, reason="the match key table is Kuzu's")
+def test_kuzu_initialize_skips_a_corrupt_entity_document_while_indexing(tmp_path):
+    from selfgraph import KuzuStore
+
+    store = KuzuStore(str(tmp_path / "graph.kuzu"), max_db_size=1 << 30)
+    g = SelfGraph(store=store, namespace="old", resolver="default")
+    run(g.initialize())
+    _seed(g, IBM_SEED, {"type": "Person", "name": "Ada"})
+    run(g.run_cypher("MATCH (k:K) DELETE k"))
+    run(g.run_cypher("MATCH (n:N) WHERE n.id = $id SET n.doc = 'x'", {"id": ADA}))
+    run(store.initialize())
+    keys = run(g.run_cypher("MATCH (k:K) RETURN k.eid AS eid")).rows
+    assert {r["eid"] for r in keys} == {IBM}
+    run(g.close())
+
+
 def test_custom_resolvers_see_compatible_candidates_and_must_return_a_complete_decision():
     seen: dict[str, list[str]] = {}
 
@@ -1467,3 +1553,83 @@ def test_unmerging_one_merge_keeps_the_relation_another_live_merge_rewrote_onto(
     assert ends() == [(BOB_ID, xena), (ROBERT_ID, xena)]
     run(g.entities.unmerge(merges[bobby].id))
     assert ends() == [(BOB_ID, xena), (bobby, xena)]
+
+
+@pytest.mark.parametrize("write", ["insert", "update"])
+@pytest.mark.parametrize("value", [1, 2])
+def test_issue_386_unmerge_keeps_survivor_writes(write, value):
+    g = fresh_graph("res", resolver="exact")
+    _seed(g, ROBERT)
+    result = run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {
+                        **BOB,
+                        "aliases": ["Bobby", "Rob"],
+                        "properties": {"k": 1, "merge_only": 1},
+                        "external_ids": {"a": "1", "b": "2"},
+                    }
+                ]
+            },
+            resolver="default",
+        )
+    )
+    fields = {"aliases": ["Bobby"], "properties": {"k": value}, "external_ids": {"a": "1"}}
+    if write == "insert":
+        run(g.insert.facts({"entities": [{**ROBERT, **fields}]}))
+    else:
+        run(g.entities.update(ROBERT_ID, **fields))
+    run(g.entities.unmerge(result.merges[0].id))
+    survivor = run(g.entities.get(ROBERT_ID))
+    assert survivor.aliases == ["Bob", "Bobby"]
+    assert survivor.properties == {"k": value}
+    assert survivor.external_ids == {"a": "1"}
+
+
+@pytest.mark.parametrize("write", ["insert", "update"])
+def test_issue_386_unmerge_keeps_decision_references(write):
+    g = fresh_graph("res", resolver="exact")
+    _seed(g, ROBERT, XENA, {"type": "Person", "name": "Ada"})
+    result = run(
+        g.insert.facts(
+            {
+                "entities": [BOB],
+                "decisions": [
+                    {
+                        "id": "decision:pick",
+                        "title": "Pick",
+                        "outcome_entity": BOB_ID,
+                        "alternative_entities": [BOB_ID, XENA_ID],
+                    }
+                ],
+            },
+            resolver="default",
+        )
+    )
+    fields = {"outcome_entity": ADA, "alternative_entities": [XENA_ID], "summary": "later"}
+    if write == "insert":
+        run(g.insert.facts({"decisions": [{"id": "decision:pick", "title": "Pick", **fields}]}))
+    else:
+        run(g.decisions.update("decision:pick", **fields))
+    run(g.entities.unmerge(result.merges[0].id))
+    decision = run(g.decisions.get("decision:pick"))
+    assert decision.outcome_entity == ADA
+    assert decision.alternative_entities == [XENA_ID]
+    assert decision.summary == "later"
+
+
+@pytest.mark.parametrize("reply", [None, {"same": "false"}, _SameEntity.model_construct(same=1)])
+def test_llm_resolver_rejects_non_boolean_reply_without_merging(reply):
+    llm = FakeLLM({"_SameEntity": lambda system, user: reply})
+    g = fresh_graph("res-invalid", llm=llm, resolver="llm")
+    _seed(g, {"type": "Person", "name": "John Smith"})
+    with pytest.raises(ExtractionError) as caught:
+        run(g.insert.facts(_people("Jon Smyth")))
+    assert (caught.value.code, caught.value.field, str(caught.value)) == (
+        "invalid_llm_output",
+        "same",
+        "LLM client returned an invalid result for the resolver: same must be a boolean",
+    )
+    assert [e.id for e in run(g.entities.list()).items] == [entity_id("Person", "John Smith")]
+    assert run(g.entities.merges(entity_id("Person", "John Smith"))).items == []

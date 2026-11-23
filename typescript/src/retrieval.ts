@@ -85,7 +85,7 @@ export const RETRIEVE_DEFAULTS = { strategy: "bfs", depth: 3, k: 20, max_nodes: 
  * @return (string): the folded text.
  */
 export function fold(text: string): string {
-  return casefold(normalizeText(text));
+  return normalizeText(casefold(normalizeText(text)));
 }
 
 /**
@@ -133,7 +133,7 @@ function entityText(e: Entity): string {
  * @return (string): the rendered text, or empty when there are none.
  */
 export function formatProps(props: JsonObject): string {
-  const entries = Object.entries(props);
+  const entries = Object.entries(props).sort(([a], [b]) => comparePy(a, b));
   if (!entries.length) return "";
   return `{${entries.map(([k, v]) => `${k}=${pyStr(v)}`).join(", ")}}`;
 }

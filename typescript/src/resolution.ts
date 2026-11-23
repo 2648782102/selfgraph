@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { NotFoundError, needsLlm, ValidationError } from "./errors.js";
+import { ExtractionError, NotFoundError, needsLlm, ValidationError } from "./errors.js";
 import { FALLBACK_TYPE } from "./extraction/extractor.js";
 import * as ids from "./ids.js";
 import { dumps, loads } from "./internal/json.js";
@@ -457,7 +457,14 @@ export class LLMResolver implements EntityResolver {
         user: question(candidate, ent),
         output: SameEntity,
       });
-      if (answer.same) return { target_id: ent.id, confidence: similarity, reason: "llm" };
+      const parsed = SameEntity.safeParse(answer);
+      if (!parsed.success) {
+        throw new ExtractionError("LLM client returned an invalid result for the resolver: same must be a boolean", {
+          code: "invalid_llm_output",
+          field: "same",
+        });
+      }
+      if (parsed.data.same) return { target_id: ent.id, confidence: similarity, reason: "llm" };
     }
     return noMatch();
   }
@@ -1685,11 +1692,17 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
   for (const rw of decisionRws) {
     const original = parseOrThrow(DecisionTraceInput, rw.original, "decision");
     const rewritten = parseOrThrow(DecisionTraceInput, rw.rewritten, "decision");
-    const actor = await end(original.actor_entity, rewritten.actor_entity);
-    const outcome = await end(original.outcome_entity, rewritten.outcome_entity);
+    const current = await ops.getTrace(runner, ns, rw.id);
+    const actor =
+      current !== null && !rw.existed && current.actor_entity !== rewritten.actor_entity
+        ? current.actor_entity
+        : await end(original.actor_entity, rewritten.actor_entity);
+    const outcome =
+      current !== null && !rw.existed && current.outcome_entity !== rewritten.outcome_entity
+        ? current.outcome_entity
+        : await end(original.outcome_entity, rewritten.outcome_entity);
     if ((actor !== null && !(await exists(actor))) || (outcome !== null && !(await exists(outcome)))) continue;
     const steps = rewritten.steps.map((s) => restored.get(s) ?? s);
-    const current = await ops.getTrace(runner, ns, rw.id);
     const currentSteps =
       current !== null && !rw.existed ? current.steps.map((s) => restored.get(s.relation_id) ?? s.relation_id) : steps;
     const stepInputs = deepEqual(currentSteps, steps) ? original.steps : currentSteps;
@@ -1705,6 +1718,9 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
     for (const [i, o] of original.alternative_entities.entries()) {
       const alternative = await end(o, rewritten.alternative_entities[i]!);
       if (await exists(alternative)) alternatives.push(alternative);
+    }
+    if (current !== null && !rw.existed && !deepEqual(current.alternative_entities, rewritten.alternative_entities)) {
+      alternatives.splice(0, alternatives.length, ...current.alternative_entities);
     }
     const restoredSteps: string[] = [];
     for (const s of stepInputs) {

@@ -6,6 +6,7 @@ import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
   FalkorDBStore,
+  fromNeo4jOntology,
   fromTables,
   ids,
   KuzuStore,
@@ -23,15 +24,18 @@ import { jsonIso } from "../../src/internal/time.js";
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
-import { parseJson } from "../../src/runtime.js";
+import { falkorCredentials, parseJson } from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
+import { parseDoc } from "../../src/stores/docRows.js";
 import { expandTokens, schemaForms } from "../../src/terms.js";
 import { parseTime } from "../../src/validate.js";
 import { STORE_SPECS } from "../helpers.js";
 import { diffWindows } from "./diff.js";
 
 const LENIENT_EVENT_TIMES = [
+  "9999-12-31T23:59:59-14:00",
+  "0001-01-01T00:00:00+14:00",
   "2021",
   "0000",
   "0001",
@@ -130,6 +134,9 @@ const TABLES = [
   { name: "movies" },
   { name: "order_statuses" },
   { name: "Companies", columns: [{ name: "customer_id", references: "Customers" }] },
+  { name: "ﬂights" },
+  { name: "ǆungla" },
+  { name: "ß" },
 ];
 
 const NEO4J_LOSS_SPEC = {
@@ -302,6 +309,32 @@ const UNKNOWN_KEY_CASES: Array<["facts" | "schema", unknown]> = [
   ["schema", { relations: [{ type: "X", from: { max_count: 2 ** 53, min_count: 1.5 } }] }],
 ];
 
+const FALKOR_CREDENTIAL_CASES: Array<[string, string | null]> = [
+  ["redis://default:100%@127.0.0.1:1", null],
+  ["redis://u:p%ff@h:1", null],
+  ["redis://u%zz:p@h:1", null],
+  ["redis://us%C3%A9r:p%40ss%3Aw0rd@h:1", null],
+  ["redis://:onlypass@h:1", null],
+  ["h:6379", null],
+  ["redis://u:bad%@h:1", "v:ok"],
+];
+
+/**
+ * Read the FalkorDB login from URLs with valid, malformed, and overridden credentials.
+ *
+ * @return (unknown[]): each case's user name and password, or the error code, field, and message.
+ */
+function falkorCredentialCases(): unknown[] {
+  return FALKOR_CREDENTIAL_CASES.map(([uri, auth]) => {
+    try {
+      return falkorCredentials(uri, auth);
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      return [exc.code, exc.field, exc.message];
+    }
+  });
+}
+
 /**
  * Parse a value with an unknown key and return the error message.
  *
@@ -413,7 +446,7 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
   ];
   const warnings: InsertWarning[] = [];
   const extraction = assembleExtraction(
-    [],
+    [{ type: "Person", name: "Jane", aliases: ["J", "bad\u0000alias"] }],
     rows.map((row) => ({ from_name: "Jane", type: "WORKS_AT", to_name: "Acme", ...row })),
     [],
     [],
@@ -429,19 +462,26 @@ function repeatedExtractedRelations(): { extraction: unknown; warnings: unknown 
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
+  integer_properties: Array<Array<{ code: string; message: string }>>;
   unknown_keys: string[];
+  schema_types: string[];
   alias_errors: string[];
+  consistency_errors: Array<{ code: string; field: string | null; message: string }>;
+  neo4j_description_errors: Array<{ code: string; field: string | null; message: string }>;
   own_keys: Array<Array<{ code: string; message: string }>>;
   parents: unknown[];
   endpoint_types: unknown[];
   tables: unknown;
   tables_errors: string[];
+  qualified_tables: unknown;
   term_forms: unknown;
   terms: unknown[];
   shared_term_forms: unknown;
   shared_synonym_term_forms: unknown;
   shared_terms: string[][];
+  greek_tokens: string[][];
   datetime_errors: string[];
+  falkor_credentials: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
   neo4j_dropped: string;
@@ -451,6 +491,37 @@ export function schemaWarnings(): {
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
+  const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  const neo4jDescriptionErrors: Array<{ code: string; field: string | null; message: string }> = [];
+  for (const source of ["node_types", "relationship_types"]) {
+    for (const propertyDescription of [false, true]) {
+      for (const description of [false, 0, {}, []]) {
+        const body: Record<string, unknown> = { label: source === "node_types" ? "Person" : "KNOWS" };
+        if (propertyDescription) body.properties = [{ name: "note", description }];
+        else body.description = description;
+        try {
+          fromNeo4jOntology({ [source]: [body] });
+        } catch (exc) {
+          if (!(exc instanceof ValidationError)) throw exc;
+          neo4jDescriptionErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+        }
+      }
+    }
+  }
+  for (const spec of [
+    { entities: [{ name: "Person" }, { name: "Person" }] },
+    { entities: [{ name: "Employee", parent: "Persn" }] },
+    { entities: [{ name: "Person" }], relations: [{ type: "WORKS_AT", to: { types: ["Company"] } }] },
+    { relations: [{ type: "KNOWS" }, { type: "knows" }] },
+    { relations: [{ type: "X", from: { max_count: 0 } }] },
+  ]) {
+    try {
+      parseOrThrow(Schema, spec, "schema");
+    } catch (exc) {
+      if (!(exc instanceof ValidationError)) throw exc;
+      consistencyErrors.push({ code: exc.code, field: exc.field ?? null, message: exc.message });
+    }
+  }
   const terms = Schema.parse(TERMS_SPEC);
   const sharedSchema = Schema.parse(SHARED_DEFINITION_SPEC);
   const subSchema = Schema.parse({
@@ -473,6 +544,16 @@ export function schemaWarnings(): {
         message: w.message,
       })),
     ),
+    integer_properties: [-0, 1, 1.5, Number.MAX_SAFE_INTEGER].map((value) =>
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Item", name: "x", properties: { n: value } }] }),
+        Schema.parse({
+          entities: [{ name: "Item", properties: [{ name: "n", type: "integer" }] }],
+        }),
+      ).map((w) => ({ code: w.code, message: w.message })),
+    ),
+    consistency_errors: consistencyErrors,
+    neo4j_description_errors: neo4jDescriptionErrors,
     alias_errors: [
       { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
       {
@@ -482,6 +563,7 @@ export function schemaWarnings(): {
         ],
       },
       { entities: [{ name: "Straße" }, { name: "Company", aliases: ["STRASSE"] }] },
+      ...["!!!", "___", " - / ", "💥"].map((type) => ({ relations: [{ type }] })),
       { relations: [{ type: "WORKS_AT" }, { type: "OWNS", aliases: ["works at"] }] },
       { relations: [{ type: "OWNS", aliases: ["works-at"] }, { type: "WORKS_AT" }] },
       {
@@ -557,8 +639,16 @@ export function schemaWarnings(): {
       }
     }),
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
+    schema_types: ["false", 0, 1].flatMap((value) =>
+      [
+        { entities: [{ name: "T", certified: value }] },
+        { entities: [{ name: "T", properties: [{ name: "p", required: value }] }] },
+        { relations: [{ type: "R", certified: value }] },
+      ].map((spec) => unknownKeyError("schema", spec)),
+    ),
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
     tables_errors: tablesReferenceErrors(),
+    qualified_tables: toJsonable(fromTables([{ name: "sales.users" }, { name: "support.users" }])),
     neo4j_dropped: neo4jExportWarnings(),
     ossie: ossieExport(),
     json_constants: jsonConstants(),
@@ -574,10 +664,14 @@ export function schemaWarnings(): {
         Object.fromEntries(named),
       ]),
     ),
+    greek_tokens: ["μαΐου", "ΜΑΪ́ΟΥ", "αΰπνία", "ΑΫ́ΠΝΊΑ", "ŉ ǰ ΐ"].flatMap((text) =>
+      ["NFC", "NFD"].map((form) => [...tokens(text.normalize(form))].sort(comparePy)),
+    ),
     shared_terms: ["employment state", "project state", "status"].map((q) =>
       [...expandTokens(tokens(q), sharedSchema, tokens)].sort(comparePy),
     ),
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
+    falkor_credentials: falkorCredentialCases(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {
         parseTime(text, "event_time");
@@ -694,6 +788,11 @@ export const FACTS = {
 const JOINED = { from_entity: "company:acme", type: "JOINED", to_entity: "person:jane-doe" };
 const LIKES = { subject_entity: "person:jane-doe", key: "employer", value_entity: "company:acme" };
 const FACTS_TYPE_CASES: unknown[] = [
+  ...["start_offset", "end_offset"].flatMap((offset) =>
+    ["2", true, false].map((value) => ({
+      relations: [{ ...JOINED, evidence: [{ source_id: "s", [offset]: value }] }],
+    })),
+  ),
   { relations: [{ ...JOINED, event_time: "2021" }] },
   { relations: [{ ...JOINED, event_time: 2021 }] },
   { relations: [{ ...JOINED, event_time: true }] },
@@ -734,8 +833,67 @@ export function conformanceStore(name: string, kuzuPath: string): GraphStore {
     return new FalkorDBStore("localhost", Number(process.env.SG_FALKOR_PORT ?? 6380), {
       graph: "selfgraph_conformance",
     });
-  if (name === "kuzu") return new KuzuStore(kuzuPath);
+  if (name === "kuzu") return new KuzuStore(kuzuPath, { buffer_pool_size: 128 << 20 });
   return STORE_SPECS.find((s) => s.name === name)!.make();
+}
+
+export const STATEMENT_QUERIES = [
+  "RETURN 1 AS a; MATCH (n:N) DETACH DELETE n",
+  "CREATE (:N {pk:'x'}); CREATE (:N {pk:'y'})",
+  "RETURN 'a; b' AS s",
+  "MATCH (n:N) RETURN count(*) AS c ; // trailing",
+];
+
+/**
+ * Run each STATEMENT_QUERIES entry through a fresh Kuzu store and report its outcome and the surviving node ids.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<{ outcomes: unknown[]; ids: unknown[] }>): each query's rows or {error, code}, then the node ids.
+ */
+export async function kuzuStatements(path: string): Promise<{ outcomes: unknown[]; ids: unknown[] }> {
+  const store = new KuzuStore(path);
+  const graph = new SelfGraph(store, { namespace: "c" });
+  await graph.initialize();
+  await graph.entities.create("A", "T", { id: "t:a" });
+  await graph.entities.create("B", "T", { id: "t:b" });
+  const outcomes: unknown[] = [];
+  for (const query of STATEMENT_QUERIES) {
+    try {
+      outcomes.push({ rows: (await store.runCypher(query)).rows });
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      outcomes.push({ error: exc.message, code: exc.code });
+    }
+  }
+  const ids = (await store.runCypher("MATCH (n:N) RETURN n.id AS id ORDER BY id")).rows.map((r) => r.id);
+  await graph.close();
+  await KuzuStore.closeDatabase(path);
+  return { outcomes, ids };
+}
+
+/**
+ * The error each server URI raises from KuzuStore, as code, field, and message.
+ *
+ * @return (Array<[string | undefined, string | undefined, string] | "no error">): one entry per URI.
+ */
+export function kuzuSchemeErrors(): Array<[string | undefined, string | undefined, string] | "no error"> {
+  const uris = [
+    "bolt://u:hunter2@h:1",
+    "memgraph://h:1",
+    "redis://h:1",
+    "falkors://h:1",
+    "hydradb://h:1",
+    "https://u:hunter2@h:1",
+  ];
+  return uris.map((uri) => {
+    try {
+      new KuzuStore(uri);
+      return "no error";
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      return [exc.code, exc.field, exc.message];
+    }
+  });
 }
 
 const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
@@ -919,6 +1077,23 @@ async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknow
 
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
+  const storedErrors: unknown[] = [];
+  for (const doc of ["x", "{}", "[]", "null"]) {
+    try {
+      parseDoc({ doc, stored_id: "person:ada", stored_ns: "conformance" });
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      storedErrors.push([exc.code, exc.field, exc.message, exc.hint]);
+    }
+  }
+  out.stored_errors = storedErrors;
+  try {
+    await graph.relations.certify("relation:missing", { by: "a\ud83dlonely" });
+  } catch (exc) {
+    if (!(exc instanceof SelfGraphError)) throw exc;
+    out.surrogate_error = [exc.code, exc.field, exc.message, exc.hint];
+  }
+
   const { checkResultDepth } = await import("../../src/models.js");
   const depthErrors: unknown[] = [];
   for (const kind of ["list", "map"]) {
@@ -1197,7 +1372,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   });
   const originalStep = ids.relationId("person:bob", "USES", "tool:hammer");
   const editedMerge = await editedGraph.insert.facts({
-    entities: [{ type: "Person", name: "Bob" }],
+    entities: [{ type: "Person", name: "Bob", aliases: ["Bobby"], properties: { k: 1 } }],
     relations: [
       { from_entity: "person:bob", type: "USES", to_entity: "tool:hammer" },
       { from_entity: "person:ada", type: "CHECKED", to_entity: "tool:hammer" },
@@ -1208,12 +1383,21 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     ids.relationId("person:ada", "CHECKED", "tool:hammer"),
     ids.relationId("person:robert", "USES", "tool:hammer"),
   ];
-  await editedGraph.decisions.update(editedMerge.decisions[0]!.id, { steps: editedSteps });
+  await editedGraph.decisions.update(editedMerge.decisions[0]!.id, {
+    steps: editedSteps,
+    outcome_entity: "person:ada",
+    alternative_entities: ["tool:hammer"],
+  });
+  await editedGraph.entities.update("person:robert", { aliases: ["Bobby"], properties: { k: 2 } });
   const editedUndo = await editedGraph.entities.unmerge(editedMerge.merges[0]!.id);
   const editedRead = (await editedGraph.decisions.get(ids.decisionId("person:bob", "Pick")))!;
   out.unmerge_edited_steps = {
     returned: editedUndo.decisions[0]!.steps.map((s) => s.relation_id),
     stored: editedRead.steps.map((s) => s.relation_id),
+    outcome: editedRead.outcome_entity,
+    alternatives: editedRead.alternative_entities,
+    aliases: editedUndo.survivor!.aliases,
+    properties: editedUndo.survivor!.properties,
   };
   const repeatedMerges: Record<string, unknown> = {};
   const first = {
@@ -1394,6 +1578,22 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   out.retrieval_overflow = await overflow(graph);
   out.retrieval_ppr_ties = await pprTies(graph);
   out.retrieval_passage_ranking = await passageRanking(graph);
+  const propertyOrder = new SelfGraph(graph.store, { namespace: `${graph.namespace}_property_order` });
+  await propertyOrder.insert.facts({
+    entities: [
+      { type: "Person", name: "Ada" },
+      { type: "Machine", name: "Engine" },
+    ],
+    relations: [
+      {
+        from_entity: "person:ada",
+        type: "WORKED_ON",
+        to_entity: "machine:engine",
+        properties: { role: "author", "2": "b", "10": "c", "\u{10000}": "astral", "\ue000": "bmp" },
+      },
+    ],
+  });
+  out.retrieval_property_order = (await propertyOrder.retrieve("Ada")).context;
   out.vault_names = await vaultNames(graph);
   try {
     await graph.insert.facts(

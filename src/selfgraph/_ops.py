@@ -784,7 +784,7 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
     @param kind (str): "entity" or "relation", for validation and the not-found error.
     @param skip (int): rows to skip.
     @param limit (int): maximum rows.
-    @return (list[Evidence]): the evidence; raises NotFoundError when the first page is empty and the target is unknown.
+    @return (list[Evidence]): the evidence; raises NotFoundError when the target is unknown, whatever the cursor.
     """
     if kind == "entity":
         target_id = _ids.canonical_entity_id(target_id)
@@ -793,7 +793,7 @@ async def list_evidence(runner: Any, ns: str, target_id: str, *, kind: str, skip
     rows = await runner.match_nodes(
         ns, L_EVIDENCE, equals={"target_id": target_id}, order_by="id", skip=skip, limit=limit
     )
-    if not rows and skip == 0:
+    if not rows:
         if kind == "entity":
             if not await runner.node_exists(ns, L_ENTITY, target_id):
                 raise await missing_entity(runner, ns, target_id)
@@ -1034,6 +1034,25 @@ async def get_entity(runner: Any, ns: str, eid: str) -> Entity | None:
     return decode_entity(props) if props else None
 
 
+async def preserve_entity_writes(runner: Any, ns: str, eid: str, fields: Mapping[str, Any]) -> None:
+    """Keep explicitly written fields out of live merges' removal sets."""
+    rows = await _nodes_where(runner, ns, L_MERGE, "survivor_id", [eid])
+    for row in rows:
+        if row.get("reverted_at") is not None:
+            continue
+        props = dict(row)
+        for key, values in (
+            ("aliases", [_clean_text(a) for a in fields.get("aliases", ())]),
+            ("properties", fields.get("properties", {})),
+            ("external_ids", fields.get("external_ids", {})),
+        ):
+            column = f"added_{key}_json"
+            props[column] = _dumps([v for v in _loads(row.get(column), []) if v not in values])
+        if props != row:
+            await runner.lock_node(ns, L_MERGE, row["id"])
+            await runner.upsert_node(ns, L_MERGE, row["id"], props)
+
+
 async def upsert_entities(
     runner: Any,
     ns: str,
@@ -1263,6 +1282,7 @@ async def update_entity(
         subject = EntityInput(id=eid, type=new_type, name=new_name, properties=properties)
         stored = EntityInput(id=eid, type=existing.type, name=existing.name, properties=existing.properties)
         await schema_check(runner, Extraction(entities=[subject]), Extraction(entities=[stored]))
+    await preserve_entity_writes(runner, ns, eid, fields)
     if (
         new_type == existing.type
         and new_name == existing.name
@@ -2471,6 +2491,7 @@ async def upsert_relations(
     caps: Mapping[str, RelationCap] | None = None,
     warnings: list[InsertWarning] | None = None,
     via: list[list[list[str]]] | None = None,
+    dry_run: bool = False,
 ) -> list[Relation]:
     """Insert-semantics upsert of many relations: merge properties, versioning on change, recording evidence.
 
@@ -2495,6 +2516,7 @@ async def upsert_relations(
     @param warnings (list[InsertWarning] | None): receives the contradiction warnings.
     @param via (list[list[list[str]]] | None): for each input, each evidence record's statements (see _plan_evidence);
         None for all direct.
+    @param dry_run (bool): compute relation versions without writing them.
     @return (list[Relation]): each input's stored version, in input order.
     """
     keyed = []
@@ -2623,11 +2645,12 @@ async def upsert_relations(
         for batch in (writes, retires)
     ]
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, [row for rows in batches for row in rows])
-    for rows in batches:
-        if rows:
-            await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
-    await _write_evidence(runner, ns, records, created_at)
-    if contradiction == "supersede" and moved:
+    if not dry_run:
+        for rows in batches:
+            if rows:
+                await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
+        await _write_evidence(runner, ns, records, created_at)
+    if not dry_run and contradiction == "supersede" and moved:
         await resettle_endpoints(runner, ns, [current[rid] for rid in moved], caps, created_at)
         stored = {
             rid: await _newest_edge(runner, ns, rid, _is_relation_type) for rid in _dedup_list(r for r, _, _ in out)
@@ -2656,6 +2679,7 @@ async def create_relation(
     contradiction: str = "off",
     caps: Mapping[str, RelationCap] | None = None,
     warnings: list[InsertWarning] | None = None,
+    dry_run: bool = False,
 ) -> Relation:
     """Create one relation version, failing if the id already exists unless a contradiction invalidated it.
 
@@ -2677,6 +2701,7 @@ async def create_relation(
     @param contradiction (str): "off", "warn", "supersede", or "strict" (raise), applied where caps set a max_count.
     @param caps (Mapping[str, RelationCap] | None): the schema's max_count limits by relation type.
     @param warnings (list[InsertWarning] | None): receives the contradiction warnings.
+    @param dry_run (bool): compute the relation version without writing it.
     @return (Relation): the created relation.
     """
     _require_text("relation from_entity", from_entity)
@@ -2726,6 +2751,8 @@ async def create_relation(
             props = _retired(edge, *ended[rid], created_at)["props"]
     retired = [(e["type"], e["from_id"], e["to_id"], e["props"]) for e in retires]
     await _precheck_edges(runner, ns, L_ENTITY, L_ENTITY, [(rtype, from_entity, to_entity, props), *retired])
+    if dry_run:
+        return _relation_of({"type": rtype, "from_id": from_entity, "to_id": to_entity, "props": props})
     rel = await _write_relation_version(runner, ns, from_entity, rtype, to_entity, props, retire=None)
     if retired:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, retired)
@@ -3160,6 +3187,8 @@ async def certify_relation(
     _ids._require_str("relation id", rid)
     if by is not None and (not isinstance(by, str) or not by.strip()):
         raise ValidationError("certified_by must be a non-empty string")
+    if by is not None and _ids._has_surrogate(by):
+        raise ValidationError("certified_by cannot contain unpaired surrogate characters", field="by")
     edge = await runner.get_current_edge(ns, rid)
     if edge is not None:
         for eid in _relation_lock_ids(caps, [(edge["type"], edge["from_id"], edge["to_id"])]):

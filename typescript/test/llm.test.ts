@@ -110,6 +110,130 @@ function mockModel(
 const open = freshGraphs(KUZU_SPEC, "llm");
 
 describe("LLM extraction through the AI SDK", () => {
+  it.each([false, true])("issue 343 keeps same-name entities with different types (typed: %s)", async (typed) => {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        if (kind === "entities")
+          return {
+            entities: [
+              { type: "Person", name: "Acme", aliases: [] },
+              { type: "Company", name: "acme", aliases: [] },
+            ],
+          } as never;
+        if (kind === "relations")
+          return { relations: [{ from_name: "Acme", type: "WORKS_AT", to_name: "acme", event_time: null }] } as never;
+        if (kind === "decisions")
+          return {
+            decisions: [
+              {
+                title: "Join",
+                actor_name: null,
+                summary: null,
+                rationale: null,
+                outcome_name: null,
+                alternative_names: [],
+                status: null,
+                steps: [{ from_name: "Acme", type: "WORKS_AT", to_name: "acme" }],
+              },
+            ],
+          } as never;
+        return { [kind]: [] } as never;
+      },
+    };
+    const schema = typed
+      ? {
+          entities: [{ name: "Person" }, { name: "Company" }],
+          relations: [{ type: "WORKS_AT", from: { types: ["Person"] }, to: { types: ["Company"] } }],
+        }
+      : null;
+    const g = open({ llm, resolver: "exact", schema });
+    const result = await g.insert.text("Acme works at acme.");
+    expect(result.entities.map((e) => e.id).sort()).toEqual(["company:acme", "person:acme"]);
+    expect((await g.entities.list()).items.map((e) => e.id).sort()).toEqual(["company:acme", "person:acme"]);
+    if (typed) {
+      expect(result.relations.map((r) => [r.from_entity, r.to_entity])).toEqual([["person:acme", "company:acme"]]);
+      expect(result.decisions[0]!.steps.map((step) => step.relation_id)).toEqual([result.relations[0]!.id]);
+      expect(result.warnings).toEqual([]);
+    } else {
+      expect(result.relations).toEqual([]);
+      expect(result.decisions[0]!.steps).toEqual([]);
+      expect(result.warnings.map((w) => w.code)).toEqual(Array(4).fill("extraction_partial_failure"));
+    }
+  });
+
+  it.each([false, true])(
+    "issue 360 unions aliases from every mention (multiple chunks: %s)",
+    async (multipleChunks) => {
+      let calls = 0;
+      const llm: LLMClient = {
+        async generate({ output }) {
+          const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+          if (kind !== "entities") return { [kind]: [] } as never;
+          calls += 1;
+          const first = { type: "Person", name: "Ann", aliases: ["A"] };
+          const later = { type: "Person", name: "ann", aliases: ["A", "Annie"] };
+          return { entities: multipleChunks && calls === 1 ? [first] : [first, later] } as never;
+        },
+      };
+      const g = open({ llm, resolver: "exact" });
+      const text = `Ann is also called Annie.${multipleChunks ? " context".repeat(650) : ""}`;
+      expect((await loadTokenizer()).chunkText(text)).toHaveLength(multipleChunks ? 2 : 1);
+      const result = await g.insert.text(text);
+      expect(result.entities).toHaveLength(1);
+      expect(result.entities[0]!.aliases).toEqual(["A", "Annie"]);
+      expect((await g.entities.get("person:ann"))!.aliases).toEqual(["A", "Annie"]);
+      expect(result.warnings).toEqual([]);
+    },
+  );
+
+  it("preserves source facts when one chunk call fails during replacement", async () => {
+    let calls = 0;
+    let phase = "initial";
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        if (kind === "entities")
+          return {
+            entities: [
+              { type: "Person", name: "Jane", aliases: [] },
+              { type: "Company", name: "Acme", aliases: [] },
+              { type: "Company", name: "Globex", aliases: [] },
+            ],
+          } as never;
+        if (kind !== "relations") return { [kind]: [] } as never;
+        calls += 1;
+        if (phase === "partial" && calls === 2) throw new Error("provider timed out");
+        const target = phase === "initial" && calls === 2 ? "Globex" : "Acme";
+        return { relations: [{ from_name: "Jane", type: "WORKS_AT", to_name: target, event_time: null }] } as never;
+      },
+    };
+    const g = open({ llm, resolver: "exact" });
+    const text = "Jane works at Acme and Globex." + " context".repeat(650);
+    expect((await loadTokenizer()).chunkText(text)).toHaveLength(2);
+    const options = { source_id: "doc", replace_source: true };
+    const first = await g.insert.text(text, options);
+    const prior = first.relations.map((r) => r.id).sort();
+    expect(prior).toHaveLength(2);
+    phase = "partial";
+    calls = 0;
+    const result = await g.insert.text(text + " Updated.", options);
+    expect(calls).toBe(2);
+    expect(result.warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
+    expect(result.source_diff!.retired).toEqual([]);
+    expect(result.source_diff!.kept).toEqual(result.relations.map((r) => r.id).sort());
+    expect((await g.relations.list()).items.map((r) => r.id).sort()).toEqual(prior);
+    expect((await g.relations.list({ include_invalidated: true })).items.every((r) => r.is_current)).toBe(true);
+    phase = "complete";
+    calls = 0;
+    const complete = await g.insert.text(text + " Removed Globex.", options);
+    expect(calls).toBe(2);
+    const produced = complete.relations.map((r) => r.id).sort();
+    expect(complete.source_diff!.retired).toEqual(prior.filter((id) => !produced.includes(id)));
+    expect(complete.warnings.map((w) => w.code)).toEqual(["fact_retired_by_source"]);
+    expect((await g.relations.list()).items.map((r) => r.id).sort()).toEqual(produced);
+  });
+
   it.each([
     [[null, "2020-01-01"], "2020-01-01"],
     [["2020-01-01", null], "2020-01-01"],
@@ -438,6 +562,27 @@ describe("LLM extraction through the AI SDK", () => {
     );
   });
 
+  it.each([null, 2024])("revalidates a mutated output object: %j", async (value) => {
+    const llm: LLMClient = {
+      async generate<T>({ output }: { output: z.ZodType<T> }): Promise<T> {
+        const kind = kindOf({ responseFormat: { schema: z.toJSONSchema(output) } });
+        const result = output.parse(REPLIES[kind]);
+        if (kind === "relations") {
+          const reply = result as { relations: Array<{ event_time: unknown }> | null };
+          if (value === null) reply.relations = null;
+          else reply.relations![0]!.event_time = value;
+        }
+        return result;
+      },
+    };
+    const g = open({ llm });
+    const result = g.insert.text("Soham chose HydraDB.", { source_id: "s" });
+    await expect(result).rejects.toBeInstanceOf(ExtractionError);
+    await expect(result).rejects.toMatchObject({ code: "invalid_llm_output" });
+    expect((await g.entities.list()).items).toEqual([]);
+    expect((await g.relations.list()).items).toEqual([]);
+  });
+
   it("extracts up to llm concurrency chunks at once and merges them in chunk order", async () => {
     const text = Array.from({ length: 6 }, (_, i) => `Chunk${i} filler words here. `.repeat(300)).join(" ");
     const orders: string[][] = [];
@@ -670,4 +815,102 @@ describe("LLM extraction through the AI SDK", () => {
     expect(paths).toEqual(["/v1/chat/completions"]);
     expect(summarizeError(await call({ timeout: 0.5 }))).toBe(`connection refused 127.0.0.1:${port}`);
   });
+});
+it.each([false, true])("does not classify a reply quoting invalid API key as authentication: wrapped=%s", (wrapped) => {
+  const config = { provider: "openai", model: "m" };
+  const error = Object.assign(new Error('Could not parse model reply: "invalid API key"'), {
+    name: "AI_NoObjectGeneratedError",
+  });
+  const exc = wrapped ? Object.assign(new Error("retry failed"), { name: "AI_RetryError", lastError: error }) : error;
+  expect(fatalError(exc, config)).toBeNull();
+  const auth = fatalError(Object.assign(new Error("unauthorized"), { statusCode: 401 }), config);
+  expect(auth?.code).toBe("llm_auth_failed");
+  expect(auth?.message).toBe(
+    "LLM authentication failed for provider openai: check the API key, set by " +
+      "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)",
+  );
+});
+
+it("issue 361 extraction defaults and strength", async () => {
+  for (const strength of [null, true, false, "0.5", "0_._5", "nan", Number.NaN, Infinity, -Infinity]) {
+    const replies: Record<string, unknown[]> = {
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+      ],
+      relations: [{ from_name: "Ann", type: "WORKS_AT", to_name: "Acme" }],
+      preferences: [{ subject_name: "Ann", key: "food", value_name: "Pizza", strength }],
+      decisions: [{ title: "Choose lunch" }],
+    };
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        return { [kind]: replies[kind] ?? [] } as never;
+      },
+    };
+    const result = await open({ llm }).insert.text("Ann works at Acme and chooses lunch.");
+    expect(result.entities.map((e) => e.id)).toEqual(expect.arrayContaining(["person:ann", "company:acme"]));
+    expect(result.relations).toHaveLength(1);
+    expect(result.decisions).toHaveLength(1);
+    const invalid = ["nan", "infinity", "-infinity"].includes(String(strength).toLowerCase());
+    expect(result.preferences).toHaveLength(invalid ? 0 : 1);
+    expect(result.warnings.map((w) => w.code)).toEqual(invalid ? ["extraction_partial_failure"] : []);
+    if (!invalid) {
+      expect(result.preferences[0]!.stance).toBe("preference");
+      expect(result.preferences[0]!.strength).toBe(
+        strength === null ? null : Number(typeof strength === "string" ? strength.replaceAll("_", "") : strength),
+      );
+    }
+  }
+});
+
+it("issue 362 drops only bad extracted alias", async () => {
+  for (const alias of ["Acme\u0007Inc", "Acme\u0000Inc", "Acme\ud800Inc", "Acme\u0085Inc"]) {
+    const replies: Record<string, unknown[]> = {
+      entities: [
+        { type: "Person", name: "Ann", aliases: [] },
+        { type: "Company", name: "Acme", aliases: ["AC", alias] },
+      ],
+      relations: [{ from_name: "Ann", type: "WORKS_AT", to_name: "Acme", event_time: null }],
+    };
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        return { [kind]: replies[kind] ?? [] } as never;
+      },
+    };
+    const g = open({ llm });
+    const result = await g.insert.text("Ann works at Acme.");
+    expect(result.entities.map((e) => e.id).sort()).toEqual(["company:acme", "person:ann"]);
+    expect((await g.entities.get("company:acme"))!.aliases).toEqual(["AC"]);
+    expect(result.relations).toHaveLength(1);
+    expect(result.warnings.map((w) => [w.code, w.message])).toEqual([
+      [
+        "extraction_partial_failure",
+        "dropped an extracted alias: entity alias cannot contain control or surrogate characters",
+      ],
+    ]);
+    await expect(g.insert.facts({ entities: [{ type: "Company", name: "Other", aliases: [alias] }] })).rejects.toThrow(
+      "entity alias cannot contain",
+    );
+  }
+});
+
+it("issue 363 discards out of range extracted time", async () => {
+  for (const event_time of ["9999-12-31T23:59:59-14:00", "0001-01-01T00:00:00+14:00"]) {
+    const llm: LLMClient = {
+      async generate({ output }) {
+        const kind = Object.keys((output as z.ZodObject<z.ZodRawShape>).shape)[0]!;
+        return {
+          [kind]: kind === "relations" ? [{ from_name: "Ann", type: "KNOWS", to_name: "Bob", event_time }] : [],
+        } as never;
+      },
+    };
+    const g = open({ llm });
+    const result = await g.insert.text("Ann knows Bob.");
+    expect(result.relations).toHaveLength(1);
+    expect(result.relations[0]!.event_time).toBeNull();
+    expect(result.warnings).toEqual([]);
+    expect((await g.relations.get(result.relations[0]!.id))!.event_time).toBeNull();
+  }
 });

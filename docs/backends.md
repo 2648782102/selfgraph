@@ -102,7 +102,8 @@ SelfGraph.connect(store="neo4j", uri="bolt://localhost:7687", auth="neo4j:passwo
 A FalkorDB `uri` is `host:port`, or a `redis://`, `rediss://`, `falkor://`, or
 `falkors://` URL such as `redis://user:password@host:port`. `rediss://` and
 `falkors://` connect over TLS. Any other scheme, such as `bolt://`, is a
-`ValidationError`.
+`ValidationError`. The URL's user and password are percent-decoded, so write a
+literal `%` as `%25`; `auth` takes precedence over them.
 
 ## Concurrency
 
@@ -226,6 +227,7 @@ Store failures raise `StoreError`. Common setup mistakes get a plain message:
 | A second `KuzuStore` on an open path with other options | `KuzuStore('<path>') is already open with different options: <option> <open> vs <new>` (`ValidationError`) |
 | A HydraDB row over the write cap | `HydraDB rejects this write at <n> bytes; ...` |
 | A store URI whose user or password has an unencoded `/`, `?`, `#`, `@`, `[` or `]` (brackets around an IPv6 host are fine), or whose user, password or host has a lookalike such as fullwidth `＠` that NFKC turns into one of `/ ? # @ : [ ]` | `the store URI has an unencoded character in its user or password; percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)` (`ValidationError`, raised before any driver reads the URI) |
+| A FalkorDB URL whose user or password has a `%` not followed by two hex digits, or escapes that are not UTF-8 | `the store URI has a malformed percent escape in its user or password; write a literal % as %25 and percent-encode other characters as UTF-8` (`ValidationError`, code `invalid_setting`, field `uri`) |
 
 A URI in these messages, and in the address errors raised before connecting, shows `***` in place of its user and password, as in `redis://***@host:6379`.
 

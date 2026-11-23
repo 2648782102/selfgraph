@@ -12,6 +12,8 @@ import {
   conformanceStore,
   dump,
   exitCodes,
+  kuzuSchemeErrors,
+  kuzuStatements,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
@@ -25,7 +27,16 @@ const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url
 const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(
-  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation" | "exit_codes",
+  cmd:
+    | "write"
+    | "dump"
+    | "schema"
+    | "supersede"
+    | "unmerge"
+    | "kuzu_isolation"
+    | "exit_codes"
+    | "kuzu_statements"
+    | "kuzu_scheme_errors",
   store: string,
   ns: string,
 ): unknown {
@@ -137,13 +148,40 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     expect(py("kuzu_isolation", "-", "-")).toEqual(result);
   });
 
+  it.skipIf(!live.get("kuzu"))(
+    "refuses a server URI with the same code, field and store name in both languages",
+    () => {
+      expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
+    },
+  );
+
   it("gives every error code the same CLI exit code in both languages", () => {
     expect(exitCodes()).toEqual(py("exit_codes", "-", "-"));
+  });
+
+  it.skipIf(!live.get("kuzu"))("rejects a multi-statement run_cypher identically in both languages", async () => {
+    const result = await kuzuStatements(tempKuzu("selfgraph-conf-stmt-"));
+    const multi = {
+      error: "Kuzu runs one statement per query; pass one statement, not several joined by ';'",
+      code: "query_failed",
+    };
+    expect(result).toEqual({
+      outcomes: [multi, multi, { rows: [{ s: "a; b" }] }, { rows: [{ c: 2 }] }],
+      ids: ["t:a", "t:b"],
+    });
+    expect(py("kuzu_statements", "-", "-")).toEqual(result);
   });
 
   it("schema validation produces identical warnings in both languages", () => {
     const warnings = schemaWarnings();
     expect(warnings).toEqual(py("schema", "-", "-"));
+    expect(warnings.consistency_errors.map((error) => error.field)).toEqual([
+      "entities[1].name",
+      "entities[0].parent",
+      "relations[0].to.types[0]",
+      "relations[1].type",
+      "relations[0].from.max_count",
+    ]);
     expect(warnings.ossie.warnings).toContain("the OneToMany multiplicity of relation LEADS are left out");
   });
 

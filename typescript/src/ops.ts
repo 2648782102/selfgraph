@@ -693,7 +693,7 @@ export async function listEvidence(
   if (kind !== "entity") requireStr(`${kind} id`, given);
   const targetId = kind === "entity" ? ids.canonicalEntityId(given) : given;
   const rows = await runner.matchNodes(ns, L_EVIDENCE, { equals: { target_id: targetId }, skip, limit });
-  if (!rows.length && skip === 0) {
+  if (!rows.length) {
     if (kind === "entity") {
       if (!(await runner.nodeExists(ns, L_ENTITY, targetId))) throw await missingEntity(runner, ns, targetId);
     } else if (!(await relationExists(runner, ns, targetId))) {
@@ -941,6 +941,32 @@ export async function getEntity(runner: Runner, ns: string, eid: string): Promis
   return props ? decodeEntity(props) : null;
 }
 
+/** Keep explicitly written fields out of live merges' removal sets. */
+export async function preserveEntityWrites(
+  runner: Runner,
+  ns: string,
+  eid: string,
+  fields: UpdateEntityFields,
+): Promise<void> {
+  const rows = await nodesWhere(runner, ns, L_MERGE, "survivor_id", [eid]);
+  for (const row of rows) {
+    if (row.reverted_at != null) continue;
+    const props = { ...row };
+    for (const [key, values] of [
+      ["aliases", (fields.aliases ?? []).map(cleanText)],
+      ["properties", Object.keys(fields.properties ?? {})],
+      ["external_ids", Object.keys(fields.external_ids ?? {})],
+    ] as const) {
+      const column = `added_${key}_json`;
+      props[column] = dumps(loads<string[]>(row[column], []).filter((v) => !values.includes(v)));
+    }
+    if (!deepEqual(props, row)) {
+      await runner.lockNode(ns, L_MERGE, row.id as string);
+      await runner.upsertNode(ns, L_MERGE, row.id as string, props);
+    }
+  }
+}
+
 /**
  * Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
  *
@@ -1174,6 +1200,7 @@ export async function updateEntity(
       relations: [],
     },
   );
+  await preserveEntityWrites(runner, ns, eid, fields);
   if (
     type === existing.type &&
     name === existing.name &&
@@ -2343,6 +2370,7 @@ function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow 
 }
 
 export interface ContradictionOptions {
+  dry_run?: boolean;
   contradiction?: string;
   caps?: ReadonlyMap<string, RelationCap> | null;
   warnings?: InsertWarning[];
@@ -2737,11 +2765,13 @@ export async function upsertRelations(
     }),
   );
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, batched.flat());
-  for (const rows of batched) {
-    if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+  if (!options.dry_run) {
+    for (const rows of batched) {
+      if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+    }
+    await writeEvidence(runner, ns, records, createdAt);
   }
-  await writeEvidence(runner, ns, records, createdAt);
-  if (options.contradiction === "supersede" && moved.size) {
+  if (!options.dry_run && options.contradiction === "supersede" && moved.size) {
     await resettleEndpoints(
       runner,
       ns,
@@ -2858,6 +2888,8 @@ export async function createRelation(
   }
   const retired: EdgeWrite[] = retires.map((e) => [e.type, e.from_id, e.to_id, e.props]);
   precheckEdges(runner, ns, L_ENTITY, L_ENTITY, [[ends.type, ends.from_entity, ends.to_entity, written], ...retired]);
+  if (options.dry_run)
+    return relationOf({ type: rtype, from_id: args.from_entity, to_id: args.to_entity, props: written });
   const rel = await writeRelationVersion(runner, ns, ends, written, null);
   if (retired.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, retired);
   await writeEvidence(runner, ns, records, createdAt);
@@ -3323,6 +3355,9 @@ export async function certifyRelation(
   requireStr("relation id", rid);
   if (by !== null && (typeof by !== "string" || !pyStrip(by))) {
     throw new ValidationError("certified_by must be a non-empty string");
+  }
+  if (by !== null && hasSurrogate(by)) {
+    throw new ValidationError("certified_by cannot contain unpaired surrogate characters", { field: "by" });
   }
   let edge = await runner.getCurrentEdge(ns, rid);
   if (edge !== null) {

@@ -47,6 +47,7 @@ ErrorCode = Literal[
     "invalid_llm_output",
     "invalid_prompt_template",
     "query_failed",
+    "invalid_stored_data",
     "graph_closed",
     "store_closed",
     "store_unreachable",
@@ -146,6 +147,10 @@ HINTS: dict[ErrorCode, str] = {
     ),
     "query_failed": (
         "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself."
+    ),
+    "invalid_stored_data": (
+        "A stored node or edge is malformed. Repair the document identified by the message in its namespace "
+        "before reading it again."
     ),
     "graph_closed": "The SelfGraph was closed. Create a new SelfGraph.",
     "store_closed": (
@@ -387,6 +392,15 @@ class StoreError(SelfGraphError):
     code: ErrorCode = "query_failed"
 
 
+def stored_data_error(props: dict) -> StoreError:
+    """Identify a malformed stored record without exposing its contents."""
+    return StoreError(
+        f"stored document {props.get('id')!r} in namespace {props.get('ns')!r} is malformed",
+        code="invalid_stored_data",
+        field="doc",
+    )
+
+
 class TransientError(StoreError):
     code: ErrorCode = "write_conflict"
 
@@ -491,6 +505,10 @@ def split_scheme(uri: str) -> tuple[str, str]:
 UNENCODED_USERINFO = (
     "the store URI has an unencoded character in its user or password; "
     "percent-encode it (/ as %2F, ? as %3F, # as %23, @ as %40, [ as %5B, ] as %5D)"
+)
+MALFORMED_USERINFO_ESCAPE = (
+    "the store URI has a malformed percent escape in its user or password; "
+    "write a literal % as %25 and percent-encode other characters as UTF-8"
 )
 
 

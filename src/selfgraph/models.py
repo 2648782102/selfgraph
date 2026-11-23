@@ -316,6 +316,8 @@ def _issue_message(err: Mapping[str, Any]) -> str:
     @return (str): the message, such as "field required" or "expected string".
     """
     kind, ctx = err["type"], err.get("ctx") or {}
+    if kind == "int_from_float":
+        return "expected integer"
     if kind == "missing":
         return "field required"
     base = kind.removesuffix("_type").removesuffix("_parsing")
@@ -697,14 +699,25 @@ def _facts_time(value: Any) -> Any:
 FactsTime = Annotated[datetime | None, BeforeValidator(_facts_time)]
 
 
+def _evidence_offset(value: Any) -> Any:
+    """Reject nonnumeric evidence offsets before integer validation.
+
+    @param value (Any): the raw offset.
+    @return (Any): the numeric offset or None.
+    """
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int | float)):
+        raise ValueError("expected number")
+    return value
+
+
 class EvidenceInput(InputModel):
     input_label: ClassVar[str] = "evidence"
 
     source_id: str
     chunk_id: str | None = None
     quote: str | None = None
-    start_offset: int | None = None
-    end_offset: int | None = None
+    start_offset: Annotated[int | None, BeforeValidator(_evidence_offset)] = None
+    end_offset: Annotated[int | None, BeforeValidator(_evidence_offset)] = None
     confidence: StrictFloat | None = None
 
     _clean_source_id = _check(_require_no_control, "evidence source_id", "source_id")

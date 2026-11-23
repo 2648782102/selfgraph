@@ -30,7 +30,7 @@ from ._serde import (
     now,
     to_iso,
 )
-from .errors import NotFoundError, ValidationError, needs_llm
+from .errors import ExtractionError, NotFoundError, ValidationError, needs_llm
 from .extraction.extractor import _FALLBACK_TYPE
 from .llm.base import resolve_llm
 from .models import (
@@ -417,7 +417,14 @@ class LLMResolver:
         band = sorted(((s, e) for s, e in scored if low <= s < high), key=lambda pair: (-pair[0], pair[1].id))
         for similarity, ent in band[: self.max_questions]:
             answer = await self._llm.generate(system=_LLM_SYSTEM, user=_question(candidate, ent), output=_SameEntity)
-            if answer.same:
+            same = answer.get("same") if isinstance(answer, Mapping) else getattr(answer, "same", None)
+            if type(same) is not bool:
+                raise ExtractionError(
+                    "LLM client returned an invalid result for the resolver: same must be a boolean",
+                    code="invalid_llm_output",
+                    field="same",
+                )
+            if same:
                 return ResolutionDecision(target_id=ent.id, confidence=similarity, reason="llm")
         return _no_match()
 
@@ -1557,6 +1564,11 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         outcome = await end(original.outcome_entity, rewritten.outcome_entity)
         steps = [restored.get(s, s) for s in rewritten.steps]
         current = await _ops.get_trace(runner, ns, rw.id)
+        if current is not None and not rw.existed:
+            if current.actor_entity != rewritten.actor_entity:
+                actor = current.actor_entity
+            if current.outcome_entity != rewritten.outcome_entity:
+                outcome = current.outcome_entity
         step_inputs = original.steps
         if current is not None and not rw.existed:
             current_steps = [restored.get(s.relation_id, s.relation_id) for s in current.steps]
@@ -1585,6 +1597,8 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
         alternatives = [
             await end(o, r) for o, r in zip(original.alternative_entities, rewritten.alternative_entities, strict=True)
         ]
+        if current is not None and not rw.existed and current.alternative_entities != rewritten.alternative_entities:
+            alternatives = list(current.alternative_entities)
         restored_steps = []
         for s in step_inputs:
             if s in dropped_sibling_ids and s not in orig_restored:

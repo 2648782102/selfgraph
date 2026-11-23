@@ -27,7 +27,6 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _JSON_MODE_PROVIDERS = frozenset({"gemini", "vertex_ai"})
 _KEY_HINT = f"check the API key, set by {KEY_SOURCES}"
 _KEY_VAR = re.compile(r"\b(?!SELFGRAPH_)[A-Z][A-Z0-9_]*_API_KEY\b")
-_BAD_KEY = re.compile(r"API[_ ]KEY[_ ]INVALID|api key not valid|(?:valid|invalid|incorrect) api key", re.IGNORECASE)
 _MISSING_KEY = re.compile(r"missing .*api key|api_key client option must be set|missing credentials", re.IGNORECASE)
 _KEY_ENV = {"gemini": "GEMINI_API_KEY or GOOGLE_API_KEY", "google": "GEMINI_API_KEY or GOOGLE_API_KEY"}
 _RERAISED = ("API call failed on attempt", "Max retries exceeded")
@@ -105,7 +104,7 @@ def _fatal(exc: BaseException, config: LLMConfig, model: str) -> ExtractionError
             return ExtractionError(
                 f"no API key for LLM provider {provider}: pass {KEY_SOURCES}, or set {own}", code="llm_auth_failed"
             )
-        if name == "AuthenticationError" or status == 401 or _BAD_KEY.search(text):
+        if name == "AuthenticationError" or status == 401:
             return ExtractionError(
                 f"LLM authentication failed for provider {provider}: {_KEY_HINT}", code="llm_auth_failed"
             )

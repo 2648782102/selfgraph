@@ -18,7 +18,7 @@ from .contradiction import judge_contradictions
 from .errors import CLOSED_MESSAGE, EMBEDDER_HINT, StoreError, TransientError, ValidationError, needs_llm
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace, decision_id, type_name
+from .ids import _require_namespace, decision_id, entity_id, type_name
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
@@ -125,7 +125,28 @@ class SelfGraph:
         extraction: tiers.ExtractionTier | None = None,
         seeds: tiers.SeedTier | None = None,
         embedder: Embedder | None = None,
+        **options: Any,
     ) -> None:
+        check_options(
+            "SelfGraph",
+            options,
+            [
+                "llm",
+                "instructions",
+                "prompts",
+                "extractor",
+                "namespace",
+                "schema",
+                "schema_mode",
+                "resolver",
+                "contradiction",
+                "level",
+                "max_tier",
+                "extraction",
+                "seeds",
+                "embedder",
+            ],
+        )
         _require_namespace(namespace)
         require_schema_mode(schema_mode)
         tiers.require_level("level", level)
@@ -335,6 +356,7 @@ class SelfGraph:
         known_at: datetime | str | None = None,
         seeds: tiers.SeedTier | None = None,
         skip_hubs: bool = False,
+        **options: Any,
     ) -> RetrievalResult:
         """Retrieve graph context for a query via keyword seeds and bounded traversal.
 
@@ -354,6 +376,11 @@ class SelfGraph:
         @param skip_hubs (bool): do not walk through hubs, entities with at least 50 relations, other than seeds.
         @return (RetrievalResult): the seeds, the collected subgraph, the assembled context, and the hubs reached.
         """
+        check_options(
+            "retrieve",
+            options,
+            ["strategy", "depth", "k", "max_nodes", "budget_tokens", "as_of", "known_at", "seeds", "skip_hubs"],
+        )
         if not isinstance(query, str):
             raise ValidationError(f"query must be a string, got {type_name(query)}")
         if not query.strip():
@@ -389,6 +416,7 @@ class SelfGraph:
         as_of: datetime | str | None = None,
         known_at: datetime | str | None = None,
         depth: int = 3,
+        **options: Any,
     ) -> AnswerabilityReport:
         """Judge, without an LLM, whether the graph holds what a question asks about, before answering from it.
 
@@ -407,6 +435,7 @@ class SelfGraph:
         @param depth (int): the most hops between matched entities.
         @return (AnswerabilityReport): the verdict, each term's coverage, the missing terms, and the hub-only pairs.
         """
+        check_options("check_answerable", options, ["terms", "as_of", "known_at", "depth"])
         if not isinstance(question, str) or not question.strip():
             raise ValidationError("question must be a non-empty string")
         if terms is not None:
@@ -552,11 +581,19 @@ class SelfGraph:
         async def create(tx: Any) -> Any:
             found.clear()
             check = self._schema_check
+            judgment = None
+            if judged and self._llm is not None:
+                planned = await _ops.create_relation(
+                    tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, dry_run=True
+                )
+                judgment = await judge_contradictions(
+                    tx, self.namespace, self._llm, [planned], caps, planned.created_at
+                )
             rel = await _ops.create_relation(
                 tx, self.namespace, **fields, schema_check=check, contradiction=mode, caps=caps, warnings=found
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, self.namespace, self._llm, [rel], caps, rel.created_at))
+            if judgment is not None:
+                found.extend(await judgment(rel.created_at))
             return rel
 
         rel = await self._in_tx(create)
@@ -641,6 +678,27 @@ class SelfGraph:
                 await _ops.require_max_count(tx, ns, caps, resolved.relations, default_event_time, created_at)
             await _ops.require_relation_identities(tx, ns, resolved.relations)
             await _ops.require_preference_identities(tx, ns, resolved.preferences)
+            judgment = None
+            if judged and self._llm is not None:
+                planned = await _ops.upsert_relations(
+                    tx,
+                    ns,
+                    [(rel, []) for rel in resolved.relations],
+                    default_event_time=default_event_time,
+                    created_at=created_at,
+                    contradiction=conflicts,
+                    caps=caps,
+                    dry_run=True,
+                )
+                judgment = await judge_contradictions(
+                    tx,
+                    ns,
+                    self._llm,
+                    planned,
+                    caps,
+                    created_at,
+                    {ent.id or entity_id(ent.type, ent.name): ent.name for ent in resolved.entities},
+                )
             source_version: str | None = None
             base_evidence = []
             prior = await _ops.source_targets(tx, ns, source_id) if replace_source and source_id else set()
@@ -657,6 +715,17 @@ class SelfGraph:
                     event_time=default_event_time,
                 )
 
+            for ent in canonical.entities:
+                await _ops.preserve_entity_writes(
+                    tx,
+                    ns,
+                    ent.id or entity_id(ent.type, ent.name),
+                    {
+                        "aliases": [*ent.aliases, ent.name],
+                        "properties": ent.properties,
+                        "external_ids": ent.external_ids,
+                    },
+                )
             entities = await _ops.upsert_entities(
                 tx,
                 ns,
@@ -685,15 +754,18 @@ class SelfGraph:
                 warnings=found,
                 via=None if resolution is None else [[resolution.statements(rel)] * len(ev) for rel, ev in items],
             )
-            if judged and self._llm is not None:
-                found.extend(await judge_contradictions(tx, ns, self._llm, relations, caps, created_at))
+            if judgment is not None:
+                found.extend(await judgment(created_at))
 
             diff = None
             if replace_source and source_id is not None and source_version is not None:
                 produced = {r.id for r in relations}
                 at = aware(default_event_time or created_at)
-                retired, notes = await _ops.replace_source(
-                    tx, ns, source_id, source_version, prior - produced, at, created_at
+                incomplete = any(w.code == "extraction_partial_failure" and w.chunk_id is not None for w in warnings)
+                retired, notes = (
+                    ([], [])
+                    if incomplete
+                    else await _ops.replace_source(tx, ns, source_id, source_version, prior - produced, at, created_at)
                 )
                 found.extend(notes)
                 diff = SourceDiff(kept=sorted(produced & prior), added=sorted(produced - prior), retired=retired)
