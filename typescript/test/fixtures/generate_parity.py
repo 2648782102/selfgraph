@@ -183,6 +183,8 @@ TEXTS = [
 
 PROPS = [
     {},
+    {"role": "author", "2": "b", "10": "c", "\U00010000": "astral", "\ue000": "bmp"},
+    {"\ue000": "bmp", "\U00010000": "astral", "10": "c", "2": "b", "role": "author"},
     {
         "since": 2020,
         "role": "CTO",

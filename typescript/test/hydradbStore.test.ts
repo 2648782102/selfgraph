@@ -6,6 +6,36 @@ import { forEachStore, type StoreSpec, uniqueNs } from "./helpers.js";
 const props = (ns: string, id: string) => ({ id, ns, name: id });
 
 function suite(spec: StoreSpec) {
+  it.each(["node", "edge", "update"])("uses the full HydraDB row budget for JSON blobs: %s", async (operation) => {
+    if (spec.name !== "hydradb") return;
+    const store = spec.make();
+    const ns = uniqueNs("blob");
+    const blob = `{"text":"${"x".repeat(1100 * 1024)}"}`;
+    try {
+      await store.initialize();
+      await store.upsertNode(ns, "Source", "x:a", props(ns, "x:a"));
+      await store.upsertNode(ns, "Source", "x:b", props(ns, "x:b"));
+      const edge = { id: "e:blob", ns, revision: 1, is_current: true, properties_json: blob };
+      let query: string;
+      if (operation === "node") {
+        await store.upsertNode(ns, "Source", "x:a", { ...props(ns, "x:a"), properties_json: blob });
+        expect((await store.getNode(ns, "Source", "x:a"))?.properties_json).toBe(blob);
+        query = "MATCH (n:Source {ns: $ns, sid: 'x:a'}) RETURN n.properties_json AS duplicate";
+      } else {
+        const initial = operation === "update" ? { ...edge, properties_json: "{}" } : edge;
+        expect(await store.createEdge(ns, "LINK", "Source", "x:a", "Source", "x:b", initial)).toBe(true);
+        if (operation === "update") await store.updateCurrentEdge(ns, "e:blob", { properties_json: blob });
+        expect((await store.getCurrentEdge(ns, "e:blob"))?.props.properties_json).toBe(blob);
+        query = "MATCH (:Source {ns: $ns})-[r:RELATES]->() RETURN r.properties_json AS duplicate";
+      }
+      expect((await store.runCypher(query, { ns })).rows).toEqual([{ duplicate: null }]);
+      await store.deleteNode(ns, "Source", "x:a");
+      await store.deleteNode(ns, "Source", "x:b");
+    } finally {
+      await store.close?.();
+    }
+  });
+
   it.runIf(spec.name === "hydradb")("runs a nested transaction's writes on another store", async () => {
     const [outer, inner]: GraphStore[] = [spec.make(), spec.make()];
     const ns = uniqueNs("queue");

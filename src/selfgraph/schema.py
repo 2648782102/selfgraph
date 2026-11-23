@@ -3,7 +3,7 @@ import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, StrictBool, ValidationInfo, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
@@ -59,7 +59,7 @@ class PropertySpec(InputModel):
 
     name: str
     type: PropertyType = "string"
-    required: bool = False
+    required: StrictBool = False
     description: str | None = None
 
     _non_blank = field_validator("name")(_non_blank_name)
@@ -80,7 +80,7 @@ class Definition(InputModel):
     expression: str
     description: str | None = None
     synonyms: list[str] = Field(default_factory=list)
-    certified: bool = False
+    certified: StrictBool = False
 
 
 class EntityType(InputModel):
@@ -94,7 +94,7 @@ class EntityType(InputModel):
     parent: str | None = None
     mappings: list[TermMapping] = Field(default_factory=list)
     definitions: list[Definition] = Field(default_factory=list)
-    certified: bool = False
+    certified: StrictBool = False
 
     _non_blank = field_validator("name")(_non_blank_name)
 
@@ -168,7 +168,7 @@ class RelationType(InputModel):
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
     synonyms: list[str] = Field(default_factory=list)
-    certified: bool = False
+    certified: StrictBool = False
     from_: RelationEndpoint = Field(default_factory=RelationEndpoint, alias="from")
     to: RelationEndpoint = Field(default_factory=RelationEndpoint)
     properties: list[PropertySpec] = Field(default_factory=list)
@@ -176,6 +176,18 @@ class RelationType(InputModel):
     model_config = {"populate_by_name": True}
 
     _non_blank = field_validator("type")(_non_blank_name)
+
+
+def _consistency_error(path: tuple[str | int, ...], message: str) -> PydanticValidationError:
+    """Build a schema consistency error at the offending field.
+
+    @param path (tuple[str | int, ...]): the field's location.
+    @param message (str): the problem at that location.
+    @return (PydanticValidationError): the located error.
+    """
+    return PydanticValidationError.from_exception_data(
+        "Schema", [InitErrorDetails(type=PydanticCustomError("value_error", message), loc=path, input=None)]
+    )
 
 
 class Schema(TopInputModel):
@@ -208,8 +220,8 @@ class Schema(TopInputModel):
             )
             try:
                 schema._check_consistency()
-            except ValueError as problem:
-                errors.append({"type": "value_error", "msg": str(problem), "loc": (), "input": data})
+            except PydanticValidationError as problem:
+                errors.extend(problem.errors())
             else:
                 raise
             details = [
@@ -228,16 +240,16 @@ class Schema(TopInputModel):
         names: set[str] = set()
         for i, entity in enumerate(self.entities):
             if entity.name.casefold() in names:
-                raise ValueError(f"entities[{i}].name: duplicate entity type {entity.name!r}")
+                raise _consistency_error(("entities", i, "name"), f"duplicate entity type {entity.name!r}")
             names.add(entity.name.casefold())
         owners = {entity.name.casefold(): i for i, entity in enumerate(self.entities)}
         for i, entity in enumerate(self.entities):
             for j, alias in enumerate(entity.aliases):
                 owner = owners.setdefault(alias.casefold(), i)
                 if owner != i:
-                    raise ValueError(
-                        f"entities[{i}].aliases[{j}]: {alias!r} is already a name or alias of entity type "
-                        f"{self.entities[owner].name!r}"
+                    raise _consistency_error(
+                        ("entities", i, "aliases", j),
+                        f"{alias!r} is already a name or alias of entity type {self.entities[owner].name!r}",
                     )
         index = _entity_index(self)
         for i, entity in enumerate(self.entities):
@@ -246,7 +258,7 @@ class Schema(TopInputModel):
             given = entity.parent
             resolved = canonical_entity_type(given, self)
             if resolved not in index:
-                raise ValueError(f"entities[{i}].parent: unknown type {given!r}")
+                raise _consistency_error(("entities", i, "parent"), f"unknown type {given!r}")
             entity.parent = resolved
         for i, entity in enumerate(self.entities):
             if entity.parent is None:
@@ -256,7 +268,9 @@ class Schema(TopInputModel):
             while current is not None:
                 chain.append(current.name)
                 if current.name == entity.name:
-                    raise ValueError(f"entities[{i}].parent: parent cycle " + " -> ".join(repr(n) for n in chain))
+                    raise _consistency_error(
+                        ("entities", i, "parent"), "parent cycle " + " -> ".join(repr(n) for n in chain)
+                    )
                 if current.name in seen:
                     break
                 seen.add(current.name)
@@ -265,31 +279,29 @@ class Schema(TopInputModel):
         for i, relation in enumerate(self.relations):
             try:
                 rtype = normalize_rel_type(relation.type)
-            except ValidationError:
-                rtype = None
+            except ValidationError as exc:
+                raise ValidationError(str(exc), code=exc.code, field=f"relations[{i}].type") from None
             if rtype in types:
-                raise ValueError(f"relations[{i}].type: duplicate relation type {relation.type!r}")
-            if rtype is not None:
-                types[rtype] = i
+                raise _consistency_error(("relations", i, "type"), f"duplicate relation type {relation.type!r}")
+            types[rtype] = i
             for side, end in (("from", relation.from_), ("to", relation.to)):
-                at = f"relations[{i}].{side}"
                 if self.entities:
                     resolved_types: list[str] = []
                     for j, name in enumerate(end.types):
                         resolved = canonical_entity_type(name, self)
                         if resolved.casefold() not in names:
-                            raise ValueError(f"{at}.types[{j}]: unknown type {name!r}")
+                            raise _consistency_error(("relations", i, side, "types", j), f"unknown type {name!r}")
                         if resolved not in resolved_types:
                             resolved_types.append(resolved)
                     end.types = resolved_types
                 if end.max_count is not None and end.max_count < 1:
-                    raise ValueError(f"{at}.max_count: must be >= 1")
+                    raise _consistency_error(("relations", i, side, "max_count"), "must be >= 1")
                 if end.min_count is not None and end.min_count < 0:
-                    raise ValueError(f"{at}.min_count: must be >= 0")
+                    raise _consistency_error(("relations", i, side, "min_count"), "must be >= 0")
                 if end.min_count is not None and end.max_count is not None and end.min_count > end.max_count:
-                    raise ValueError(
-                        f"{at}.min_count: min_count {_js_count(end.min_count)} is greater than "
-                        f"max_count {_js_count(end.max_count)}"
+                    raise _consistency_error(
+                        ("relations", i, side, "min_count"),
+                        f"min_count {_js_count(end.min_count)} is greater than max_count {_js_count(end.max_count)}",
                     )
         for i, relation in enumerate(self.relations):
             for j, alias in enumerate(relation.aliases):
@@ -299,9 +311,9 @@ class Schema(TopInputModel):
                     continue
                 owner = types.setdefault(key, i)
                 if owner != i:
-                    raise ValueError(
-                        f"relations[{i}].aliases[{j}]: {alias!r} is already a name or alias of relation type "
-                        f"{self.relations[owner].type!r}"
+                    raise _consistency_error(
+                        ("relations", i, "aliases", j),
+                        f"{alias!r} is already a name or alias of relation type {self.relations[owner].type!r}",
                     )
         return self
 
@@ -635,7 +647,9 @@ def _type_ok(value: object, expected: PropertyType) -> bool:
     if expected == "boolean":
         return isinstance(value, bool)
     if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
+        return (isinstance(value, int) and not isinstance(value, bool)) or (
+            isinstance(value, float) and value.is_integer() and abs(value) <= MAX_SAFE_INTEGER
+        )
     if expected == "float":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     return True

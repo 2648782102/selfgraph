@@ -14,6 +14,7 @@ from selfgraph import (
     ParsedDocument,
     PromptTemplate,
     PromptTemplateError,
+    Schema,
     SelfGraph,
     ValidationError,
 )
@@ -31,6 +32,106 @@ from selfgraph.extraction.extractor import (
     _StepOut,
 )
 from selfgraph.extraction.prompts import render
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_issue_343_keeps_same_name_entities_with_different_types(typed):
+    class LLM:
+        async def generate(self, *, system, user, output):
+            kind = next(iter(output.model_fields))
+            if kind == "entities":
+                return {kind: [{"type": "Person", "name": "Acme"}, {"type": "Company", "name": "acme"}]}
+            if kind == "relations":
+                return {kind: [{"from_name": "Acme", "type": "WORKS_AT", "to_name": "acme"}]}
+            if kind == "decisions":
+                return {
+                    kind: [{"title": "Join", "steps": [{"from_name": "Acme", "type": "WORKS_AT", "to_name": "acme"}]}]
+                }
+            return {kind: []}
+
+    schema = (
+        {
+            "entities": [{"name": "Person"}, {"name": "Company"}],
+            "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
+        }
+        if typed
+        else None
+    )
+    g = fresh_graph("issue-343", llm=LLM(), resolver="exact", schema=schema)
+    result = run(g.insert.text("Acme works at acme."))
+    assert {e.id for e in result.entities} == {"person:acme", "company:acme"}
+    assert {e.id for e in run(g.entities.list()).items} == {"person:acme", "company:acme"}
+    if typed:
+        assert [(r.from_entity, r.to_entity) for r in result.relations] == [("person:acme", "company:acme")]
+        assert [step.relation_id for step in result.decisions[0].steps] == [result.relations[0].id]
+        assert result.warnings == []
+    else:
+        assert result.relations == []
+        assert result.decisions[0].steps == []
+        assert [w.code for w in result.warnings] == ["extraction_partial_failure"] * 4
+
+
+@pytest.mark.parametrize("multiple_chunks", [False, True])
+def test_issue_360_unions_aliases_from_every_mention(multiple_chunks):
+    calls = 0
+
+    class LLM:
+        async def generate(self, *, system, user, output):
+            nonlocal calls
+            kind = next(iter(output.model_fields))
+            if kind != "entities":
+                return {kind: []}
+            calls += 1
+            first = {"type": "Person", "name": "Ann", "aliases": ["A"]}
+            later = {"type": "Person", "name": "ann", "aliases": ["A", "Annie"]}
+            return {kind: [first] if multiple_chunks and calls == 1 else [first, later]}
+
+    g = fresh_graph("issue-360", llm=LLM(), resolver="exact")
+    text = "Ann is also called Annie." + (" context" * 650 if multiple_chunks else "")
+    assert len(chunk_text(text)) == (2 if multiple_chunks else 1)
+    result = run(g.insert.text(text))
+    assert len(result.entities) == 1
+    assert result.entities[0].aliases == ["A", "Annie"]
+    assert run(g.entities.get("person:ann")).aliases == ["A", "Annie"]
+    assert result.warnings == []
+
+
+def test_replace_source_preserves_facts_when_one_chunk_call_fails():
+    llm = extracting_llm([("Person", "Jane"), ("Company", "Acme"), ("Company", "Globex")])
+    calls = 0
+    phase = "initial"
+
+    def relations(system, user):
+        nonlocal calls
+        calls += 1
+        if phase == "partial" and calls == 2:
+            raise TimeoutError("provider timed out")
+        target = "Globex" if phase == "initial" and calls == 2 else "Acme"
+        return _RelationsOut(relations=[_RelOut(from_name="Jane", type="WORKS_AT", to_name=target)])
+
+    llm.responses["_RelationsOut"] = relations
+    g = fresh_graph("replace-partial", llm=llm, resolver="exact")
+    text = "Jane works at Acme and Globex." + " context" * 650
+    assert len(chunk_text(text)) == 2
+    first = run(g.insert.text(text, source_id="doc", replace_source=True))
+    prior = {r.id for r in first.relations}
+    assert len(prior) == 2
+    phase = "partial"
+    calls = 0
+    result = run(g.insert.text(text + " Updated.", source_id="doc", replace_source=True))
+    assert calls == 2
+    assert [w.code for w in result.warnings] == ["extraction_partial_failure"]
+    assert result.source_diff.retired == []
+    assert set(result.source_diff.kept) == {r.id for r in result.relations}
+    assert {r.id for r in run(g.relations.list()).items} == prior
+    assert all(r.is_current for r in run(g.relations.list(include_invalidated=True)).items)
+    phase = "complete"
+    calls = 0
+    complete = run(g.insert.text(text + " Removed Globex.", source_id="doc", replace_source=True))
+    assert calls == 2
+    assert set(complete.source_diff.retired) == prior - {r.id for r in complete.relations}
+    assert [w.code for w in complete.warnings] == ["fact_retired_by_source"]
+    assert {r.id for r in run(g.relations.list()).items} == {r.id for r in complete.relations}
 
 
 @pytest.mark.parametrize(
@@ -560,7 +661,7 @@ def test_custom_extractor_rejects_proto_properties():
     assert run(g.entities.list()).items == []
 
 
-_RESOLVE_TYPES = ["Person", "Company", "Organization", "Org", "COMPANY", "Place", "Thing"]
+_RESOLVE_TYPES = ["Person", "Company", "Organization", "Organisation", "Bank", "Org", "COMPANY", "Place", "Thing"]
 _RESOLVE_BASES = ["Acme", "Beta", "Café", "Straße", "Ünï", "Jane Doe"]
 _RESOLVE_PREFIXES = ["", "The ", "the "]
 _RESOLVE_SUFFIXES = ["", " Inc", " inc.", " Corp", " LLC", "!", " Ltd"]
@@ -575,13 +676,21 @@ def _resolve_surface(rng):
 
 
 def _scan_resolve(registry, name):
-    key = name.strip().lower()
-    ent = registry.get(key) or next(
-        (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)), None
-    )
-    if ent is None:
-        ent = registry[key] = EntityInput(type="Thing", name=name.strip())
-    return _ids.entity_id(ent.type, ent.name)
+    matches = [e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)]
+    if len(matches) > 1:
+        return None
+    if not matches:
+        ent = EntityInput(type="Thing", name=name.strip())
+        registry[_ids.entity_id(ent.type, ent.name)] = ent
+        return _ids.entity_id(ent.type, ent.name)
+    return _ids.entity_id(matches[0].type, matches[0].name)
+
+
+def _scan_registry(entities):
+    registry = {}
+    for ent in entities:
+        registry.setdefault(_ids.entity_id(ent.type, ent.name), ent)
+    return registry
 
 
 def _limit_derivations(monkeypatch, budget):
@@ -606,7 +715,7 @@ def _fillers():
 
 
 def _assemble_names(monkeypatch, entities, names, sink=None):
-    _limit_derivations(monkeypatch, 4 * _FILLERS + 20 * len(names))
+    _limit_derivations(monkeypatch, 6 * _FILLERS + 20 * len(names))
     rels = [_RelOut(from_name=name, type=f"R{i}", to_name="Anchor") for i, name in enumerate(names)]
     anchor = EntityInput(type="Person", name="Anchor")
     return LLMExtractor._assemble([*_fillers(), *entities, anchor], rels, [], [], sink)
@@ -620,29 +729,34 @@ def test_name_resolution_matches_the_linear_scan_on_random_name_sets(seed, monke
         for _ in range(rng.randint(0, 14))
     ]
     names = [_resolve_surface(rng) for _ in range(40)]
-    registry = {}
-    for ent in [*entities, EntityInput(type="Person", name="Anchor")]:
-        registry.setdefault(ent.name.strip().lower(), ent)
+    registry = _scan_registry([*entities, EntityInput(type="Person", name="Anchor")])
     expected = [_scan_resolve(registry, name) for name in names]
-    facts = _assemble_names(monkeypatch, entities, names)
-    assert [r.from_entity for r in facts.relations] == expected
+    sink = []
+    facts = _assemble_names(monkeypatch, entities, names, sink)
+    assert [r.from_entity for r in facts.relations] == [eid for eid in expected if eid is not None]
     assert [(e.type, e.name) for e in facts.entities[_FILLERS:]] == [(e.type, e.name) for e in registry.values()]
+    assert [w.message for w in sink] == [
+        f"unresolved extracted entity reference {name!r}: multiple entity types match"
+        for name, eid in zip(names, expected, strict=True)
+        if eid is None
+    ]
 
 
 @pytest.mark.parametrize(
     ("entities", "name", "expected"),
     [
-        ([("Organization", "Acme"), ("Company", "Acme Ltd")], "ACME Inc", "organization:acme"),
-        ([("Company", "Acme Ltd"), ("Organization", "Acme")], "ACME Inc", "company:acme"),
-        ([("Person", "Acme"), ("Company", "Acme")], "Acme Inc", "thing:acme-inc"),
-        ([("Person", "Acme!"), ("Company", "Acme Corp")], "Acme", "person:acme"),
+        ([("Organization", "Acme"), ("Company", "Acme Ltd")], "ACME Inc", None),
+        ([("Company", "Acme Ltd"), ("Organization", "Acme")], "ACME Inc", None),
+        ([("Person", "Acme"), ("Company", "Acme")], "Acme Inc", "company:acme"),
+        ([("Person", "Acme!"), ("Company", "Acme Corp")], "Acme", None),
         ([("Person", "Acme!"), ("Company", "Acme Corp")], "The Acme Inc", "company:acme"),
-        ([("Person", "Acme!"), ("Company", "Acme Corp")], "ACME.", "person:acme"),
-        ([("Company", "Acme Corp"), ("Person", "Acme!")], "ACME.", "company:acme"),
+        ([("Person", "Acme!"), ("Company", "Acme Corp")], "ACME.", None),
+        ([("Person", "Bob"), ("Place", "Bob")], "BOB.", None),
         ([("Person", "Robert")], "Bob", "thing:bob"),
         ([("Person", "Bob"), ("Person", "Robert")], "BOB.", "person:bob"),
-        ([("Place", "Café")], "Café", "place:café"),
-        ([("Place", "Café")], "CAFÉ", "place:café"),
+        ([("Person", "Bob"), ("Human", "Bob")], "bob", None),
+        ([("Place", "Café")], "Café", "place:café"),
+        ([("Place", "Café")], "CAFÉ", "place:café"),
         ([("COMPANY", "Acme Corp")], "ACME inc", "company:acme"),
         ([("Person", "The Acme Inc")], "The Acme Inc!", "person:the-acme-inc"),
         ([("Thing", "Acme Inc")], "ACME INC.", "thing:acme-inc"),
@@ -651,8 +765,18 @@ def test_name_resolution_matches_the_linear_scan_on_random_name_sets(seed, monke
 )
 def test_name_resolution_pins_the_winner(entities, name, expected, monkeypatch):
     registered = [EntityInput(type=t, name=n) for t, n in entities]
-    [rel] = _assemble_names(monkeypatch, registered, [name]).relations
-    assert rel.from_entity == expected
+    sink = []
+    facts = _assemble_names(monkeypatch, registered, [name], sink)
+    assert [r.from_entity for r in facts.relations] == ([] if expected is None else [expected])
+    assert len(sink) == (expected is None)
+
+
+@pytest.mark.parametrize("name", ["!!!", "...", " - "])
+def test_name_resolution_drops_punctuation_only_names_without_a_warning(name, monkeypatch):
+    sink = []
+    facts = _assemble_names(monkeypatch, [EntityInput(type="Person", name="Bob")], [name, "BOB."], sink)
+    assert [r.from_entity for r in facts.relations] == ["person:bob"]
+    assert sink == []
 
 
 @pytest.mark.parametrize("bob_first", [True, False])
@@ -663,15 +787,56 @@ def test_name_resolution_ignores_aliases_that_name_another_entity(bob_first, mon
     assert [r.from_entity for r in facts.relations] == ["person:bob", "thing:rob"]
 
 
+def test_name_resolution_picks_the_endpoint_type_out_of_several_matches(monkeypatch):
+    _limit_derivations(monkeypatch, 6 * _FILLERS + 100)
+    schema = Schema.model_validate(
+        {
+            "entities": [{"name": "Person"}, {"name": "Company"}],
+            "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
+        }
+    )
+    entities = [*_fillers(), EntityInput(type="Company", name="Acme"), EntityInput(type="Person", name="acme")]
+    facts = LLMExtractor._assemble(
+        entities, [_RelOut(from_name="ACME", type="WORKS_AT", to_name="Acme.")], [], [], schema=schema
+    )
+    assert [(r.from_entity, r.to_entity) for r in facts.relations] == [("person:acme", "company:acme")]
+
+
+@pytest.mark.parametrize(
+    ("from_types", "expected"),
+    [(["Person"], "person:acme"), (["Place"], "place:acme"), (["Person", "Company"], None), (["Org"], None)],
+)
+def test_name_resolution_narrows_several_matches_by_endpoint_type(from_types, expected, monkeypatch):
+    _limit_derivations(monkeypatch, 6 * _FILLERS + 100)
+    schema = Schema.model_validate(
+        {
+            "entities": [{"name": "Person"}, {"name": "Company"}, {"name": "Place"}, {"name": "Org"}],
+            "relations": [{"type": "KNOWS", "from": {"types": from_types}, "to": {"types": ["Person"]}}],
+        }
+    )
+    entities = [EntityInput(type=t, name="Acme") for t in ["Company", "Person", "Place"]]
+    sink = []
+    facts = LLMExtractor._assemble(
+        [*_fillers(), *entities, EntityInput(type="Person", name="Anchor")],
+        [_RelOut(from_name="ACME", type="KNOWS", to_name="Anchor")],
+        [],
+        [],
+        sink,
+        schema,
+    )
+    assert [r.from_entity for r in facts.relations] == ([] if expected is None else [expected])
+    assert len(sink) == (expected is None)
+
+
 def test_every_name_lookup_resolves_through_the_same_index(monkeypatch):
     entities = [
         EntityInput(type="Company", name="Acme Corp"),
         EntityInput(type="Person", name="Jane"),
         EntityInput(type="Place", name="Café"),
     ]
-    acme, cafe = "ACME inc", "Café"
+    acme, cafe = "ACME inc", "Café"
     step = _StepOut(from_name=acme, type="USES", to_name=cafe)
-    _limit_derivations(monkeypatch, 4 * _FILLERS + 100)
+    _limit_derivations(monkeypatch, 6 * _FILLERS + 100)
     facts = LLMExtractor._assemble(
         [*_fillers(), *entities],
         [_RelOut(from_name=acme, type="OWNS", to_name=cafe)],
@@ -722,3 +887,61 @@ def test_name_resolution_work_grows_linearly_with_the_entity_count(monkeypatch):
     _limit_derivations(monkeypatch, 30 * n)
     facts = LLMExtractor._assemble(entities, rels, [], [])
     assert len(facts.entities) == 2 * n and len(facts.relations) == n
+
+
+@pytest.mark.parametrize(
+    "relations", [None, [_RelOut.model_construct(from_name="Ann", type="KNOWS", to_name="Bob", event_time=2024)]]
+)
+def test_extraction_revalidates_output_model_instances(relations):
+    llm = FakeLLM({"_RelationsOut": _RelationsOut.model_construct(relations=relations)})
+    g = fresh_graph("invalid-instance", llm=llm)
+    with pytest.raises(ExtractionError) as caught:
+        run(g.insert.text("Ann knows Bob.", source_id="s"))
+    field = "relations" if relations is None else "relations[0].event_time"
+    assert caught.value.code == "invalid_llm_output"
+    assert str(caught.value).startswith(f"LLM client returned an invalid result for the relations pass: {field}:")
+    assert run(g.entities.list()).items == []
+    assert run(g.relations.list()).items == []
+
+
+def test_extraction_revalidates_raw_items_inside_output_model():
+    llm = FakeLLM(
+        {
+            "_RelationsOut": _RelationsOut.model_construct(
+                relations=[{"from_name": "Ann", "type": "KNOWS", "to_name": "Bob"}]
+            )
+        }
+    )
+    g = fresh_graph("raw-instance", llm=llm)
+    result = run(g.insert.text("Ann knows Bob.", source_id="s"))
+    assert [(r.from_entity, r.type, r.to_entity) for r in result.relations] == [("thing:ann", "KNOWS", "thing:bob")]
+
+
+@pytest.mark.parametrize("alias", ["Acme\x07Inc", "Acme\x00Inc", "Acme\ud800Inc", "Acme\x85Inc"])
+def test_issue_362_drops_only_bad_extracted_alias(alias):
+    llm = FakeLLM(
+        {
+            "_EntitiesOut": {
+                "entities": [
+                    {"type": "Person", "name": "Ann", "aliases": []},
+                    {"type": "Company", "name": "Acme", "aliases": ["AC", alias]},
+                ]
+            },
+            "_RelationsOut": {
+                "relations": [{"from_name": "Ann", "type": "WORKS_AT", "to_name": "Acme", "event_time": None}]
+            },
+        }
+    )
+    g = fresh_graph("issue-362", llm=llm)
+    result = run(g.insert.text("Ann works at Acme."))
+    assert {e.id for e in result.entities} == {"person:ann", "company:acme"}
+    assert run(g.entities.get("company:acme")).aliases == ["AC"]
+    assert len(result.relations) == 1
+    assert [(w.code, w.message) for w in result.warnings] == [
+        (
+            "extraction_partial_failure",
+            "dropped an extracted alias: entity alias cannot contain control or surrogate characters",
+        )
+    ]
+    with pytest.raises(ValidationError, match="entity alias cannot contain"):
+        EntityInput(type="Company", name="Acme", aliases=[alias])
