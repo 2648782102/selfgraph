@@ -124,15 +124,15 @@ def test_combining_marks_follow_one_pinned_table():
 
 
 def test_format_characters_inside_a_name_do_not_split_it():
-    names = ["Ac​me", "Ac‍me", "Ac­me", "Ac⁠me", "Ac﻿me", "﻿Acme", "Acme‏"]
+    names = ["Ac\u200bme", "Ac\u200dme", "Ac\u00adme", "Ac\u2060me", "Ac\ufeffme", "\ufeffAcme", "Acme\u200f"]
     assert [ids.entity_id("Person", name) for name in names] == ["person:acme"] * len(names)
-    assert ids.entity_id("Company", "Acme​ Inc­.") == "company:acme"
-    assert ids.entity_id("Person", "Jane​ Doe") == "person:jane-doe"
+    assert ids.entity_id("Company", "Acme\u200b Inc\u00ad.") == "company:acme"
+    assert ids.entity_id("Person", "Jane\u200b Doe") == "person:jane-doe"
 
 
 def test_format_characters_follow_one_pinned_table():
-    assert [ids._FORMAT.match(ch) is not None for ch in "­​⁠﻿\U000e0001"] == [True] * 5
-    assert [ids._FORMAT.match(ch) is not None for ch in "a ́️　"] == [False] * 5
+    assert [ids._FORMAT.match(ch) is not None for ch in "\u00ad\u200b\u2060\ufeff\U000e0001"] == [True] * 5
+    assert [ids._FORMAT.match(ch) is not None for ch in "a \u0301\ufe0f\u3000"] == [False] * 5
     if unicodedata.unidata_version != "15.0.0":
         pytest.skip("the table is checked against the Unicode 15.0 data of Python 3.12")
     formats = {cp for cp in range(sys.maxunicode + 1) if unicodedata.category(chr(cp)) == "Cf"}
