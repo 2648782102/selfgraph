@@ -221,8 +221,7 @@ def _unknown_key(model: "type[InputModel]", value: Any, label: str, path: str = 
     if not isinstance(value, Mapping):
         return None
     keys = [field.alias or name for name, field in model.model_fields.items()]
-    accepted = set(keys) | set(model.model_fields)
-    unknown = sorted(str(k) for k in value if k not in accepted)
+    unknown = sorted(str(k) for k in value if k not in keys)
     if unknown:
         where = f"{label}.{path}" if path else label
         return ValidationError(

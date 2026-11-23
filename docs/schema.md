@@ -67,7 +67,7 @@ id is derived. This applies on insert and in `entities.create` and
 relation uses `from_entity` and `to_entity`. In Python the field is `from_`, so
 serialize with `schema.model_dump(by_alias=True)` (or
 `model_dump_json(by_alias=True)`) to get the `from` key. A plain `model_dump()`
-writes `from_`.
+writes `from_`, which a schema rejects as an unknown key.
 
 The `types` of an endpoint name entity types the same way entities do: by name or alias,
 ignoring case, with the parent chain followed. An entity typed `Company` matches an
