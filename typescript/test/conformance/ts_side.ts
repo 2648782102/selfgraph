@@ -1929,6 +1929,7 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   out.retrieval_overflow = await overflow(graph);
   out.retrieval_ppr_ties = await pprTies(graph);
   out.retrieval_passage_ranking = await passageRanking(graph);
+  out.retrieval_plural_seeds = await pluralSeeds(graph);
   const propertyOrder = new SelfGraph(graph.store, { namespace: `${graph.namespace}_property_order` });
   await propertyOrder.insert.facts({
     entities: [
@@ -2223,6 +2224,46 @@ async function passageRanking(graph: SelfGraph): Promise<{ tied: string; ranked:
   const ranked: Record<string, string> = {};
   for (const word of ["word3", "word4", "word9"]) ranked[word] = (await g.retrieve(`Ann ${word}`)).context;
   return { tied: (await g.retrieve("Ann")).context, ranked };
+}
+
+/**
+ * Retrieve by plural and singular words that name an entity's type, name, or a non-Latin word.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<Record<string, { seeds: string[]; context: string; verdict: string }>>): for each query, the seed ids, the context, and the checkAnswerable verdict.
+ */
+async function pluralSeeds(
+  graph: SelfGraph,
+): Promise<Record<string, { seeds: string[]; context: string; verdict: string }>> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_plural` });
+  await g.insert.facts({
+    entities: [
+      { id: "engineer:bob", type: "Engineer", name: "Bob Ray" },
+      { id: "company:acme", type: "Company", name: "Acme" },
+      { id: "service:payment", type: "Service", name: "Payment API" },
+      { id: "page:status", type: "Page", name: "Status" },
+      { id: "place:daisies", type: "Place", name: "Ромашки" },
+    ],
+    relations: [{ from_entity: "engineer:bob", type: "OWNS", to_entity: "service:payment" }],
+  });
+  const queries = [
+    "who are the engineers",
+    "list all companies",
+    "who owns payments",
+    "which engineer",
+    "statuses",
+    "ромашки",
+  ];
+  const out: Record<string, { seeds: string[]; context: string; verdict: string }> = {};
+  for (const query of queries) {
+    const result = await g.retrieve(query);
+    out[query] = {
+      seeds: result.seeds.map((s) => s.id),
+      context: result.context,
+      verdict: (await g.checkAnswerable(query)).verdict,
+    };
+  }
+  return out;
 }
 
 async function vaultNames(graph: SelfGraph): Promise<string[]> {
