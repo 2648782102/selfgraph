@@ -123,6 +123,22 @@ def test_combining_marks_follow_one_pinned_table():
     assert {cp for cp in range(sys.maxunicode + 1) if ids._is_mark(chr(cp))} == marks
 
 
+def test_format_characters_inside_a_name_do_not_split_it():
+    names = ["Ac​me", "Ac‍me", "Ac­me", "Ac⁠me", "Ac﻿me", "﻿Acme", "Acme‏"]
+    assert [ids.entity_id("Person", name) for name in names] == ["person:acme"] * len(names)
+    assert ids.entity_id("Company", "Acme​ Inc­.") == "company:acme"
+    assert ids.entity_id("Person", "Jane​ Doe") == "person:jane-doe"
+
+
+def test_format_characters_follow_one_pinned_table():
+    assert [ids._FORMAT.match(ch) is not None for ch in "­​⁠﻿\U000e0001"] == [True] * 5
+    assert [ids._FORMAT.match(ch) is not None for ch in "a ́️　"] == [False] * 5
+    if unicodedata.unidata_version != "15.0.0":
+        pytest.skip("the table is checked against the Unicode 15.0 data of Python 3.12")
+    formats = {cp for cp in range(sys.maxunicode + 1) if unicodedata.category(chr(cp)) == "Cf"}
+    assert {cp for cp in range(sys.maxunicode + 1) if ids._FORMAT.match(chr(cp))} == formats
+
+
 def test_require_identifier_accepts_plain_identifiers():
     for name in ("id", "sid", "index", "external_ids", "name", "k_Entity_1"):
         assert ids.require_identifier(name) == name
