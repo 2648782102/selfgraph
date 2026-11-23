@@ -1599,6 +1599,33 @@ async function canonicalFactIds(graph: SelfGraph): Promise<Record<string, unknow
   };
 }
 
+/**
+ * Insert entities whose names differ only by a plus or a number sign and read back where each relation landed.
+ *
+ * @param graph (SelfGraph): the graph whose store hosts the isolated case.
+ * @return (Promise<Record<string, unknown>>): the derived ids, the stored entities, and the endpoint of each relation.
+ */
+async function symbolEntityIds(graph: SelfGraph): Promise<Record<string, unknown>> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_symbol_entity_ids` });
+  const names = ["C++", "C#", "C", "F#", "Disney+", "Disney", "A+B", "#1", "+", "C plus plus"];
+  await g.insert.facts({
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Person", name: "Bob" },
+      ...names.map((name) => ({ type: "Language", name })),
+    ],
+    relations: [
+      { from_entity: "person:ann", type: "USES", to_entity: ids.entityId("Language", "C++") },
+      { from_entity: "person:bob", type: "USES", to_entity: ids.entityId("Language", "C#") },
+    ],
+  });
+  return {
+    ids: names.map((name) => ids.entityId("Language", name)),
+    entities: (await g.entities.list({ type: "Language" })).items.map((e) => [e.id, e.name, e.aliases]),
+    relations: (await g.relations.list({ type: "USES" })).items.map((r) => [r.from_entity, r.to_entity]),
+  };
+}
+
 export async function write(graph: SelfGraph): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   const storedErrors: unknown[] = [];
@@ -2777,6 +2804,7 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     diff: await graph.diff("1900-01-01", "2100-01-01"),
     diff_windows: await diffWindows(graph),
     canonical_fact_ids: await canonicalFactIds(graph),
+    symbol_entity_ids: await symbolEntityIds(graph),
     answerable,
     shared_synonym_answerable: sharedSynonymAnswerable,
     shared_synonym_schema_only: sharedSynonymSchemaOnly,

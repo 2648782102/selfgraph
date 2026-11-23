@@ -336,6 +336,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
 
         const tsReadsTs = await ts(store, nsTs, (g) => dump(g, nsTs));
         const pyReadsTs = py("dump", store, nsTs);
+        for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
+          expect((snapshot as { symbol_entity_ids: { ids: string[] } }).symbol_entity_ids.ids).toEqual([
+            "language:c-plus-plus",
+            "language:c-sharp",
+            "language:c",
+            "language:f-sharp",
+            "language:disney-plus",
+            "language:disney",
+            "language:a-plus-b",
+            "language:sharp-1",
+            "language:plus",
+            "language:c-plus-plus",
+          ]);
+        }
         if (store === "kuzu") {
           for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
             expect(snapshot).toMatchObject({

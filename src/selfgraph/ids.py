@@ -224,6 +224,7 @@ _MARK = re.compile(f"[{MARK_CLASS}]")
 _FORMAT = re.compile(f"[{FORMAT_CLASS}]")
 _PUNCT = re.compile(rf"[^{WORD_CLASS}\s{MARK_CLASS}]+")
 _NON_IDENT = re.compile(rf"[^{WORD_CLASS}{MARK_CLASS}]+")
+_SYMBOL_WORDS = (("+", " plus "), ("#", " sharp "))
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _DIGIT_LETTER = re.compile(r"(?<=[0-9])(?=[A-Z])")
 _ENTITY_SUFFIXES = frozenset(
@@ -335,6 +336,17 @@ def _is_org_type(type: str) -> bool:
     return slug(normalize_text(type)) in _ORG_TYPES
 
 
+def _spell_symbols(text: str) -> str:
+    """Spell out the symbols a derived id keeps as words, so C++, C#, and C stay three names.
+
+    @param text (str): the text to spell out.
+    @return (str): the text with each of those symbols replaced by its word, set apart by spaces.
+    """
+    for symbol, word in _SYMBOL_WORDS:
+        text = text.replace(symbol, word)
+    return text
+
+
 def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
 
@@ -342,7 +354,7 @@ def _canonical_name(type: str, name: str) -> str:
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
     """
-    words = _PUNCT.sub(" ", normalize_text(lower(_FORMAT.sub("", name).strip()))).split()
+    words = _PUNCT.sub(" ", _spell_symbols(normalize_text(lower(_FORMAT.sub("", name).strip())))).split()
     if _is_org_type(type):
         if words and words[0] == "the":
             words = words[1:]
