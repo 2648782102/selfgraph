@@ -3458,7 +3458,10 @@
   "9x": "`9x`",
   "\u00dcnicode": "`\u00dcnicode`",
   "a\n": "`a\n`",
-  "Person\n": "`Person\n`"
+  "Person\n": "`Person\n`",
+  "a\t": "`a\t`",
+  "Person\t": "`Person\t`",
+  "a\u0001": "`a\u0001`"
  },
  "dumps_sorted": [
   [
