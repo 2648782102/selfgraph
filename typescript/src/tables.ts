@@ -88,8 +88,16 @@ export function fromTables(tables: readonly object[], options: FromTablesOptions
       throw new ValidationError(`tables[${i}]: each table needs a name`);
     }
     names.set(table.name, typeNameOf(table.name));
-    const bare = table.name.slice(table.name.lastIndexOf(".") + 1);
-    if (!names.has(bare)) names.set(bare, names.get(table.name)!);
+  }
+  const typeNames = [...names.values()];
+  for (const [tableName, etype] of names) {
+    if (tableName.includes(".") && typeNames.filter((name) => name === etype).length > 1) {
+      names.set(tableName, typeNameOf(tableName.replaceAll(".", "_")));
+    }
+  }
+  for (const [tableName, etype] of [...names]) {
+    const bare = tableName.slice(tableName.lastIndexOf(".") + 1);
+    if (!names.has(bare)) names.set(bare, etype);
   }
   const entities: unknown[] = [];
   const relations = new Map<string, DraftRelation>();

@@ -70,6 +70,34 @@ const CANONICAL = {
 };
 
 describe("Neo4j graph schema interop", () => {
+  it.each([
+    ["node_types", "entities", false],
+    ["relationship_types", "relations", false],
+    ["node_types", "entities", true],
+    ["relationship_types", "relations", true],
+  ] as const)("requires string descriptions for %s (%s, property: %s)", (source, target, propertyDescription) => {
+    const field = `${target}[0].${propertyDescription ? "properties[0]." : ""}description`;
+    for (const description of [false, 0, {}, [], true, 42, { text: "bad" }, ["bad"], null, "", "A description", " "]) {
+      const body: Record<string, unknown> = { label: source === "node_types" ? "Person" : "KNOWS" };
+      if (propertyDescription) body.properties = [{ name: "note", description }];
+      else body.description = description;
+      const data = { [source]: [body] };
+      if (description !== null && typeof description !== "string") {
+        expect(() => fromNeo4jOntology(data)).toThrow(
+          expect.objectContaining({
+            code: "invalid_argument",
+            field,
+            message: `invalid schema: ${field}: expected string`,
+          }),
+        );
+      } else {
+        const schema = fromNeo4jOntology(data);
+        const item = propertyDescription ? schema[target][0]!.properties[0]! : schema[target][0]!;
+        expect(item.description).toBe(description === "" ? null : description);
+      }
+    }
+  });
+
   it("maps types, patterns, and constraints, and lists what it drops", async () => {
     const { result: schema, warnings: lines } = await captureWarnings(() => fromNeo4jOntology(NEO4J));
     const [person, company, city] = schema.entities;

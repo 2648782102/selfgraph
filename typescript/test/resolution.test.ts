@@ -6,6 +6,7 @@ import {
   decisionId,
   EntityInput,
   type Extraction,
+  ExtractionError,
   entityId,
   type LLMClient,
   LLMResolver,
@@ -129,6 +130,70 @@ function suite(spec: StoreSpec) {
   const open = freshGraphs(spec, "res");
   const ids = async (g: SelfGraph) => (await g.entities.list({ limit: 1000 })).items.map((e) => e.id).sort();
   const seed = (g: SelfGraph, ...entities: Extraction["entities"] & object[]) => g.insert.facts({ entities });
+
+  it.each([
+    ["insert", 1],
+    ["insert", 2],
+    ["update", 1],
+    ["update", 2],
+  ] as const)("issue 386 preserves survivor writes via %s with %s", async (write, value) => {
+    const g = open({ resolver: "exact" });
+    await seed(g, { type: "Person", name: "Robert", aliases: ["Bob"] });
+    const result = await g.insert.facts(
+      {
+        entities: [
+          {
+            type: "Person",
+            name: "Bob",
+            aliases: ["Bobby", "Rob"],
+            properties: { k: 1, merge_only: 1 },
+            external_ids: { a: "1", b: "2" },
+          },
+        ],
+      },
+      { resolver: "default" },
+    );
+    const fields = { aliases: ["Bobby"], properties: { k: value }, external_ids: { a: "1" } };
+    if (write === "insert") await g.insert.facts({ entities: [{ type: "Person", name: "Robert", ...fields }] });
+    else await g.entities.update("person:robert", fields);
+    await g.entities.unmerge(result.merges[0]!.id);
+    const survivor = await g.entities.get("person:robert");
+    expect(survivor?.aliases).toEqual(["Bob", "Bobby"]);
+    expect(survivor?.properties).toEqual({ k: value });
+    expect(survivor?.external_ids).toEqual({ a: "1" });
+  });
+
+  it.each(["insert", "update"])("issue 386 preserves decision references via %s", async (write) => {
+    const g = open({ resolver: "exact" });
+    await seed(
+      g,
+      { type: "Person", name: "Robert", aliases: ["Bob"] },
+      { type: "Person", name: "Xena" },
+      { type: "Person", name: "Ada" },
+    );
+    const result = await g.insert.facts(
+      {
+        entities: [{ type: "Person", name: "Bob" }],
+        decisions: [
+          {
+            id: "decision:pick",
+            title: "Pick",
+            outcome_entity: "person:bob",
+            alternative_entities: ["person:bob", "person:xena"],
+          },
+        ],
+      },
+      { resolver: "default" },
+    );
+    const fields = { outcome_entity: "person:ada", alternative_entities: ["person:xena"], summary: "later" };
+    if (write === "insert") await g.insert.facts({ decisions: [{ id: "decision:pick", title: "Pick", ...fields }] });
+    else await g.decisions.update("decision:pick", fields);
+    await g.entities.unmerge(result.merges[0]!.id);
+    const decision = await g.decisions.get("decision:pick");
+    expect(decision?.outcome_entity).toBe("person:ada");
+    expect(decision?.alternative_entities).toEqual(["person:xena"]);
+    expect(decision?.summary).toBe("later");
+  });
 
   it("leaves exact mode unchanged", async () => {
     const g = open({ resolver: "exact" });
@@ -1468,6 +1533,55 @@ function suite(spec: StoreSpec) {
     },
   );
 
+  it.runIf(spec.name === "kuzu")("indexes keys and drops stale ones", async () => {
+    const first = open({ resolver: "default" });
+    const ns = first.namespace;
+    const robert = entityId("Person", "Robert Smith");
+    await seed(
+      first,
+      { type: "Company", name: "International Business Machines", external_ids: { ticker: "IBM" } },
+      { type: "Person", name: "Robert Smith", aliases: ["Bob Smith"] },
+    );
+    const keys = "MATCH (k:K) WHERE k.ns = $ns AND k.eid = $eid RETURN count(*) AS n";
+    const own = { ns, eid: robert } as never;
+    expect((await first.runCypher(keys, own)).rows).toEqual([{ n: 2 }]);
+
+    const g = new SelfGraph(spec.make(), { namespace: ns, resolver: "default" });
+    try {
+      const { merges } = await g.insert.facts({
+        entities: [
+          { type: "Person", name: "bob smith" },
+          { type: "Company", name: "IBM Corp", external_ids: { ticker: "IBM" } },
+        ],
+      });
+      expect(merges.map((m) => [m.survivor_id, m.reason]).sort()).toEqual([
+        [IBM, "external_id"],
+        [robert, "alias"],
+      ]);
+      await g.entities.update(robert, { remove_aliases: (await g.entities.get(robert))!.aliases });
+      expect((await g.insert.facts({ entities: [{ type: "Person", name: "Bob Smith" }] })).merges).toEqual([]);
+      expect((await g.runCypher(keys, own)).rows).toEqual([{ n: 1 }]);
+      await g.entities.delete(robert);
+      expect((await g.runCypher(keys, own)).rows).toEqual([{ n: 0 }]);
+    } finally {
+      await g.close();
+    }
+  });
+
+  it.runIf(spec.name === "kuzu")("reads no entity pages when the default resolver resolves a new entity", async () => {
+    const g = open({ resolver: "default" });
+    await seed(g, ...Array.from({ length: 30 }, (_, i) => ({ type: "Person", name: `Person ${i}` })));
+    let read = 0;
+    const real = g.store.matchNodes.bind(g.store);
+    g.store.matchNodes = async (ns: string, label: string, options?: never) => {
+      const rows = await real(ns, label, options);
+      if (label === "Entity") read += rows.length;
+      return rows;
+    };
+    await g.insert.facts({ entities: [{ type: "Person", name: "Someone New" }] });
+    expect(read).toBe(0);
+  });
+
   it("offers a custom resolver only type-compatible candidates and checks its decision", async () => {
     const seen: Record<string, string[]> = {};
     const recorder = {
@@ -1505,6 +1619,21 @@ function suite(spec: StoreSpec) {
     await expect(decide("Ada", { target_id: "person:nobody", confidence: 1, reason: "w" })).rejects.toThrow(
       /not one of the compatible entities/,
     );
+  });
+
+  it.each([null, { same: "false" }, { same: 1 }])("rejects invalid resolver replies: %j", async (reply) => {
+    const llm = { generate: async <T>() => reply as T };
+    const g = open({ llm, resolver: "llm" });
+    await seed(g, { type: "Person", name: "John Smith" });
+    const result = g.insert.facts({ entities: [{ type: "Person", name: "Jon Smyth" }] });
+    await expect(result).rejects.toBeInstanceOf(ExtractionError);
+    await expect(result).rejects.toMatchObject({
+      code: "invalid_llm_output",
+      field: "same",
+      message: "LLM client returned an invalid result for the resolver: same must be a boolean",
+    });
+    expect((await g.entities.list()).items.map((e) => e.id)).toEqual([entityId("Person", "John Smith")]);
+    expect((await g.entities.merges(entityId("Person", "John Smith"))).items).toEqual([]);
   });
 
   it("asks the LLM only inside the band", async () => {

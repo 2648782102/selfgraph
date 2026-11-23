@@ -313,3 +313,17 @@ def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():
         orders.append([e.name for e in run(LLMExtractor(llm).extract(document)).entities])
         assert llm.peak == peak
     assert orders[0] == orders[1] == [f"Chunk{i}" for i in range(6)]
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_reply_quoting_invalid_api_key_is_not_an_auth_failure(wrapped):
+    config = LLMConfig(provider="openai", model="m")
+    exc = ValueError('Could not parse model reply: "invalid API key"')
+    error = InstructorRetryException(exc) if wrapped else exc
+    assert _fatal(error, config, "openai/m") is None
+    auth = _fatal(AuthenticationError("unauthorized"), config, "openai/m")
+    assert auth.code == "llm_auth_failed"
+    assert str(auth) == (
+        "LLM authentication failed for provider openai: check the API key, set by "
+        "api_key in the llm config (or SELFGRAPH_LLM_API_KEY)"
+    )

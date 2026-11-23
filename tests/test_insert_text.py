@@ -32,6 +32,106 @@ from selfgraph.extraction.extractor import (
 from selfgraph.extraction.prompts import render
 
 
+@pytest.mark.parametrize("typed", [False, True])
+def test_issue_343_keeps_same_name_entities_with_different_types(typed):
+    class LLM:
+        async def generate(self, *, system, user, output):
+            kind = next(iter(output.model_fields))
+            if kind == "entities":
+                return {kind: [{"type": "Person", "name": "Acme"}, {"type": "Company", "name": "acme"}]}
+            if kind == "relations":
+                return {kind: [{"from_name": "Acme", "type": "WORKS_AT", "to_name": "acme"}]}
+            if kind == "decisions":
+                return {
+                    kind: [{"title": "Join", "steps": [{"from_name": "Acme", "type": "WORKS_AT", "to_name": "acme"}]}]
+                }
+            return {kind: []}
+
+    schema = (
+        {
+            "entities": [{"name": "Person"}, {"name": "Company"}],
+            "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
+        }
+        if typed
+        else None
+    )
+    g = fresh_graph("issue-343", llm=LLM(), resolver="exact", schema=schema)
+    result = run(g.insert.text("Acme works at acme."))
+    assert {e.id for e in result.entities} == {"person:acme", "company:acme"}
+    assert {e.id for e in run(g.entities.list()).items} == {"person:acme", "company:acme"}
+    if typed:
+        assert [(r.from_entity, r.to_entity) for r in result.relations] == [("person:acme", "company:acme")]
+        assert [step.relation_id for step in result.decisions[0].steps] == [result.relations[0].id]
+        assert result.warnings == []
+    else:
+        assert result.relations == []
+        assert result.decisions[0].steps == []
+        assert [w.code for w in result.warnings] == ["extraction_partial_failure"] * 4
+
+
+@pytest.mark.parametrize("multiple_chunks", [False, True])
+def test_issue_360_unions_aliases_from_every_mention(multiple_chunks):
+    calls = 0
+
+    class LLM:
+        async def generate(self, *, system, user, output):
+            nonlocal calls
+            kind = next(iter(output.model_fields))
+            if kind != "entities":
+                return {kind: []}
+            calls += 1
+            first = {"type": "Person", "name": "Ann", "aliases": ["A"]}
+            later = {"type": "Person", "name": "ann", "aliases": ["A", "Annie"]}
+            return {kind: [first] if multiple_chunks and calls == 1 else [first, later]}
+
+    g = fresh_graph("issue-360", llm=LLM(), resolver="exact")
+    text = "Ann is also called Annie." + (" context" * 650 if multiple_chunks else "")
+    assert len(chunk_text(text)) == (2 if multiple_chunks else 1)
+    result = run(g.insert.text(text))
+    assert len(result.entities) == 1
+    assert result.entities[0].aliases == ["A", "Annie"]
+    assert run(g.entities.get("person:ann")).aliases == ["A", "Annie"]
+    assert result.warnings == []
+
+
+def test_replace_source_preserves_facts_when_one_chunk_call_fails():
+    llm = extracting_llm([("Person", "Jane"), ("Company", "Acme"), ("Company", "Globex")])
+    calls = 0
+    phase = "initial"
+
+    def relations(system, user):
+        nonlocal calls
+        calls += 1
+        if phase == "partial" and calls == 2:
+            raise TimeoutError("provider timed out")
+        target = "Globex" if phase == "initial" and calls == 2 else "Acme"
+        return _RelationsOut(relations=[_RelOut(from_name="Jane", type="WORKS_AT", to_name=target)])
+
+    llm.responses["_RelationsOut"] = relations
+    g = fresh_graph("replace-partial", llm=llm, resolver="exact")
+    text = "Jane works at Acme and Globex." + " context" * 650
+    assert len(chunk_text(text)) == 2
+    first = run(g.insert.text(text, source_id="doc", replace_source=True))
+    prior = {r.id for r in first.relations}
+    assert len(prior) == 2
+    phase = "partial"
+    calls = 0
+    result = run(g.insert.text(text + " Updated.", source_id="doc", replace_source=True))
+    assert calls == 2
+    assert [w.code for w in result.warnings] == ["extraction_partial_failure"]
+    assert result.source_diff.retired == []
+    assert set(result.source_diff.kept) == {r.id for r in result.relations}
+    assert {r.id for r in run(g.relations.list()).items} == prior
+    assert all(r.is_current for r in run(g.relations.list(include_invalidated=True)).items)
+    phase = "complete"
+    calls = 0
+    complete = run(g.insert.text(text + " Removed Globex.", source_id="doc", replace_source=True))
+    assert calls == 2
+    assert set(complete.source_diff.retired) == prior - {r.id for r in complete.relations}
+    assert [w.code for w in complete.warnings] == ["fact_retired_by_source"]
+    assert {r.id for r in run(g.relations.list()).items} == {r.id for r in complete.relations}
+
+
 @pytest.mark.parametrize(
     ("dates", "expected"),
     [
@@ -557,3 +657,61 @@ def test_custom_extractor_rejects_proto_properties():
     with pytest.raises(ValidationError, match="^property and external id keys cannot be '__proto__'$"):
         run(g.insert.text("Ann is a person."))
     assert run(g.entities.list()).items == []
+
+
+@pytest.mark.parametrize(
+    "relations", [None, [_RelOut.model_construct(from_name="Ann", type="KNOWS", to_name="Bob", event_time=2024)]]
+)
+def test_extraction_revalidates_output_model_instances(relations):
+    llm = FakeLLM({"_RelationsOut": _RelationsOut.model_construct(relations=relations)})
+    g = fresh_graph("invalid-instance", llm=llm)
+    with pytest.raises(ExtractionError) as caught:
+        run(g.insert.text("Ann knows Bob.", source_id="s"))
+    field = "relations" if relations is None else "relations[0].event_time"
+    assert caught.value.code == "invalid_llm_output"
+    assert str(caught.value).startswith(f"LLM client returned an invalid result for the relations pass: {field}:")
+    assert run(g.entities.list()).items == []
+    assert run(g.relations.list()).items == []
+
+
+def test_extraction_revalidates_raw_items_inside_output_model():
+    llm = FakeLLM(
+        {
+            "_RelationsOut": _RelationsOut.model_construct(
+                relations=[{"from_name": "Ann", "type": "KNOWS", "to_name": "Bob"}]
+            )
+        }
+    )
+    g = fresh_graph("raw-instance", llm=llm)
+    result = run(g.insert.text("Ann knows Bob.", source_id="s"))
+    assert [(r.from_entity, r.type, r.to_entity) for r in result.relations] == [("thing:ann", "KNOWS", "thing:bob")]
+
+
+@pytest.mark.parametrize("alias", ["Acme\x07Inc", "Acme\x00Inc", "Acme\ud800Inc", "Acme\x85Inc"])
+def test_issue_362_drops_only_bad_extracted_alias(alias):
+    llm = FakeLLM(
+        {
+            "_EntitiesOut": {
+                "entities": [
+                    {"type": "Person", "name": "Ann", "aliases": []},
+                    {"type": "Company", "name": "Acme", "aliases": ["AC", alias]},
+                ]
+            },
+            "_RelationsOut": {
+                "relations": [{"from_name": "Ann", "type": "WORKS_AT", "to_name": "Acme", "event_time": None}]
+            },
+        }
+    )
+    g = fresh_graph("issue-362", llm=llm)
+    result = run(g.insert.text("Ann works at Acme."))
+    assert {e.id for e in result.entities} == {"person:ann", "company:acme"}
+    assert run(g.entities.get("company:acme")).aliases == ["AC"]
+    assert len(result.relations) == 1
+    assert [(w.code, w.message) for w in result.warnings] == [
+        (
+            "extraction_partial_failure",
+            "dropped an extracted alias: entity alias cannot contain control or surrogate characters",
+        )
+    ]
+    with pytest.raises(ValidationError, match="entity alias cannot contain"):
+        EntityInput(type="Company", name="Acme", aliases=[alias])
