@@ -381,13 +381,16 @@ async def _export_obsidian(graph, args):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
     except OSError as exc:
+        code = exc.errno
+        if code == errno.EEXIST and exc.filename is not None and Path(exc.filename) != folder:
+            code = errno.ENOTDIR
         kind = {
             errno.EEXIST: "file exists",
             errno.ENOTDIR: "not a directory",
             errno.EACCES: "permission denied",
             errno.EPERM: "permission denied",
             errno.ENOENT: "no such directory",
-        }.get(exc.errno)
+        }.get(code)
         raise ValidationError(
             f"cannot write the vault to {str(folder)!r}: {kind or exc.strerror or exc}", field="directory"
         ) from exc
