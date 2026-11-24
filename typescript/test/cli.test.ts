@@ -11,6 +11,7 @@ import { checkLlmConfig } from "../src/llm/index.js";
 import {
   bindParams,
   buildLlm,
+  checkSettings,
   DEFAULT_SETTINGS,
   type GraphSettings,
   parseTime,
@@ -208,6 +209,18 @@ describe("built CLI against Kuzu", () => {
       [["--namespace", " x"], {}, "namespace cannot start or end with whitespace"],
       [["--llm-timeout", "0"], {}, "llm_timeout must be a positive number"],
       [["--llm-concurrency", "0"], {}, "llm_concurrency must be a positive integer, got '0'"],
+      [
+        ["--llm-concurrency", "++5"],
+        {},
+        "error[invalid_setting]: llm_concurrency must be a positive integer, got '++5'",
+      ],
+      [[], { SELFGRAPH_LLM_CONCURRENCY: "++5" }, "llm_concurrency must be a positive integer, got '++5'"],
+      [["--llm-concurrency", "\u0665"], {}, "llm_concurrency must be a positive integer"],
+      [[], { SELFGRAPH_LLM_CONCURRENCY: "99999999999999999999" }, "llm_concurrency must be a positive integer"],
+      [["--llm-timeout", "1_0"], {}, "llm_timeout must be a positive number"],
+      [["--llm-timeout", "0x10"], {}, "llm_timeout must be a positive number"],
+      [[], { SELFGRAPH_LLM_TIMEOUT: "0b1" }, "llm_timeout must be a positive number"],
+      [[], { SELFGRAPH_LLM_TIMEOUT: "\u0665" }, "llm_timeout must be a positive number"],
       [["--llm-provider", "gemini"], {}, "pass --llm-model"],
       [
         ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
@@ -240,6 +253,76 @@ describe("built CLI against Kuzu", () => {
         expect(res.code, `${args.join(" ")} ${command}`).toBe(2);
         expect(res.err).toContain(message);
       }
+    }
+  });
+
+  it.each([
+    ["30", 30],
+    [" 1.5 ", 1.5],
+    ["+2", 2],
+    [".5", 0.5],
+    ["5.", 5],
+    ["1e1", 10],
+    ["1E+1", 10],
+  ])("reads the llm_timeout setting %j as %d seconds", (value, seconds) => {
+    const settings = { ...DEFAULT_SETTINGS, llm_model: "openai/m", llm_timeout: value };
+    expect(() => checkSettings(settings)).not.toThrow();
+    expect(buildLlm(settings)?.timeout).toBe(seconds);
+  });
+
+  it.each([
+    ["7", 7],
+    [" 7 ", 7],
+    ["+7", 7],
+    ["007", 7],
+    ["9007199254740991", 9007199254740991],
+  ])("reads the llm_concurrency setting %j as %d chunks", (value, count) => {
+    const settings = { ...DEFAULT_SETTINGS, llm_model: "openai/m", llm_concurrency: value };
+    expect(() => checkSettings(settings)).not.toThrow();
+    expect(buildLlm(settings)?.concurrency).toBe(count);
+  });
+
+  it.each([
+    ...[
+      "1_0",
+      "\u0665",
+      "\uff15",
+      "0x10",
+      "0b1",
+      "0o7",
+      "inf",
+      "nan",
+      "-5",
+      "--5",
+      "0",
+      "1 0",
+      "soon",
+      "1e400",
+      "1e-400",
+    ].map((value) => ["llm_timeout", value, `llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`]),
+    ...[
+      "++5",
+      "+",
+      "-1",
+      "0",
+      "\u0665",
+      "\uff15",
+      "99999999999999999999",
+      "9007199254740992",
+      "1_0",
+      "5.0",
+      "1e3",
+      "0x10",
+      "x",
+    ].map((value) => ["llm_concurrency", value, `llm_concurrency must be a positive integer, got ${pyRepr(value)}`]),
+  ])("rejects the %s setting %j with invalid_setting from the API and the environment", (setting, value, message) => {
+    for (const settings of [
+      { ...DEFAULT_SETTINGS, [setting]: value },
+      settingsFromEnv({}, { [`SELFGRAPH_${setting.toUpperCase()}`]: value }),
+    ]) {
+      expect(() => checkSettings(settings)).toThrow(
+        expect.objectContaining({ code: "invalid_setting", field: setting, message }),
+      );
     }
   });
 

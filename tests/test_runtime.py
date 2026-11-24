@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -424,6 +425,44 @@ def test_store_uris_with_unencoded_userinfo_are_rejected():
     ):
         check_settings(GraphSettings(store=store, uri=uri))
     run(bolt_driver("bolt://[::1]:7687", None).close())
+
+
+_MEMGRAPH_TOKEN_ERROR = (
+    b"Invalid query. There is a wrong token at position 0 starting with \xf0. "
+    b"Remove that part of the query and try to rerun it."
+)
+
+
+def test_a_non_utf8_server_message_keeps_the_engines_reason(monkeypatch):
+    from neo4j import AsyncSession
+
+    async def undecodable(self, query, parameters=None, **kwargs):
+        raise UnicodeDecodeError("utf-8", _MEMGRAPH_TOKEN_ERROR, 66, 67, "invalid continuation byte")
+
+    monkeypatch.setattr(AsyncSession, "run", undecodable)
+    store = Neo4jStore("bolt://127.0.0.1:1")
+    with pytest.raises(StoreError) as err:
+        run(store.run_cypher("RETURN 1"))
+    assert err.value.code == "query_failed"
+    assert str(err.value) == (
+        "Cypher query failed: Invalid query. There is a wrong token at position 0 starting with \ufffd. "
+        "Remove that part of the query and try to rerun it."
+    )
+    run(store.close())
+
+
+def test_the_driver_log_line_for_an_undecodable_response_is_dropped(caplog):
+    run(bolt_driver("bolt://127.0.0.1:1", None).close())
+    bad = UnicodeDecodeError("utf-8", _MEMGRAPH_TOKEN_ERROR, 66, 67, "invalid continuation byte")
+    driver_log = logging.getLogger("neo4j.io")
+    with caplog.at_level(logging.DEBUG, logger="neo4j.io"):
+        driver_log.error("<CONNECTION> error: %s: %r", "Failed to read from defunct connection", bad)
+        driver_log.debug("Failed to unpack response: %r", bad)
+        driver_log.error("<CONNECTION> error: %s: %r", "Failed to read from defunct connection", OSError("reset"))
+    assert [r.getMessage() for r in caplog.records if r.name == "neo4j.io"] == [
+        f"Failed to unpack response: {bad!r}",
+        "<CONNECTION> error: Failed to read from defunct connection: OSError('reset')",
+    ]
 
 
 def test_falkordb_addresses_urlparse_refuses_are_masked():

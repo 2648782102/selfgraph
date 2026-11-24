@@ -31,8 +31,8 @@ or `--contradiction` on an insert or `relation create`) wins after it.
 | `--database` | Bolt: database name (default: the server default). FalkorDB: graph name (default `selfgraph`). |
 | `--namespace` | Graph namespace, default `default`. |
 | `--llm-provider`, `--llm-model`, `--llm-api-key`, `--llm-base-url` | LLM settings for `insert text`. A provider-prefixed model such as `openai/gpt-4o-mini` needs no `--llm-provider`. Routers such as `openrouter`, and any `--llm-base-url`, take vendor-prefixed models. |
-| `--llm-timeout` | Seconds to wait for each LLM call, default 120. Must be positive. |
-| `--llm-concurrency` | Chunks `insert text` extracts at once, default 4, each running four LLM calls. Must be a positive integer. Results merge in chunk order. |
+| `--llm-timeout` | Seconds to wait for each LLM call, default 120. A positive decimal or exponent number in ASCII digits, such as `30`, `1.5`, or `1e1`; no underscores, no `0x` prefix. |
+| `--llm-concurrency` | Chunks `insert text` extracts at once, default 4, each running four LLM calls. A positive integer in ASCII digits, at most 9007199254740991. Results merge in chunk order. |
 | `--schema` | A [schema](schema.md) JSON file applied to every insert, or inline JSON when the value starts with `{`. |
 | `--instructions`, `--prompts` | Extraction instructions and prompt templates, as a JSON file or inline JSON ([custom prompts](inserting.md#custom-prompts)). |
 | `--schema-mode` | `warn` (default), `strict`, or `off`. |

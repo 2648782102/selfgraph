@@ -246,6 +246,51 @@ describe("extraction, chunking, and retrieval helpers match Python", () => {
     expect(fx.extract.map((c: { text: string }) => countTokens(c.text))).toEqual(fx.chunks.count_tokens);
   });
 
+  it("counts and chunks a NEL or a byte order mark as a space, like Python", async () => {
+    const { chunkText, countTokens } = await loadTokenizer();
+    const offsets = (text: string, maxTokens: number): number[][] =>
+      chunkText(text, { max_tokens: maxTokens, overlap_tokens: 0 }).map((c) => [c.start_offset, c.end_offset]);
+    const issue: Array<[string, number, number[][]]> = [
+      [
+        "Line one \x85Line two",
+        5,
+        [
+          [0, 9],
+          [9, 18],
+        ],
+      ],
+      [
+        "End of first file. \ufeffSecond file starts here.",
+        11,
+        [
+          [0, 12],
+          [12, 19],
+          [19, 38],
+          [38, 44],
+        ],
+      ],
+      [" \x85!", 2, [[0, 3]]],
+      [" \ufeff!", 2, [[0, 3]]],
+    ];
+    for (const [text, tokens, expected] of issue) {
+      expect(countTokens(text), text).toBe(tokens);
+      expect(offsets(text, 3), text).toEqual(expected);
+      expect(chunkText(text, { max_tokens: 3, overlap_tokens: 0 }).map((c) => c.text)).toEqual(
+        expected.map(([start, end]) => Array.from(text).slice(start, end).join("")),
+      );
+    }
+    for (const text of [
+      "\ufeffBOM at the start",
+      "after a newline\n\ufeffBOM",
+      "NEL\x85without a space",
+      "a \x85\x85 b \ufeff c",
+    ]) {
+      const spaced = text.replace(/[\u0085\ufeff]/g, " ");
+      expect(countTokens(text), text).toBe(countTokens(spaced));
+      expect(offsets(text, 2), text).toEqual(offsets(spaced, 2));
+    }
+  });
+
   it("the regex extractor starts names at the same pinned Unicode 15.0 uppercase letters", () => {
     expect(String.fromCodePoint(...UPPERCASE)).toBe(fx.uppercase);
   });

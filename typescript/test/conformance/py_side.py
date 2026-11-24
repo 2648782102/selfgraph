@@ -29,6 +29,7 @@ from selfgraph._serde import json_iso
 from selfgraph._unicode import ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, casefold, lower, upper
 from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris, surface_hint
+from selfgraph.extraction.chunking import chunk_text, count_tokens
 from selfgraph.extraction.extractor import (
     LLMExtractor,
     _DecOut,
@@ -41,7 +42,15 @@ from selfgraph.extraction.extractor import (
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
-from selfgraph.runtime import GraphSettings, _build_llm, _falkor_credentials, parse_json, to_jsonable
+from selfgraph.runtime import (
+    GraphSettings,
+    _build_llm,
+    _falkor_credentials,
+    _llm_concurrency,
+    _llm_timeout,
+    parse_json,
+    to_jsonable,
+)
 from selfgraph.schema import validate_against_schema
 from selfgraph.stores.kuzu import _kuzu_error
 from selfgraph.terms import expand_tokens, schema_forms
@@ -326,6 +335,101 @@ def llm_prefix_errors():
         except ValidationError as exc:
             out.append([exc.code, exc.field, surface_hint(str(exc))])
     return out
+
+
+LLM_SETTING_CASES = [
+    ("timeout", value)
+    for value in [
+        "30",
+        " 1.5 ",
+        "+2",
+        ".5",
+        "5.",
+        "1e1",
+        "1E+1",
+        "1_0",
+        "\u0665",
+        "\uff15",
+        "0x10",
+        "0b1",
+        "0o7",
+        "inf",
+        "nan",
+        "-5",
+        "0",
+        "1e400",
+        "1e-400",
+        "",
+        "  ",
+    ]
+] + [
+    ("concurrency", value)
+    for value in [
+        "7",
+        " 7 ",
+        "+7",
+        "007",
+        "0" * 5000 + "5",
+        "9007199254740991",
+        "9007199254740992",
+        "99999999999999999999",
+        "++5",
+        "+",
+        "-1",
+        "0",
+        "\u0665",
+        "\uff15",
+        "1_0",
+        "5.0",
+        "0x10",
+        "",
+        "  ",
+    ]
+]
+
+
+def llm_setting_errors():
+    """Parse the LLM timeout and concurrency settings from text.
+
+    @return (list): each case's parsed number (or default), or the error code, field, and message as the CLI words it.
+    """
+    out = []
+    for name, value in LLM_SETTING_CASES:
+        parse = _llm_timeout if name == "timeout" else _llm_concurrency
+        try:
+            out.append(parse(value))
+        except ValidationError as exc:
+            out.append([exc.code, exc.field, surface_hint(str(exc))])
+    return out
+
+
+TOKEN_CHUNK_TEXTS = [
+    "Line one \x85Line two",
+    "End of first file. \ufeffSecond file starts here.",
+    " \x85!",
+    " \ufeff!",
+    "\ufeffBOM at the start",
+    "after a newline\n\ufeffBOM",
+    "NEL\x85without a space",
+    "a \x85\x85 b \ufeff\ufeff c",
+    "rocket \U0001f680 \x85\U0001f680 \ufeff\U0001f680 end",
+    "\x85",
+    "\ufeff",
+]
+
+
+def token_chunks():
+    """Count tokens and split chunks of texts with a NEL or a byte order mark.
+
+    @return (list): each text's token count and chunk offsets.
+    """
+    return [
+        {
+            "tokens": count_tokens(text),
+            "chunks": [[c.start_offset, c.end_offset] for c in chunk_text(text, max_tokens=3, overlap_tokens=0)],
+        }
+        for text in TOKEN_CHUNK_TEXTS
+    ]
 
 
 def unknown_key_error(kind, value):
@@ -709,6 +813,7 @@ def schema_warnings():
         "datetime_errors": datetime_errors(),
         "falkor_credentials": falkor_credentials(),
         "llm_prefix_errors": llm_prefix_errors(),
+        "llm_setting_errors": llm_setting_errors(),
         "iso_times": iso_times(),
         "terms_subtypes": [
             sorted(expand_tokens(_tokens(q), sub_schema, _tokens))
@@ -1030,6 +1135,15 @@ MCP_ARGUMENT_CASES = [
     ["maintenance_prune", {"min_relevance": True}],
     ["create_preference", {"subject_entity": "t:a", "key": "k", "value_entity": "t:b", "strength": "0.5"}],
     ["create_decision", {"title": "t", "steps": None}],
+    ["retrieve", {"query": "x", "k": 0}],
+    ["retrieve", {"query": "x", "max_nodes": -1}],
+    ["retrieve", {"query": "x", "budget_tokens": 0}],
+    ["check_answerable", {"question": "x", "depth": 0}],
+    ["list_entities", {"limit": 1.5}],
+    ["retrieve", {"query": "x", "k": 9007199254740992}],
+    ["list_entities", {"limit": -9007199254740992}],
+    ["insert_facts", {"facts": {}, "resolver": "bogus"}],
+    ["insert_text", {"text": "x", "resolver": "bogus"}],
 ]
 
 
@@ -1237,6 +1351,25 @@ async def choice_errors(graph):
         "store_refused": await error_of(SelfGraph(store=Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
         "list_limit_zero": await error_of(graph.entities.list(limit=0)),
         "list_limit_text": await error_of(graph.entities.list(limit="5")),
+        "decay_half_life_zero": await error_of(graph.maintenance.decay(half_life_days=0.0)),
+        "decay_half_life_negative": await error_of(graph.maintenance.decay(half_life_days=-2.0)),
+        "decay_now_text": await error_of(graph.maintenance.decay(now="soon")),
+        "prune_relevance_whole": await error_of(graph.maintenance.prune(min_relevance=2.0)),
+        "prune_relevance_fraction": await error_of(graph.maintenance.prune(min_relevance=1.5)),
+        "prune_older_than_text": await error_of(graph.maintenance.prune(older_than="soon")),
+        "pref_strength_whole": await error_of(
+            graph.preferences.create("person:jane-doe", "database", "database:hydradb", strength=2.0)
+        ),
+        "evidence_confidence_whole": await error_of(
+            graph.relations.create(
+                "person:jane-doe", "KNOWS", "company:acme", evidence=[{"source_id": "s", "confidence": 2.0}]
+            )
+        ),
+        "diff_since_text": await error_of(graph.diff("soon")),
+        "schema_max_count_zero": await error_of(
+            graph.insert.facts({}, schema={"relations": [{"type": "R", "from": {"max_count": 0}}]})
+        ),
+        "retrieve_as_of_text": await error_of(graph.retrieve("x", as_of="soon")),
         "entity_missing_near": await error_of(graph.entities.delete("person:jane-do")),
         "kuzu_error_escapes": await error_of(
             _raise_later(_kuzu_error(RuntimeError("a\tb  c\x85d\u202ee"), "Kuzu query failed"))
@@ -3048,6 +3181,9 @@ async def main():
         return
     if cmd == "kuzu_params":
         json.dump(await kuzu_param_errors(), sys.stdout, sort_keys=True, ensure_ascii=False)
+        return
+    if cmd == "token_chunks":
+        json.dump(token_chunks(), sys.stdout, ensure_ascii=False)
         return
     store_name, ns = sys.argv[2], sys.argv[3]
     kuzu_path = sys.argv[4] if len(sys.argv) > 4 else None

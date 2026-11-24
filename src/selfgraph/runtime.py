@@ -33,7 +33,7 @@ from .errors import (
     surface_hint,
 )
 from .extraction.prompts import check_prompts
-from .ids import _MAX_JSON_DEPTH, _require_clean_json, _require_namespace
+from .ids import _MAX_JSON_DEPTH, MAX_SAFE_INTEGER, _require_clean_json, _require_namespace
 from .llm.base import check_llm_config
 from .models import (
     LLM_CONCURRENCY,
@@ -515,6 +515,10 @@ def _build_store(settings: GraphSettings) -> GraphStore:
     return HydraDBStore(settings.uri, auth=settings.auth, database=settings.database)
 
 
+_LLM_TIMEOUT_NUMBER = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_LLM_CONCURRENCY_NUMBER = re.compile(r"\+?([0-9]+)")
+
+
 def _llm_timeout(value: float | str | None) -> float:
     """Parse the LLM timeout setting: seconds as a positive number, default 120.
 
@@ -523,9 +527,12 @@ def _llm_timeout(value: float | str | None) -> float:
     """
     if value is None or value == "":
         return LLM_TIMEOUT
+    text = value.strip() if isinstance(value, str) else value
+    if isinstance(text, bool) or (isinstance(text, str) and not _LLM_TIMEOUT_NUMBER.fullmatch(text)):
+        text = math.nan
     try:
-        seconds = float(value)
-    except (TypeError, ValueError):
+        seconds = float(text)
+    except (TypeError, ValueError, OverflowError):
         seconds = math.nan
     if not seconds > 0 or math.isinf(seconds):
         raise ValidationError(
@@ -545,9 +552,11 @@ def _llm_concurrency(value: int | str | None) -> int:
     if value is None or value == "":
         return LLM_CONCURRENCY
     text = value.strip() if isinstance(value, str) else value
-    if isinstance(text, str) and text.lstrip("+").isdecimal():
-        text = int(text)
-    if type(text) is not int or text < 1:
+    if isinstance(text, str):
+        match = _LLM_CONCURRENCY_NUMBER.fullmatch(text)
+        digits = match[1].lstrip("0") if match else None
+        text = int(digits or "0") if digits is not None and len(digits) <= len(str(MAX_SAFE_INTEGER)) else None
+    if type(text) is not int or not 1 <= text <= MAX_SAFE_INTEGER:
         raise ValidationError(
             f"llm_concurrency must be a positive integer, got {value!r}",
             code="invalid_setting",

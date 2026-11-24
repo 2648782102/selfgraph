@@ -539,6 +539,8 @@ export function buildStore(settings: GraphSettings): GraphStore {
   return server.build(settings.uri!, settings);
 }
 
+const LLM_TIMEOUT_NUMBER = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+
 /**
  * Parse the LLM timeout setting: seconds as a positive number, default 120.
  *
@@ -547,7 +549,8 @@ export function buildStore(settings: GraphSettings): GraphStore {
  */
 export function llmTimeout(value: number | string | null): number {
   if (value === null || value === "") return LLM_DEFAULTS.timeout;
-  const seconds = typeof value === "number" ? value : pyStrip(value) ? Number(pyStrip(value)) : Number.NaN;
+  const text = typeof value === "string" ? pyStrip(value) : value;
+  const seconds = typeof text === "string" ? (LLM_TIMEOUT_NUMBER.test(text) ? Number(text) : Number.NaN) : text;
   if (!(seconds > 0) || !Number.isFinite(seconds)) {
     throw new ValidationError(`llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`, {
       code: "invalid_setting",

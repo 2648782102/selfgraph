@@ -126,6 +126,16 @@ def _subcommands(parser):
         (["--namespace", " x"], {}, "namespace cannot start or end with whitespace"),
         (["--llm-timeout", "-5"], {}, "llm_timeout must be a positive number"),
         (["--llm-concurrency", "0"], {}, "llm_concurrency must be a positive integer"),
+        (
+            ["--llm-concurrency", "++5"],
+            {},
+            "error[invalid_setting]: llm_concurrency must be a positive integer, got '++5'",
+        ),
+        ([], {"SELFGRAPH_LLM_CONCURRENCY": "++5"}, "llm_concurrency must be a positive integer, got '++5'"),
+        (["--llm-concurrency", "\u0665"], {}, "llm_concurrency must be a positive integer"),
+        ([], {"SELFGRAPH_LLM_CONCURRENCY": "99999999999999999999"}, "llm_concurrency must be a positive integer"),
+        (["--llm-timeout", "1_0"], {}, "llm_timeout must be a positive number"),
+        ([], {"SELFGRAPH_LLM_TIMEOUT": "\u0665"}, "llm_timeout must be a positive number"),
         (["--llm-provider", "gemini"], {}, "pass --llm-model"),
         (
             ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],

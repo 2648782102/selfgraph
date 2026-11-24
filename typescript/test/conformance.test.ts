@@ -20,6 +20,7 @@ import {
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
+  tokenChunks,
   unmerge,
   write,
 } from "./conformance/ts_side.js";
@@ -42,7 +43,8 @@ function py(
     | "kuzu_statements"
     | "kuzu_values"
     | "kuzu_scheme_errors"
-    | "kuzu_params",
+    | "kuzu_params"
+    | "token_chunks",
   store: string,
   ns: string,
 ): unknown {
@@ -194,6 +196,12 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
     },
   );
+
+  it("counts tokens and splits chunks the same around a NEL or a byte order mark in both languages", async () => {
+    const result = await tokenChunks();
+    expect(result).toEqual(py("token_chunks", "-", "-"));
+    expect(result[2]).toEqual({ tokens: 2, chunks: [[0, 3]] });
+  });
 
   it("derives ids, relation types, and tokens from the pinned Unicode tables in both languages", () => {
     const pinned = pinnedUnicode();

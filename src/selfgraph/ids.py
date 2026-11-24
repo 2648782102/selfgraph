@@ -128,6 +128,21 @@ def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: 
         raise ValidationError(f"{name} cannot hold {type_name(value)} values; use plain JSON")
 
 
+def number_text(value: int | float) -> str:
+    """Render a number the way the TypeScript port does in a message: a whole number in the safe range has no fraction.
+
+    @param value (int | float): the number.
+    @return (str): the text, such as 0, 2.5, or 1e+16.
+    """
+    try:
+        number = float(value)
+    except OverflowError:
+        return "inf" if value > 0 else "-inf"
+    if number.is_integer() and abs(number) <= MAX_SAFE_INTEGER and str(number) != "-0.0":
+        return str(int(number))
+    return repr(number)
+
+
 def type_name(value: object) -> str:
     """Name a value's type the way the TypeScript port names it in errors.
 
@@ -178,7 +193,7 @@ def _require_unit(label: str, value: object, *, finite: bool = False) -> None:
     if finite and not math.isfinite(value):
         raise ValidationError(f"{label} must be a finite number")
     if not 0.0 <= value <= 1.0:
-        raise ValidationError(f"{label} must be between 0 and 1, got {value}")
+        raise ValidationError(f"{label} must be between 0 and 1, got {number_text(value)}")
 
 
 def _require_namespace(value: object) -> None:
