@@ -133,6 +133,53 @@ function nonEmptyStatements(query: string): number {
 }
 
 /**
+ * Find the first empty list or map in a parameter value, depth first.
+ *
+ * Map keys are sorted before the walk so both SDKs report the same first empty
+ * container: a JS object puts integer-like keys first, while the Python SDK
+ * keeps insertion order.
+ *
+ * @param value (unknown): the parameter value or a nested value.
+ * @param path (string): where the value sits in the parameter.
+ * @return ([string, string] | null): the kind, "list" or "map", and its path, or null when every container has a value.
+ */
+function emptyContainer(value: unknown, path: string): [string, string] | null {
+  if (Array.isArray(value)) {
+    if (!value.length) return ["list", path];
+    for (const [i, item] of value.entries()) {
+      const found = emptyContainer(item, `${path}[${i}]`);
+      if (found) return found;
+    }
+  } else if (value && typeof value === "object" && !(value instanceof Date)) {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    if (!keys.length) return ["map", path];
+    for (const key of keys) {
+      const found = emptyContainer((value as Record<string, unknown>)[key], `${path}.${key}`);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reject empty lists and maps in Kuzu parameters, which it cannot give a type.
+ *
+ * @param params (Record<string, unknown> | null | undefined): the query parameters.
+ */
+function requireTypedParams(params: Record<string, unknown> | null | undefined): void {
+  for (const [name, value] of Object.entries(params ?? {})) {
+    const found = emptyContainer(value, name);
+    if (found) {
+      const [kind, path] = found;
+      throw new ValidationError(
+        `parameter ${pyRepr(path)} is an empty ${kind}, which Kuzu cannot type; pass a non-empty ${kind}`,
+        { field: name },
+      );
+    }
+  }
+}
+
+/**
  * Resolve a file path against the current directory and keep Kuzu's in-memory paths.
  *
  * @param path (string): the path.
@@ -463,6 +510,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
 
   override async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
     if (nonEmptyStatements(query) > 1) throw new StoreError(MULTI_STATEMENT);
+    requireTypedParams(params);
     return this._run(query, params, true);
   }
 
