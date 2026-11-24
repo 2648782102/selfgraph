@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import errno
 import logging
 import os
 import sys
@@ -12,7 +13,15 @@ from pathlib import Path
 from typing import Any, get_args
 
 from . import _ops
-from .errors import WARNING_HINTS, NotFoundError, PromptTemplateError, SelfGraphError, ValidationError, surface_hint
+from .errors import (
+    WARNING_HINTS,
+    NotFoundError,
+    SelfGraphError,
+    ValidationError,
+    internal_error,
+    redact_uris,
+    surface_hint,
+)
 from .models import Stance, Status
 from .resolution import ResolverMode
 from .resources._common import DEFAULT_PAGE_LIMIT
@@ -68,7 +77,27 @@ _LOGGED_WARNINGS = ("basic_extraction", "ner_extraction")
 _SCHEMA_HELP = """schema: print the active schema (--schema FILE), or null
 schema import [--from neo4j] FILE: convert a Neo4j graph schema
 schema export [--to neo4j|ossie]: print the active schema as a Neo4j graph schema or an Apache Ossie ontology"""
-_USAGE_ERRORS = (ValidationError, PromptTemplateError, FileNotFoundError)
+_USAGE_CODES = frozenset(
+    {
+        "invalid_argument",
+        "unknown_key",
+        "invalid_setting",
+        "llm_required",
+        "embedder_required",
+        "schema_required",
+        "schema_violation",
+        "immutable_identity",
+        "unknown_reference",
+        "relation_certified",
+        "relation_invalidated",
+        "merge_reverted",
+        "invalid_cursor",
+        "invalid_resolver_decision",
+        "read_only_query",
+        "cypher_query_limit",
+        "invalid_prompt_template",
+    }
+)
 _EVIDENCE_HELP = (
     "evidence as JSON: {source_id, chunk_id?, quote?, start_offset?, end_offset?, confidence?} or an array of them "
     "(repeatable)"
@@ -164,21 +193,35 @@ async def _diff(graph, args):
     lines = [f"Changes ({result.since.isoformat()}, {result.until.isoformat()}]"]
     lines += [f"Note: {limitation}" for limitation in result.limitations]
     lines += [f"+ entity {e.id}" for e in result.entities_created]
-    lines += [
-        f"+ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
-        for r in result.relations_added
-    ]
-    lines += [
-        f"~ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
-        for r in result.relations_revised
-    ]
+    for mark, relations in (("+", result.relations_added), ("~", result.relations_revised)):
+        lines += [
+            f"{mark} relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+            for r in relations
+        ]
     lines += [
         f"- relation {r.id}: {r.from_entity} -[{r.type}]-> {r.to_entity} invalidated_by={r.invalidated_by}"
         for r in result.relations_retired
     ]
+    for action, relations in (("certified", result.relations_certified), ("uncertified", result.relations_uncertified)):
+        lines += [f"* {action} relation {r.id} revision {r.revision}" for r in relations]
+    for mark, preferences in (("+", result.preferences_added), ("~", result.preferences_revised)):
+        lines += [
+            f"{mark} preference {p.id} revision {p.revision}: {p.subject_entity} {p.key} -> {p.value_entity}"
+            for p in preferences
+        ]
+    for mark, decisions in (("+", result.decisions_created), ("~", result.decisions_updated)):
+        lines += [f"{mark} decision {d.id}: {d.title}" for d in decisions]
+    lines += [f"+ merge {m.id}: {m.absorbed_id} into {m.survivor_id}" for m in result.entities_merged]
+    lines += [f"- merge {m.id}: {m.absorbed_id} out of {m.survivor_id}" for m in result.entities_unmerged]
+    lines += [f"+ source {v.source_id} version {v.id}" for v in result.source_versions_added]
     lines.append(
         f"{len(result.entities_created)} entities created, {len(result.relations_added)} relations added, "
-        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired"
+        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired, "
+        f"{len(result.relations_certified)} certified, {len(result.relations_uncertified)} uncertified, "
+        f"{len(result.preferences_added)} preferences added, {len(result.preferences_revised)} revised, "
+        f"{len(result.decisions_created)} decisions created, {len(result.decisions_updated)} updated, "
+        f"{len(result.entities_merged)} merges, {len(result.entities_unmerged)} unmerges, "
+        f"{len(result.source_versions_added)} source versions added"
     )
     return _Text("\n".join(lines))
 
@@ -275,10 +318,22 @@ async def _schema_export(graph, args):
 async def _export_obsidian(graph, args):
     folder = Path(args.directory)
     notes = await graph.export_obsidian()
-    for path, text in notes.items():
-        target = folder / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+    try:
+        for path, text in notes.items():
+            target = folder / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        kind = {
+            errno.EEXIST: "file exists",
+            errno.ENOTDIR: "not a directory",
+            errno.EACCES: "permission denied",
+            errno.EPERM: "permission denied",
+            errno.ENOENT: "no such directory",
+        }.get(exc.errno)
+        raise ValidationError(
+            f"cannot write the vault to {str(folder)!r}: {kind or exc.strerror or exc}", field="directory"
+        ) from exc
     return {"directory": str(folder), "notes": len(notes)}
 
 
@@ -973,11 +1028,28 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except (SelfGraphError, FileNotFoundError, RuntimeError) as exc:
+        command = _command_path(parser, args)
         if isinstance(exc, SelfGraphError):
-            print(error_text(exc, _command_path(parser, args)), file=sys.stderr)
-        else:
-            print(f"error: {surface_hint(str(exc)).rstrip()}", file=sys.stderr)
-        return 2 if isinstance(exc, _USAGE_ERRORS) else 1
+            print(error_text(exc, command), file=sys.stderr)
+            return 2 if _is_usage_error(exc) else 1
+        if isinstance(exc, FileNotFoundError):
+            masked = redact_uris(str(exc), settings.uri, settings.llm_base_url)
+            print(f"error: {surface_hint(masked).rstrip()}", file=sys.stderr)
+            return 2
+        print(error_text(internal_error(exc, settings.uri, settings.llm_base_url), command), file=sys.stderr)
+        return 1
+
+
+def _is_usage_error(exc: BaseException) -> bool:
+    """Whether a failed command was given invalid input or settings, which exits with code 2.
+
+    The code decides, not the class: `invalid_setting` is raised as both ValidationError and StoreError, and both must
+    exit 2 so a script telling "fix your settings" from "the server failed" branches on the code.
+
+    @param exc (BaseException): the error that ended the command.
+    @return (bool): True when the command exits 2.
+    """
+    return isinstance(exc, SelfGraphError) and exc.code in _USAGE_CODES
 
 
 if __name__ == "__main__":

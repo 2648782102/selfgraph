@@ -12,14 +12,7 @@ import {
 } from "@commander-js/extra-typings";
 
 import { SelfGraph } from "./client.js";
-import {
-  NotFoundError,
-  PromptTemplateError,
-  SelfGraphError,
-  surfaceHint,
-  ValidationError,
-  WARNING_HINTS,
-} from "./errors.js";
+import { internalError, NotFoundError, SelfGraphError, surfaceHint, ValidationError, WARNING_HINTS } from "./errors.js";
 import { toOssie } from "./export.js";
 import { log, setLogger } from "./internal/log.js";
 import { isPlainObject, pyRepr } from "./internal/py.js";
@@ -66,6 +59,25 @@ import { parseTime } from "./validate.js";
 const JSON_VALUE = "; KEY=VALUE, VALUE parsed as JSON when valid (so 12345 is a number), else kept as text";
 const ISO = "ISO 8601; no offset means UTC";
 const NO_SCHEMA = "no schema set; pass --schema FILE or SELFGRAPH_SCHEMA";
+const USAGE_CODES: ReadonlySet<string> = new Set([
+  "invalid_argument",
+  "unknown_key",
+  "invalid_setting",
+  "llm_required",
+  "embedder_required",
+  "schema_required",
+  "schema_violation",
+  "immutable_identity",
+  "unknown_reference",
+  "relation_certified",
+  "relation_invalidated",
+  "merge_reverted",
+  "invalid_cursor",
+  "invalid_resolver_decision",
+  "read_only_query",
+  "cypher_query_limit",
+  "invalid_prompt_template",
+]);
 const NEO4J_KEYS = ["node_types", "relationship_types", "patterns", "constraints", "nodeTypes", "relationshipTypes"];
 const LOGGED_WARNINGS = ["basic_extraction", "ner_extraction"];
 const QUERY_EXAMPLES = `
@@ -218,7 +230,7 @@ const kvOrNull = (pairs: string[]): JsonObject | null => (pairs.length ? kv(pair
  */
 function metadataOf(items: string[]): JsonObject | null {
   if (!items.length) return null;
-  const out: JsonObject = {};
+  const out: JsonObject = Object.create(null);
   for (const item of items) {
     Object.assign(out, item.trimStart().startsWith("{") ? parseJson(item, " in --metadata") : kv([item], "--metadata"));
   }
@@ -246,10 +258,14 @@ const listOrNull = (items: string[]): string[] | null => (items.length ? items :
 
 const checkedSettings = new WeakMap<object, GraphSettings>();
 
+let lastSettings: GraphSettings | null = null;
+
 function settingsOf(cmd: { optsWithGlobals(): GlobalOptions }): GraphSettings {
   const o: Record<string, string | undefined> = cmd.optsWithGlobals();
   const flag = (key: string) => key.replace(/_(\w)/g, (_, c: string) => c.toUpperCase());
-  return settingsFromEnv(Object.fromEntries(SETTING_KEYS.map((key) => [key, o[flag(key)]])));
+  const settings = settingsFromEnv(Object.fromEntries(SETTING_KEYS.map((key) => [key, o[flag(key)]])));
+  lastSettings = settings;
+  return settings;
 }
 
 /**
@@ -805,10 +821,24 @@ export function buildParser(): Command<[], GlobalOptions> {
     .action((directory, _o, cmd) =>
       emit(cmd, async (g) => {
         const notes = await g.exportObsidian();
-        for (const [path, text] of Object.entries(notes)) {
-          const target = join(directory, path);
-          mkdirSync(dirname(target), { recursive: true });
-          writeFileSync(target, text, "utf8");
+        try {
+          for (const [path, text] of Object.entries(notes)) {
+            const target = join(directory, path);
+            mkdirSync(dirname(target), { recursive: true });
+            writeFileSync(target, text, "utf8");
+          }
+        } catch (exc) {
+          const kind =
+            {
+              EEXIST: "file exists",
+              ENOTDIR: "not a directory",
+              EACCES: "permission denied",
+              EPERM: "permission denied",
+              ENOENT: "no such directory",
+            }[(exc as NodeJS.ErrnoException).code ?? ""] ?? (exc as Error).message;
+          throw new ValidationError(`cannot write the vault to ${pyRepr(directory)}: ${kind}`, {
+            field: "directory",
+          });
         }
         return { directory: normalize(directory).replace(/(.)\/+$/, "$1"), notes: Object.keys(notes).length };
       }),
@@ -846,8 +876,39 @@ export function buildParser(): Command<[], GlobalOptions> {
           lines.push(
             `- relation ${r.id}: ${r.from_entity} -[${r.type}]-> ${r.to_entity} invalidated_by=${r.invalidated_by ?? "None"}`,
           );
+        for (const [action, relations] of [
+          ["certified", result.relations_certified],
+          ["uncertified", result.relations_uncertified],
+        ] as const) {
+          for (const r of relations) lines.push(`* ${action} relation ${r.id} revision ${r.revision}`);
+        }
+        for (const [mark, preferences] of [
+          ["+", result.preferences_added],
+          ["~", result.preferences_revised],
+        ] as const) {
+          for (const p of preferences)
+            lines.push(
+              `${mark} preference ${p.id} revision ${p.revision}: ${p.subject_entity} ${p.key} -> ${p.value_entity}`,
+            );
+        }
+        for (const [mark, decisions] of [
+          ["+", result.decisions_created],
+          ["~", result.decisions_updated],
+        ] as const) {
+          for (const d of decisions) lines.push(`${mark} decision ${d.id}: ${d.title}`);
+        }
+        for (const m of result.entities_merged) lines.push(`+ merge ${m.id}: ${m.absorbed_id} into ${m.survivor_id}`);
+        for (const m of result.entities_unmerged)
+          lines.push(`- merge ${m.id}: ${m.absorbed_id} out of ${m.survivor_id}`);
+        for (const v of result.source_versions_added) lines.push(`+ source ${v.source_id} version ${v.id}`);
         lines.push(
-          `${result.entities_created.length} entities created, ${result.relations_added.length} relations added, ${result.relations_revised.length} revised, ${result.relations_retired.length} retired`,
+          `${result.entities_created.length} entities created, ${result.relations_added.length} relations added, ` +
+            `${result.relations_revised.length} revised, ${result.relations_retired.length} retired, ` +
+            `${result.relations_certified.length} certified, ${result.relations_uncertified.length} uncertified, ` +
+            `${result.preferences_added.length} preferences added, ${result.preferences_revised.length} revised, ` +
+            `${result.decisions_created.length} decisions created, ${result.decisions_updated.length} updated, ` +
+            `${result.entities_merged.length} merges, ${result.entities_unmerged.length} unmerges, ` +
+            `${result.source_versions_added.length} source versions added`,
         );
         return new Text(lines.join("\n"));
       }),
@@ -1010,16 +1071,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return exc.code === "commander.helpDisplayed" || exc.code === "commander.version" || exc.exitCode === 0 ? 0 : 2;
     }
     if (exc instanceof SelfGraphError) {
-      const usage = exc instanceof ValidationError || exc instanceof PromptTemplateError;
       process.stderr.write(`${errorText(exc, words.join(" "))}\n`);
-      return usage ? 2 : 1;
+      return exitCodeFor(exc);
     }
     if ((exc as NodeJS.ErrnoException).code === "EPIPE") return 141;
-    process.stderr.write(`error: ${(exc instanceof Error ? exc.message : String(exc)).trimEnd()}\n`);
+    const settings = lastSettings ?? settingsFromEnv();
+    const coded = internalError(exc, settings.uri, settings.llm_base_url);
+    process.stderr.write(`${errorText(coded, words.join(" "))}\n`);
     return 1;
   } finally {
     setLogger(previous);
   }
+}
+
+/**
+ * The exit code a SelfGraph error gives, decided by its code rather than its class.
+ *
+ * @param exc (SelfGraphError): the error that ended the command.
+ * @return (number): 2 for invalid input or settings, 1 for a runtime failure.
+ */
+export function exitCodeFor(exc: SelfGraphError): number {
+  return USAGE_CODES.has(exc.code) ? 2 : 1;
 }
 
 function invokedDirectly(): boolean {

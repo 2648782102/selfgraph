@@ -24,9 +24,10 @@ from helpers import (
 )
 
 import selfgraph
+import selfgraph.cli as cli_module
 from selfgraph._serde import from_iso
-from selfgraph.cli import _metadata, build_parser, main
-from selfgraph.errors import WARNING_HINTS, ValidationError
+from selfgraph.cli import _USAGE_CODES, _metadata, build_parser, main
+from selfgraph.errors import WARNING_HINTS, SelfGraphError, ValidationError
 from selfgraph.runtime import parse_time, read_json
 
 
@@ -128,7 +129,8 @@ def _subcommands(parser):
         (
             ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
             {},
-            "provider 'anthropic' conflicts with model prefix 'gemini'",
+            "llm_provider 'anthropic' conflicts with model prefix 'gemini'; pass --llm-provider "
+            "(or SELFGRAPH_LLM_PROVIDER) matching the model",
         ),
         (["--uri", ""], {}, "uri cannot be empty"),
         ([], {"SELFGRAPH_URI": ""}, "uri cannot be empty"),
@@ -159,6 +161,35 @@ def test_bad_settings_exit_2_before_any_command(capsys, monkeypatch, argv, env, 
     for command in ("version", "mcp"):
         assert main([*argv, command]) == 2
         assert message in capsys.readouterr().err
+
+
+def test_unexpected_cli_errors_are_coded_and_mask_credentials(capsys, monkeypatch):
+    uri = "bolt://user:store-secret@db.example:7687"
+    base_url = "https://proxy:llm-secret@llm.example/v1"
+    for var in ("SELFGRAPH_URI", "SELFGRAPH_STORE", "SELFGRAPH_LLM_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+    async def boom(args, settings):
+        raise RuntimeError(f"driver crashed talking to {uri} with {base_url}")
+
+    monkeypatch.setattr(cli_module, "_run_with_diagnostics", boom)
+    argv = [
+        "--store",
+        "neo4j",
+        "--uri",
+        uri,
+        "--llm-provider",
+        "openai",
+        "--llm-model",
+        "m",
+        "--llm-base-url",
+        base_url,
+    ]
+    assert main([*argv, "version"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error[internal_error]:")
+    assert "store-secret" not in err and "llm-secret" not in err
+    assert "bolt://***@db.example:7687" in err and "https://***@llm.example/v1" in err
 
 
 def test_init_prints_the_inferred_store(capsys, monkeypatch, tmp_path):
@@ -192,6 +223,37 @@ def test_get_of_a_missing_id_fails_like_delete(capsys, tmp_path):
         for action in ("get", "delete") if resource != "entity" else ():
             assert kuzu_main(tmp_path, resource, action, "my-id") == 2
             assert f"{resource} id must start with '{resource}:', got 'my-id'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("code", sorted(_USAGE_CODES))
+def test_every_input_code_exits_two_whatever_class_raised_it(capsys, monkeypatch, code):
+    from selfgraph import StoreError
+
+    def fail(*_args, **_kwargs):
+        raise StoreError("a setting is wrong", code=code, field="uri")
+
+    monkeypatch.setattr(cli_module, "check_settings", fail)
+    assert main(["--store", "kuzu", "--uri", "x.kuzu", "entity", "list"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"error[{code}]: a setting is wrong")
+    assert "field: uri" in err
+
+
+def test_a_cypher_query_limit_exits_two(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN 1 // " + " " * 65_536) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error[cypher_query_limit]: ")
+    assert "field: query" in err
+
+
+def test_setting_and_runtime_codes_take_their_own_exit_codes(capsys, tmp_path):
+    from selfgraph import NotFoundError
+
+    assert main(["--store", "hydradb", "--uri", "http://127.0.0.1:1", "entity", "list"]) == 2
+    assert capsys.readouterr().err.startswith("error[invalid_setting]: ")
+    assert kuzu_main(tmp_path, "entity", "get", "person:none") == 1
+    assert capsys.readouterr().err.startswith("error[not_found]: ")
+    assert NotFoundError("Entity", "person:none").code not in _USAGE_CODES
 
 
 def test_global_flags_after_the_subcommand(capsys, tmp_path):
@@ -319,6 +381,16 @@ def test_query_error_escapes_control_characters(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["entities"][0]["name"] == "Person"
 
 
+def test_query_rejects_an_empty_kuzu_param_with_the_parameter_field(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN $x AS x", "--param", "x=[]") == 2
+    assert capsys.readouterr().err == cli_error(
+        "invalid_argument",
+        "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+        "selfgraph query",
+        "x",
+    )
+
+
 def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
     bad = json_file(tmp_path, "bad.json", {"entities": [{"type": "P"}, {"name": 3, "type": "P"}]})
     assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
@@ -393,6 +465,25 @@ def test_surface_hints_flag_errors_and_iso_times(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("SELFGRAPH_AUTH", "u:p")
     assert kuzu_main(tmp_path, "init") == 0
     assert "ignored" not in capsys.readouterr().err
+    assert kuzu_main(tmp_path, "retrieve", "--seeds", "embeddings", "Ada") == 2
+    err = capsys.readouterr().err
+    assert "seeds 'embeddings' needs an embedder: which only the SDK can take; use --seeds bm25 or synonyms here" in err
+    assert "pass embedder=" not in err
+
+
+def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path):
+    g = fresh_graph("export-error")
+    run(g.entities.create("Ada", "Person"))
+    parent = tmp_path / "notes"
+    parent.write_text("not a directory")
+    target = parent / "nested"
+    capsys.readouterr()
+
+    with pytest.raises(SelfGraphError) as raised:
+        cli(g, ["export", "obsidian", str(target)], capsys)
+    assert raised.value.code == "invalid_argument"
+    assert raised.value.field == "directory"
+    assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
 
 
 def test_version_and_help_text(capsys):

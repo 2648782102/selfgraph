@@ -4,6 +4,7 @@ import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
 import {
+  MALFORMED_USERINFO_ESCAPE,
   maskUri,
   NotFoundError,
   needsLlm,
@@ -17,6 +18,7 @@ import {
 } from "./errors.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { casefold } from "./internal/casefold.js";
+import { blankLexicalTokens } from "./internal/cypherGuard.js";
 import { log } from "./internal/log.js";
 import { comparePy, PY_WORD_CLASS, PY_WS_CLASS, pyRepr, pySplit, pyStrip } from "./internal/py.js";
 import { EDGE_TYPES, LABELS, PREFERENCE_EDGE_TYPES } from "./labels.js";
@@ -25,6 +27,7 @@ import { scanEntities, scanRelations } from "./maintenance.js";
 import {
   asInput,
   type CypherResult,
+  conflictingPrefix,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertResult,
@@ -33,7 +36,6 @@ import {
   type LLMConfig,
   type PruneResult,
   type Relation,
-  requireMatchingPrefix,
 } from "./models.js";
 import { invalidatedNote } from "./ops.js";
 import type { GraphStore } from "./protocols.js";
@@ -105,8 +107,6 @@ const IGNORED_BY_STORE: Record<string, ReadonlyArray<"auth" | "database">> = { k
 const FALKOR_SCHEMES = ["redis", "rediss", "falkor", "falkors"];
 const FALKOR_ADDRESS = "host:port or a redis://, rediss://, falkor://, or falkors:// URL";
 const PARAM_REF = new RegExp(`\\$([${PY_WORD_CLASS}]+)`, "gu");
-const LINE_TERMINATORS = new Set(["\n", "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]);
-export const BLANK = "\x00";
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);
 
@@ -216,73 +216,6 @@ export function readJson(path: string): unknown {
 function jsonSetting<T>(value: string | T | null, what: string): T | null {
   if (typeof value !== "string") return value;
   return (value.trimStart().startsWith("{") ? parseJson(value, ` in the inline ${what}`) : readJson(value)) as T;
-}
-
-/**
- * Blank string literals, backtick identifiers, and comments with a scan that matches engine lexing, leaving an unterminated token's tail visible so a hidden write keyword still scans (fail closed).
- *
- * @param query (string): the raw Cypher statement.
- * @return (string): the query with lexical tokens replaced.
- */
-export function blankLexicalTokens(query: string): string {
-  const out: string[] = [];
-  const n = query.length;
-  let i = 0;
-  while (i < n) {
-    const ch = query[i]!;
-    if (ch === "'" || ch === '"') {
-      let j = i + 1;
-      let closed = false;
-      while (j < n) {
-        if (query[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (query[j] === ch) {
-          j += 1;
-          closed = true;
-          break;
-        }
-        j += 1;
-      }
-      if (!closed) break;
-      out.push(BLANK);
-      i = j;
-    } else if (ch === "`") {
-      let j = i + 1;
-      let closed = false;
-      while (j < n) {
-        if (query[j] === "`") {
-          if (j + 1 < n && query[j + 1] === "`") {
-            j += 2;
-            continue;
-          }
-          j += 1;
-          closed = true;
-          break;
-        }
-        j += 1;
-      }
-      if (!closed) break;
-      out.push(BLANK);
-      i = j;
-    } else if (ch === "/" && i + 1 < n && query[i + 1] === "*") {
-      const end = query.indexOf("*/", i + 2);
-      if (end === -1) break;
-      out.push(BLANK);
-      i = end + 2;
-    } else if (ch === "/" && i + 1 < n && query[i + 1] === "/") {
-      let j = i + 2;
-      while (j < n && !LINE_TERMINATORS.has(query[j]!)) j += 1;
-      out.push(BLANK);
-      i = j;
-    } else {
-      out.push(ch);
-      i += 1;
-    }
-  }
-  if (i < n) out.push(query.slice(i));
-  return out.join("");
 }
 
 const W = `[${PY_WORD_CLASS}]`;
@@ -452,6 +385,36 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
 }
 
 /**
+ * Decode the percent escapes of a URL user or password, rejecting a malformed escape as the Python SDK does.
+ *
+ * @param text (string): the user or password as written in the URL.
+ * @return (string): the decoded text; throws ValidationError for a % not followed by two hex digits or escapes that are not UTF-8, without quoting the text.
+ */
+function urlUnquote(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    throw new ValidationError(MALFORMED_USERINFO_ESCAPE, { code: "invalid_setting", field: "uri" });
+  }
+}
+
+/**
+ * The user name and password a FalkorDB store logs in with: auth, else the URL's, percent-decoded.
+ *
+ * @param uri (string): the address.
+ * @param auth (GraphSettings["auth"] | undefined): the auth setting.
+ * @return ([string | null, string | null]): the user name and password, null when empty.
+ */
+export function falkorCredentials(
+  uri: string,
+  auth: GraphSettings["auth"] | undefined,
+): [string | null, string | null] {
+  const { url } = falkorAddress(uri);
+  const [username, password] = parseAuth(auth, "") ?? [urlUnquote(url.username), urlUnquote(url.password)];
+  return [username || null, password || null];
+}
+
+/**
  * A FalkorDB store from "host:port" or a redis:// style URL; auth, else the URL credentials, logs in.
  *
  * @param uri (string): the address.
@@ -461,10 +424,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
 function falkorStore(uri: string, settings: GraphSettings): GraphStore {
   const { url, tls } = falkorAddress(uri);
   const host = url.hostname.replace(/^\[|\]$/g, "") || "localhost";
-  const [username, password] = parseAuth(settings.auth, "") ?? [
-    decodeURIComponent(url.username),
-    decodeURIComponent(url.password),
-  ];
+  const [username, password] = falkorCredentials(uri, settings.auth);
   return new FalkorDBStore(host, url.port ? Number(url.port) : 6379, {
     graph: settings.database || "selfgraph",
     ...(username ? { username } : {}),
@@ -618,7 +578,14 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
       { code: "invalid_setting", field: "llm_provider" },
     );
   }
-  requireMatchingPrefix(provider, settings.llm_model, settings.llm_base_url);
+  const prefix = conflictingPrefix(provider, settings.llm_model, settings.llm_base_url);
+  if (prefix !== null) {
+    throw new ValidationError(
+      `llm_provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}; ` +
+        `pass ${settingHint("llm_provider")} matching the model`,
+      { code: "invalid_setting", field: "llm_provider" },
+    );
+  }
   return {
     provider,
     model: settings.llm_model,
