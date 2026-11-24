@@ -160,13 +160,13 @@ describe("ids match Python byte for byte", () => {
 
 describe.skipIf(!PY)("quote_label matches live Python", () => {
   it("quotes trailing tab and control characters the way Python does", () => {
-    // The fixture above is static: it records what Python produced when the
-    // fixture was generated, so reverting the Python fix would not fail it.
-    // Compare against live Python instead, so a Python regression fails here.
     const labels = ["a\n", "Person\n", "a\t", "Person\t", "a\x01"];
     const out = execFileSync(
       PY!,
-      ["-c", "import json, sys; from selfgraph import ids; print(json.dumps({label: ids.quote_label(label) for label in json.load(sys.stdin)}))"],
+      [
+        "-c",
+        "import json, sys; from selfgraph import ids; print(json.dumps({label: ids.quote_label(label) for label in json.load(sys.stdin)}))",
+      ],
       { input: JSON.stringify(labels), encoding: "utf8" },
     );
     const expected = JSON.parse(out) as Record<string, string>;
