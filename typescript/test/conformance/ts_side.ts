@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
-import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
+import { assembleExtraction, lenientTime, type RawPreference } from "../../src/extraction/extractor.js";
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
 import {
   FalkorDBStore,
@@ -548,6 +548,38 @@ function droppedExtractedEntities(): { extraction: unknown; warnings: unknown } 
 }
 
 /**
+ * Assemble invalid extracted decisions and preferences next to valid ones, with their warnings.
+ *
+ * @return ({ extraction: unknown; warnings: unknown }): the assembled facts and the warnings, with no entity or step left by a dropped item.
+ */
+function droppedExtractedItems(): { extraction: unknown; warnings: unknown } {
+  const entities = [
+    { type: "Person", name: "Ann" },
+    { type: "Company", name: "Acme" },
+    { type: "Food", name: "Soup" },
+  ];
+  const relations = [{ from_name: "Ann", type: "PREFERS", to_name: "Soup" }];
+  const steps = [
+    { from_name: "Ann", type: "CHOSE", to_name: "Acme" },
+    { from_name: "Zed", type: "CHOSE", to_name: "Pizza" },
+  ];
+  const decisions = [
+    { title: "", actor_name: "Nobody", outcome_name: "Outcome", steps },
+    { title: "Pick\u0007it", actor_name: "Ann", steps },
+    { title: "Pick Acme", actor_name: "Bea", steps: steps.slice(0, 1) },
+  ];
+  const preferences: RawPreference[] = [
+    { subject_name: "Zed", stance: "preference", key: "food", value_name: "Pizza", strength: 5.5 },
+    { subject_name: "Zed", stance: "preference", key: "food", value_name: "" },
+    { subject_name: "Cy", stance: "preference", key: "drink", value_name: "Tea", strength: 0.5 },
+    { subject_name: "Ann", stance: "preference", key: "taste", value_name: "Soup", strength: 9.5 },
+  ];
+  const warnings: InsertWarning[] = [];
+  const extraction = assembleExtraction(entities, relations, preferences, decisions, warnings);
+  return { extraction: toJsonable(extraction), warnings: toJsonable(warnings) };
+}
+
+/**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
  * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; tables_errors: string[]; term_forms: unknown; terms: unknown[]; shared_term_forms: unknown; shared_terms: string[][]; neo4j_dropped: string; ossie: { doc: unknown; warnings: string } }): one list per case, one message per unknown-key case, the schema drafted from tables, the errors for invalid table references, the schema term forms, the expanded tokens per question, the forms and expansion of a definition shared by two entities, the fields the Neo4j export drops, the Ossie export document and warnings, and how NaN and Infinity parse.
@@ -585,6 +617,7 @@ export function schemaWarnings(): {
   repeated_extracted_relations: { extraction: unknown; warnings: unknown };
   resolved_extracted_names: { extraction: unknown; warnings: unknown };
   dropped_extracted_entities: { extraction: unknown; warnings: unknown };
+  dropped_extracted_items: { extraction: unknown; warnings: unknown };
   credential_masking: { mask: string; redact: string; redact_many: string; internal: string };
 } {
   const consistencyErrors: Array<{ code: string; field: string | null; message: string }> = [];
@@ -808,6 +841,7 @@ export function schemaWarnings(): {
     repeated_extracted_relations: repeatedExtractedRelations(),
     resolved_extracted_names: resolvedExtractedNames(),
     dropped_extracted_entities: droppedExtractedEntities(),
+    dropped_extracted_items: droppedExtractedItems(),
     lenient_event_times: LENIENT_EVENT_TIMES.map((value) => {
       const parsed = lenientTime(value);
       return parsed === null ? null : jsonIso(parsed);

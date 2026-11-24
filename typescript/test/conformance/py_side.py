@@ -29,7 +29,15 @@ from selfgraph._serde import json_iso
 from selfgraph._unicode import ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, casefold, lower, upper
 from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris, surface_hint
-from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_event_time, _RelOut
+from selfgraph.extraction.extractor import (
+    LLMExtractor,
+    _DecOut,
+    _EntityOut,
+    _lenient_event_time,
+    _PrefOut,
+    _RelOut,
+    _StepOut,
+)
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
@@ -496,6 +504,37 @@ def dropped_extracted_entities():
     return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
 
 
+def dropped_extracted_items():
+    """Assemble invalid extracted decisions and preferences next to valid ones, with their warnings.
+
+    @return (dict): the assembled facts and the warnings, with no entity or step left by a dropped item.
+    """
+    entities = [
+        _EntityOut(type="Person", name="Ann"),
+        _EntityOut(type="Company", name="Acme"),
+        _EntityOut(type="Food", name="Soup"),
+    ]
+    relations = [_RelOut(from_name="Ann", type="PREFERS", to_name="Soup")]
+    steps = [
+        _StepOut(from_name="Ann", type="CHOSE", to_name="Acme"),
+        _StepOut(from_name="Zed", type="CHOSE", to_name="Pizza"),
+    ]
+    decisions = [
+        _DecOut(title="", actor_name="Nobody", outcome_name="Outcome", steps=steps),
+        _DecOut(title="Pick\x07it", actor_name="Ann", steps=steps),
+        _DecOut(title="Pick Acme", actor_name="Bea", steps=steps[:1]),
+    ]
+    preferences = [
+        _PrefOut(subject_name="Zed", key="food", value_name="Pizza", strength=5.5),
+        _PrefOut(subject_name="Zed", key="food", value_name=""),
+        _PrefOut(subject_name="Cy", key="drink", value_name="Tea", strength=0.5),
+        _PrefOut(subject_name="Ann", key="taste", value_name="Soup", strength=9.5),
+    ]
+    warnings = []
+    facts = LLMExtractor._assemble(entities, relations, preferences, decisions, warnings)
+    return {"extraction": to_jsonable(facts), "warnings": to_jsonable(warnings)}
+
+
 def schema_warnings():
     """Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
 
@@ -695,6 +734,7 @@ def schema_warnings():
         "repeated_extracted_relations": repeated_extracted_relations(),
         "resolved_extracted_names": resolved_extracted_names(),
         "dropped_extracted_entities": dropped_extracted_entities(),
+        "dropped_extracted_items": dropped_extracted_items(),
         "credential_masking": credential_masking(),
     }
 
