@@ -867,6 +867,7 @@ const READ_ONLY = [
   "check_answerable",
 ];
 const DESTRUCTIVE = ["maintenance_prune", "maintenance_dedupe_relations"];
+const NULLABLE = ["get_schema", "get_entity", "get_relation", "get_preference", "get_decision"];
 const IDEMPOTENT = [
   "insert_facts",
   "maintenance_prune",
@@ -908,7 +909,7 @@ interface McpServerLike {
 }
 
 /**
- * Run a tool and shape the outcome as an MCP tool result, so an unknown tool name is a tool error.
+ * Run a tool and shape the outcome as an MCP tool result, so an unknown tool name is a tool error. A tool that can return null always wraps its result as {result}, found or not, as the Python server does.
  *
  * @param target (Tool | string): the tool, or its name.
  * @param args (Record<string, unknown>): the arguments.
@@ -918,7 +919,9 @@ interface McpServerLike {
 async function respond(target: Tool | string, args: Record<string, unknown>, hinted: Set<string>) {
   const { result, isError } = await callTool(target, args, hinted);
   const content = [{ type: "text", text: JSON.stringify(result, null, 2) }];
-  const structured = result !== null && typeof result === "object" && !Array.isArray(result) ? result : { result };
+  const nullable = !isError && NULLABLE.includes(typeof target === "string" ? target : target.name);
+  const structured =
+    !nullable && result !== null && typeof result === "object" && !Array.isArray(result) ? result : { result };
   return { content, structuredContent: structured, isError };
 }
 

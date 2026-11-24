@@ -159,6 +159,10 @@ absent `remove_properties` key.
 - A `get_*` tool returns `null` for a missing id, as text and as the structured
   `result`. `get_relation` on a [retired relation](resources.md#relations) fails
   instead.
+- `get_entity`, `get_relation`, `get_preference`, `get_decision`, and `get_schema`
+  always put the object in the structured `result`, found or not
+  (`{"result": {...}}` or `{"result": null}`), in both SDKs. The text content is the
+  bare object or `null`.
 - `relation_versions` and `preference_versions` return the list as one JSON text
   content and as the structured `result`.
 
