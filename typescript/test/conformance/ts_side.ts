@@ -1,6 +1,6 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { createHash } from "node:crypto";
-
+import { loadTokenizer } from "../../src/chunking.js";
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
@@ -1163,6 +1163,33 @@ const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
   ["insert_facts", { facts: {}, resolver: "bogus" }],
   ["insert_text", { text: "x", resolver: "bogus" }],
 ];
+
+const TOKEN_CHUNK_TEXTS = [
+  "Line one \x85Line two",
+  "End of first file. \ufeffSecond file starts here.",
+  " \x85!",
+  " \ufeff!",
+  "\ufeffBOM at the start",
+  "after a newline\n\ufeffBOM",
+  "NEL\x85without a space",
+  "a \x85\x85 b \ufeff\ufeff c",
+  "rocket \u{1f680} \x85\u{1f680} \ufeff\u{1f680} end",
+  "\x85",
+  "\ufeff",
+];
+
+/**
+ * Count tokens and split chunks of texts with a NEL or a byte order mark.
+ *
+ * @return (Promise<unknown[]>): each text's token count and chunk offsets.
+ */
+export async function tokenChunks(): Promise<unknown[]> {
+  const { countTokens, chunkText } = await loadTokenizer();
+  return TOKEN_CHUNK_TEXTS.map((text) => ({
+    tokens: countTokens(text),
+    chunks: chunkText(text, { max_tokens: 3, overlap_tokens: 0 }).map((c) => [c.start_offset, c.end_offset]),
+  }));
+}
 
 /**
  * Bind empty containers that Kuzu cannot type and report the error both SDKs raise.
