@@ -7,6 +7,7 @@ import { buildParser, main } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
 import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
 import { pyRepr } from "../src/internal/py.js";
+import { checkLlmConfig } from "../src/llm/index.js";
 import {
   bindParams,
   buildLlm,
@@ -40,6 +41,20 @@ function cli(args: string[], options: { input?: string; env?: Record<string, str
 beforeAll(buildCli);
 
 describe("built CLI against Kuzu", () => {
+  it.each([
+    ["--store", "bogus", "entity", "list"],
+    ["--store", "kuzu", "--uri", ":memory:", "entity", "list", "--limit", "x"],
+    ["--store", "kuzu", "--uri", ":memory:", "retrieve", "Ada", "--k", "1.5"],
+    ["--store", "kuzu", "--uri", ":memory:", "diff", "--since", "nope"],
+    ["--store", "kuzu", "--uri", ":memory:", "preference", "create", "--stance", "bogus"],
+  ])("reports a coded error for %j", (...args) => {
+    const result = cli(args as string[]);
+    expect(result.code).toBe(2);
+    expect(result.err).toMatch(/^error\[(invalid_argument|invalid_setting)\]: /);
+    expect(result.err).toContain("field: ");
+    expect(result.err).not.toContain("Usage:");
+  });
+
   const kuzu = ["--store", "kuzu", "--uri", join(dir, "cli.kuzu")];
   const seed = (ns: string[], ...names: string[]) => {
     for (const name of names) cli([...kuzu, ...ns, "entity", "create", "--name", name, "--type", "T"]);
@@ -69,6 +84,35 @@ describe("built CLI against Kuzu", () => {
       expect(result.code).toBe(2);
       expect(result.err).toContain("property and external id keys cannot be '__proto__'");
     }
+  });
+
+  it("stores a __proto__ metadata key that Python stores too", () => {
+    const proto = cli([
+      ...kuzu,
+      "insert",
+      "text",
+      "Ada met Charles.",
+      "--source-id",
+      "s1",
+      "--metadata",
+      '{"__proto__":{"x":1},"a":1}',
+    ]);
+    expect(proto.code).toBe(0);
+    const kvForm = cli([
+      ...kuzu,
+      "insert",
+      "text",
+      "Ada met Charles.",
+      "--source-id",
+      "s2",
+      "--metadata",
+      '__proto__={"x":1}',
+      "--metadata",
+      "a=1",
+    ]);
+    expect(kvForm.code).toBe(0);
+    expect(proto.out).toMatchObject({ source_id: "s1" });
+    expect(kvForm.out).toMatchObject({ source_id: "s2" });
   });
 
   it("prints diff summaries and JSON", () => {
@@ -168,7 +212,8 @@ describe("built CLI against Kuzu", () => {
       [
         ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
         {},
-        "error[invalid_setting]: provider 'anthropic' conflicts with model prefix 'gemini'\n",
+        "error[invalid_setting]: llm_provider 'anthropic' conflicts with model prefix 'gemini'; " +
+          "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model\n",
       ],
       [["--llm-provider", "nonesuch", "--llm-model", "m"], {}, "unknown LLM provider 'nonesuch'"],
       [["--llm-provider", "nonesuch"], {}, "an LLM needs a model"],
@@ -275,7 +320,7 @@ describe("built CLI against Kuzu", () => {
       [["maintenance", "prune", "--older-than", "2999-01-01"], "older_than 2999-01-01T00:00:00Z is in the future"],
       [["schema", "export", "--to", "neo4j"], "no schema set; pass --schema FILE or SELFGRAPH_SCHEMA"],
       [["--schema-mode", "strict", "entity", "list"], "schema_mode 'strict' needs a schema"],
-      [["--resolver", "fuzzier", "init"], "Allowed choices are exact, default, fuzzy, llm"],
+      [["--resolver", "fuzzier", "init"], "--resolver got 'fuzzier'; choose from exact, default, fuzzy, llm"],
       [["--resolver", "llm", "entity", "list"], "pass --llm-provider and --llm-model (or SELFGRAPH_LLM_*)", noLlm],
     ] as Array<[string[], string, Record<string, string>?]>) {
       const res = cli([...kuzu, ...args], { env });
@@ -601,6 +646,24 @@ describe("CLI settings", () => {
     expect(storeKind({ ...DEFAULT_SETTINGS, store: "Neo4j", uri: "bolt://x:1" })).toBe("neo4j");
   });
 
+  it("rejects a malformed escape in FalkorDB URL credentials without quoting them", () => {
+    for (const userinfo of ["default:100%", "u:%ff", "u%zz:p", "u:%e2%82"]) {
+      let caught: unknown;
+      try {
+        buildGraph({ ...DEFAULT_SETTINGS, store: "falkordb", uri: `redis://${userinfo}@db:6390` });
+      } catch (exc) {
+        caught = exc;
+      }
+      expect(caught, userinfo).toBeInstanceOf(ValidationError);
+      const err = caught as ValidationError;
+      expect([err.code, err.field]).toEqual(["invalid_setting", "uri"]);
+      expect(err.message).toBe(
+        "the store URI has a malformed percent escape in its user or password; " +
+          "write a literal % as %25 and percent-encode other characters as UTF-8",
+      );
+    }
+  });
+
   it("passes FalkorDB credentials and the graph name from settings", () => {
     const built = (over: Partial<GraphSettings>) => {
       const store = buildGraph({ ...DEFAULT_SETTINGS, store: "falkordb", ...over }).store as unknown as {
@@ -639,6 +702,11 @@ describe("CLI settings", () => {
       [{ store: "neo4j" }, "pass the uri option (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"],
       [{ llm_provider: "gemini" }, "pass the llm_model option (or SELFGRAPH_LLM_MODEL)", "pass --llm-model"],
       [{ uri: " " }, "omit the uri option (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"],
+      [
+        { llm_provider: "openai", llm_model: "anthropic/claude" },
+        "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model",
+        "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model",
+      ],
     ];
     for (const [settings, library, surface] of cases) {
       let message = "";
@@ -729,9 +797,27 @@ describe("CLI settings", () => {
     expect(() => buildLlm({ ...DEFAULT_SETTINGS, llm_model: "gpt-4o-mini" })).toThrow(/provider-prefixed model/);
     const llm = (llm_provider: string, llm_model: string, llm_base_url: string | null = null) =>
       buildLlm({ ...DEFAULT_SETTINGS, llm_provider, llm_model, llm_base_url });
-    expect(() => llm("anthropic", "gemini/gemini-3.7-flash")).toThrow(
-      /^provider 'anthropic' conflicts with model prefix 'gemini'$/,
-    );
+    const failure = (fn: () => unknown) => {
+      try {
+        fn();
+      } catch (exc) {
+        const { code, field, message } = exc as ValidationError;
+        return { code, field, message };
+      }
+      return null;
+    };
+    expect(failure(() => llm("anthropic", "gemini/gemini-3.7-flash"))).toEqual({
+      code: "invalid_setting",
+      field: "llm_provider",
+      message:
+        "llm_provider 'anthropic' conflicts with model prefix 'gemini'; " +
+        "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model",
+    });
+    expect(failure(() => checkLlmConfig({ provider: "anthropic", model: "gemini/x" }))).toEqual({
+      code: "invalid_setting",
+      field: "provider",
+      message: "provider 'anthropic' conflicts with model prefix 'gemini'",
+    });
     expect(llm("gemini", "google/x")?.model).toBe("google/x");
     expect(llm("openrouter", "anthropic/claude")?.provider).toBe("openrouter");
     expect(llm("openai", "anthropic/x", "http://h")?.model).toBe("anthropic/x");

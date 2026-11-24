@@ -183,6 +183,17 @@ def test_store_kind():
     assert store_kind(GraphSettings(store="Neo4j", uri="bolt://x:1")) == "neo4j"
 
 
+@pytest.mark.parametrize("userinfo", ["default:100%", "u:%ff", "u%zz:p", "u:%e2%82"])
+def test_falkordb_url_credentials_reject_a_malformed_escape_without_quoting_them(userinfo):
+    with pytest.raises(ValidationError) as err:
+        build_graph(GraphSettings(store="falkordb", uri=f"redis://{userinfo}@db:6390"))
+    assert (err.value.code, err.value.field) == ("invalid_setting", "uri")
+    assert str(err.value) == (
+        "the store URI has a malformed percent escape in its user or password; "
+        "write a literal % as %25 and percent-encode other characters as UTF-8"
+    )
+
+
 def test_falkordb_settings_pass_credentials_and_graph():
     pytest.importorskip("falkordb")
 
@@ -208,6 +219,11 @@ def test_library_errors_name_settings_and_the_cli_rewords_them_to_flags():
         (GraphSettings(store="neo4j"), "pass uri= (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"),
         (GraphSettings(llm_provider="gemini"), "pass llm_model= (or SELFGRAPH_LLM_MODEL)", "pass --llm-model"),
         (GraphSettings(uri=" "), "omit uri= (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"),
+        (
+            GraphSettings(llm_provider="openai", llm_model="anthropic/claude"),
+            "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model",
+            "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model",
+        ),
     )
     for settings, library, surface in cases:
         with pytest.raises(ValidationError) as exc:

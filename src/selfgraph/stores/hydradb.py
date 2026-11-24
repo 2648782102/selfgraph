@@ -26,7 +26,7 @@ from ._cypher import (
     require_keys,
     where_after,
 )
-from ._docrows import docs, edge_row, first_doc, merged_current_edge
+from ._docrows import docs, edge_row, first_doc, merged_current_edge, parse_doc
 
 __all__ = ["HydraDBStore"]
 
@@ -58,7 +58,17 @@ def _write_size(row: Mapping[str, Any]) -> int:
     @param row (Mapping[str, Any]): the column names and values about to be written.
     @return (int): the size in bytes.
     """
-    return sum(len(key.encode()) + (len(value.encode()) if isinstance(value, str) else 9) for key, value in row.items())
+    size = 0
+    for key, value in row.items():
+        try:
+            size += len(key.encode()) + (len(value.encode()) if isinstance(value, str) else 9)
+        except UnicodeEncodeError:
+            raise StoreError(
+                f"HydraDB write field {key!r} cannot contain unpaired surrogate characters",
+                code="invalid_argument",
+                field=key,
+            ) from None
+    return size
 
 
 def _guard_sizes(row: Mapping[str, Any]) -> None:
@@ -102,7 +112,9 @@ def _sort_key(ns: str, label: str) -> str:
 
 
 def _scalars(props: dict) -> dict:
-    return {k: v for k, v in props.items() if k not in ("id", "ns") and isinstance(v, _SCALARS)}
+    return {
+        k: v for k, v in props.items() if k not in ("id", "ns") and not k.endswith("_json") and isinstance(v, _SCALARS)
+    }
 
 
 def _unset(props: Mapping[str, Any]) -> tuple[str, ...]:
@@ -462,7 +474,11 @@ class HydraDBStore(AutoCommitStore):
 
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         iid = _sk(ns, id)
-        res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.doc AS doc", {"iid": iid}, reads=[iid])
+        res = await self._run(
+            f"MATCH (n:{label} {{id: $iid}}) RETURN n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns",
+            {"iid": iid},
+            reads=[iid],
+        )
         return first_doc(res.rows)
 
     async def node_exists(self, ns: str, label: str, id: str) -> bool:
@@ -591,10 +607,10 @@ class HydraDBStore(AutoCommitStore):
         for batch in _batches(sorted({eid for _, _, eid in hits}), _SEEK_BATCH):
             res = await self._run(
                 f"MATCH (n:{L_ENTITY}) WHERE n.id IN $iids AND {_same('n', 'ns', 'ns')} "
-                "RETURN n.id AS iid, n.doc AS doc",
+                "RETURN n.id AS iid, n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns",
                 {"iids": batch, "ns": ns},
             )
-            found.update((r["iid"], json.loads(r["doc"])) for r in res.rows if r["doc"] is not None)
+            found.update((r["iid"], parse_doc(r)) for r in res.rows if r["doc"] is not None)
         stale = sorted(rid for rid, key, eid in hits if eid not in found or key not in _keys_of(found[eid]))
         for batch in _batches(stale, _SEEK_BATCH):
             await self._write(f"MATCH (k:{_KEY}) WHERE k.id IN $ids DETACH DELETE k", {"ids": batch}, batch)
@@ -637,7 +653,8 @@ class HydraDBStore(AutoCommitStore):
             where_after(f"n.`{key}`", id_gt, where, params)
             res = await self._run(
                 f"MATCH (n:{label}) WHERE {' AND '.join(where)} "
-                f"RETURN n.doc AS doc ORDER BY n.`{key}` SKIP $skip LIMIT $limit",
+                f"RETURN n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns"
+                f" ORDER BY n.`{key}` SKIP $skip LIMIT $limit",
                 params,
                 reads=[_label_key(label)],
             )
@@ -662,7 +679,8 @@ class HydraDBStore(AutoCommitStore):
         ob = "sid" if order_by == "id" else require_identifier(order_by, "order_by")
         res = await self._run(
             f"MATCH ({pattern}) WHERE {' AND '.join(where)} "
-            f"RETURN n.doc AS doc, n.`{ob}` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
+            f"RETURN n.doc AS doc, n.sid AS stored_id, n.ns AS stored_ns, n.`{ob}` AS __ob"
+            f" ORDER BY __ob SKIP $skip LIMIT $limit",
             params,
             reads=params.get("iids", [_label_key(label)]),
         )
@@ -744,7 +762,8 @@ class HydraDBStore(AutoCommitStore):
 
     async def get_current_edge(self, ns: str, id: str) -> dict | None:
         res = await self._run(
-            f"{_READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
+            f"{_READ_BY_SID} AND NOT r.is_current <> true RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
+            f", r.fa AS fa, r.tb AS tb, r.etype AS et",
             {"ns": ns, "sid": id},
             reads=[_sid_key(ns, id)],
         )
@@ -752,7 +771,8 @@ class HydraDBStore(AutoCommitStore):
 
     async def list_edge_versions(self, ns: str, id: str) -> list[dict]:
         res = await self._run(
-            f"{_READ_BY_SID} RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, "
+            f"{_READ_BY_SID} RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
+            f", r.fa AS fa, r.tb AS tb, r.etype AS et, "
             "r.revision AS rev ORDER BY rev",
             {"ns": ns, "sid": id},
             reads=[_sid_key(ns, id)],
@@ -778,7 +798,8 @@ class HydraDBStore(AutoCommitStore):
         where = "".join(f" AND {_same('r', k, k)}" for k in labels)
         res = await self._run(
             f"{_READ_EDGES} AND NOT (NOT r.sid IN $sids){where} "
-            "RETURN r.sid AS sid, r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et",
+            "RETURN r.sid AS sid, r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
+            ", r.fa AS fa, r.tb AS tb, r.etype AS et",
             {"ns": ns, "sids": ids, **labels},
             reads=(_sid_key(ns, sid) for sid in ids),
         )
@@ -871,7 +892,8 @@ class HydraDBStore(AutoCommitStore):
         tie_break, order = (", r.revision AS __rev", "__ob, __rev") if order_by == "id" else ("", "__ob")
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
-            f"RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob{tie_break} "
+            f"RETURN r.doc AS doc, r.sid AS stored_id, r.ns AS stored_ns"
+            f", r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob{tie_break} "
             f"ORDER BY {order}, fa, tb, et SKIP $skip LIMIT $limit",
             params,
         )
@@ -891,7 +913,8 @@ class HydraDBStore(AutoCommitStore):
         order = "" if order_by is None else " ORDER BY __ob"
         res = await self._run(
             f"MATCH (p:{parent_label} {{id: $iid}})-[r:{_EDGE}]->(c:{child_label}) "
-            f"WHERE {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} RETURN c.doc AS doc{ob}{order}",
+            f"WHERE {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} "
+            f"RETURN c.doc AS doc, c.sid AS stored_id, c.ns AS stored_ns{ob}{order}",
             {"iid": _sk(ns, parent_id), "ns": ns, "et": edge_type},
         )
         return docs(res.rows)
@@ -912,12 +935,13 @@ class HydraDBStore(AutoCommitStore):
         for batch in _batches(parent_ids, _SEEK_BATCH):
             res = await self._run(
                 f"MATCH (p:{parent_label})-[r:{_EDGE}]->(c:{child_label}) WHERE p.id IN $iids "
-                f"AND {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} RETURN p.sid AS parent, c.doc AS doc",
+                f"AND {_same('r', 'ns', 'ns')} AND {_same('r', 'etype', 'et')} "
+                f"RETURN p.sid AS parent, c.doc AS doc, c.sid AS stored_id, c.ns AS stored_ns",
                 {"iids": [_sk(ns, i) for i in batch], "ns": ns, "et": edge_type},
             )
             for row in res.rows:
                 if row["doc"] is not None:
-                    out.setdefault(row["parent"], []).append(json.loads(row["doc"]))
+                    out.setdefault(row["parent"], []).append(parse_doc(row))
         return out
 
     async def delete_edges_touching_by_type(self, ns: str, label: str, id: str, type: str) -> None:

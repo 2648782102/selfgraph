@@ -126,12 +126,12 @@ function importType(raw: unknown, where: string, dropped: string[]): TypeBody {
       name,
       type: mapped,
       required: prop.required === true,
-      description: (prop.description as string) || null,
+      description: (prop.description === "" ? null : (prop.description ?? null)) as string | null,
     };
   });
   return {
     label,
-    description: (data.description as string) || null,
+    description: (data.description === "" ? null : (data.description ?? null)) as string | null,
     aliases: items(data, "aliases", label),
     properties,
   };

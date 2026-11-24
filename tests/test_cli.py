@@ -130,7 +130,8 @@ def _subcommands(parser):
         (
             ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
             {},
-            "provider 'anthropic' conflicts with model prefix 'gemini'",
+            "llm_provider 'anthropic' conflicts with model prefix 'gemini'; pass --llm-provider "
+            "(or SELFGRAPH_LLM_PROVIDER) matching the model",
         ),
         (["--uri", ""], {}, "uri cannot be empty"),
         ([], {"SELFGRAPH_URI": ""}, "uri cannot be empty"),
@@ -268,9 +269,15 @@ def test_global_flags_after_the_subcommand(capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)["id"] == "t:a"
     assert main(["--store", "kuzu", "--uri", uri, "--namespace", "n", "entity", "get", "t:a", "--namespace", "m"]) == 1
     capsys.readouterr()
-    with pytest.raises(SystemExit) as exc:
-        main(["entity", "get", "t:a", "--bogus"])
-    assert exc.value.code == 2
+    assert main(["entity", "get", "t:a", "--bogus"]) == 2
+    assert "error[invalid_argument]" in capsys.readouterr().err
+
+
+def test_a_subcommand_parse_error_names_the_full_command(capsys):
+    assert main(["entity", "list", "--limit", "x"]) == 2
+    err = capsys.readouterr().err
+    assert "command: selfgraph entity list" in err
+    assert "--limit expects an integer, got 'x'" in err
 
 
 def test_time_flags_share_one_parser(capsys):
@@ -285,9 +292,10 @@ def test_time_flags_share_one_parser(capsys):
     cli(g, ["entity", "create", "--name", "b", "--type", "T"], capsys)
     out = cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "2024-01-02T03:04:05Z"], capsys)
     assert out["event_time"] == "2024-01-02T03:04:05Z"
-    with pytest.raises(SystemExit):
+    with pytest.raises(SelfGraphError) as raised:
         cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "soon"], capsys)
-    assert "is not an ISO 8601 date or time" in capsys.readouterr().err
+    assert raised.value.code == "invalid_argument"
+    assert raised.value.field == "event_time"
 
 
 def test_time_arguments_read_one_iso_grammar_on_every_python():
@@ -372,6 +380,16 @@ def test_store_settings_warnings_params_and_inline_schema(capsys, tmp_path, monk
     schema = json.dumps({"entities": [{"name": "Person"}]})
     assert kuzu_main(tmp_path, "--schema", schema, "schema") == 0
     assert json.loads(capsys.readouterr().out)["entities"][0]["name"] == "Person"
+
+
+def test_query_rejects_an_empty_kuzu_param_with_the_parameter_field(capsys, tmp_path):
+    assert kuzu_main(tmp_path, "query", "RETURN $x AS x", "--param", "x=[]") == 2
+    assert capsys.readouterr().err == cli_error(
+        "invalid_argument",
+        "parameter 'x' is an empty list, which Kuzu cannot type; pass a non-empty list",
+        "selfgraph query",
+        "x",
+    )
 
 
 def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsys, tmp_path):
@@ -512,6 +530,48 @@ def test_a_non_utf8_stdin_schema_reports_a_coded_error_under_surrogateescape():
     assert "error[invalid_argument]: cannot read '-': not valid UTF-8" in err
     assert "field: path" in err
     assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    ("argv", "code", "field", "text"),
+    [
+        (["entity", "list", "--limit", "x"], "invalid_argument", "limit", "--limit expects an integer, got 'x'"),
+        (["retrieve", "Ada", "--k", "1.5"], "invalid_argument", "k", "--k expects an integer, got '1.5'"),
+        (
+            ["preference", "create", "--strength", "x"],
+            "invalid_argument",
+            "strength",
+            "--strength expects a number, got 'x'",
+        ),
+        (
+            ["diff", "--since", "nope"],
+            "invalid_argument",
+            "since",
+            "invalid since: 'nope' is not an ISO 8601 date or time",
+        ),
+        (
+            ["--store", "bogus", "entity", "list"],
+            "invalid_setting",
+            "store",
+            "--store got 'bogus'; choose from neo4j, cypher, memgraph",
+        ),
+        (
+            ["--store", "kuzu", "--uri", ":memory:", "preference", "create", "--stance", "bogus"],
+            "invalid_argument",
+            "stance",
+            "--stance got 'bogus'; choose from preference, disinterest",
+        ),
+    ],
+)
+def test_typed_and_choice_flags_report_the_same_coded_error_as_typescript(capsys, argv, code, field, text):
+    args = argv if argv[0] == "--store" else ["--store", "kuzu", "--uri", ":memory:", *argv]
+    if any(flag in argv for flag in ("--limit", "--k", "--strength", "--since")):
+        pytest.importorskip("kuzu")
+    assert main(args) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"error[{code}]: {text}")
+    assert f"field: {field}" in err
+    assert "usage:" not in err
 
 
 def test_version_and_help_text(capsys):

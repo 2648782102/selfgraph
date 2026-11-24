@@ -21,6 +21,7 @@ import { buildLlmClient } from "../src/llm/index.js";
 import { TOOLS } from "../src/mcp.js";
 import { parseOrThrow } from "../src/models.js";
 import { checkSettings, settingsFromEnv } from "../src/runtime.js";
+import { decodeEntity } from "../src/serde.js";
 import { kuzuError } from "../src/stores/kuzu.js";
 import { errorLinks, freshGraphs, KUZU_SPEC } from "./helpers.js";
 
@@ -190,7 +191,9 @@ describe("error codes", () => {
         new SelfGraph(g.store, { llm: { generate: async () => ({ nothing: 1 }) } }).insert.text("Ada."),
       invalid_prompt_template: () =>
         new SelfGraph(g.store, { prompts: { entities: { version: "v1", system: "s", user: "no placeholder" } } }),
+      invalid_stored_data: () => decodeEntity({ id: "person:broken", ns: "codes" }),
       query_failed: () => g.runCypher("RETURN ("),
+      inexact_value: () => g.runCypher("RETURN cast('-0.05' AS DECIMAL(5,2))"),
       graph_closed: () => closedGraph.entities.list(),
       store_closed: () => new SelfGraph(closedStore).entities.list(),
       store_unreachable: () => new SelfGraph(new Neo4jStore(CLOSED_PORT, { auth: ["neo4j", "pw"] })).entities.list(),

@@ -6,6 +6,7 @@ import re
 import socket
 import sys
 import types
+from decimal import InvalidOperation
 from typing import get_args
 
 import pytest
@@ -22,6 +23,7 @@ from selfgraph import (
     StoreError,
     TransientError,
 )
+from selfgraph._serde import decode_entity
 from selfgraph.errors import HINTS, WARNING_HINTS, ErrorCode, SelfGraphError, connection_reason, internal_error
 from selfgraph.llm.base import _fatal
 from selfgraph.mcp.server import run_cypher
@@ -109,6 +111,26 @@ def _without_kuzu(monkeypatch, path):
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "kuzu", None)
         return KuzuStore(path)
+
+
+def _unreadable_decimal(monkeypatch, path):
+    """Run a statement on a KuzuStore whose driver cannot read a DECIMAL, as Kuzu 0.11.3 does for -0.05.
+
+    @param monkeypatch (pytest.MonkeyPatch): the test's monkeypatch.
+    @param path (str): the database path.
+    @return (Coroutine): the run_cypher call.
+    """
+
+    def get_next():
+        raise InvalidOperation
+
+    result = types.SimpleNamespace(get_column_names=lambda: ["v"], has_next=lambda: True, get_next=get_next)
+    connection = types.SimpleNamespace(execute=lambda query, parameters=None: result)
+    driver = types.SimpleNamespace(Database=lambda path, **options: None, Connection=lambda database: connection)
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "kuzu", driver)
+        store = KuzuStore(path)
+    return store.run_cypher("RETURN 1")
 
 
 def _raise(exc):
@@ -219,7 +241,9 @@ def test_every_code_comes_back_from_a_real_call(monkeypatch, tmp_path):
         "invalid_prompt_template": lambda: SelfGraph(
             store=g.store, prompts={"entities": {"version": "v1", "system": "s", "user": "no placeholder"}}
         ),
+        "invalid_stored_data": lambda: decode_entity({"id": "person:broken", "ns": "codes"}),
         "query_failed": lambda: g.run_cypher("RETURN ("),
+        "inexact_value": lambda: _unreadable_decimal(monkeypatch, str(tmp_path / "unreadable")),
         "graph_closed": lambda: closed_graph.entities.list(),
         "store_closed": lambda: SelfGraph(store=closed_store).entities.list(),
         "store_unreachable": lambda: SelfGraph(store=Neo4jStore(CLOSED_PORT, auth=("neo4j", "pw"))).entities.list(),
