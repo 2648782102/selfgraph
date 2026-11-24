@@ -46,6 +46,8 @@ export const HINTS = {
     "A prompt template is malformed. Keep `{text}` in the user template and use no placeholder other than `{text}` and `{instructions}`.",
   query_failed:
     "The backend rejected a query. The message keeps the engine's reason. Check any Cypher you passed yourself.",
+  inexact_value:
+    "The Kuzu driver cannot return a result value exactly. Cast the column in the query to a type it returns exactly, such as `cast(x AS STRING)` for an integer beyond 2^53 or a wide DECIMAL, or `cast(x AS DOUBLE)` for a negative DECIMAL between -0.1 and 0. Do not drop the column to make the call pass.",
   invalid_stored_data:
     "A stored node or edge is malformed. Repair the document identified by the message in its namespace before reading it again.",
   graph_closed: "The SelfGraph was closed. Create a new SelfGraph.",

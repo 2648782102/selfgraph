@@ -129,7 +129,8 @@ def _subcommands(parser):
         (
             ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
             {},
-            "provider 'anthropic' conflicts with model prefix 'gemini'",
+            "llm_provider 'anthropic' conflicts with model prefix 'gemini'; pass --llm-provider "
+            "(or SELFGRAPH_LLM_PROVIDER) matching the model",
         ),
         (["--uri", ""], {}, "uri cannot be empty"),
         ([], {"SELFGRAPH_URI": ""}, "uri cannot be empty"),

@@ -7,6 +7,7 @@ import { buildParser, main } from "../src/cli.js";
 import { buildGraph, SelfGraph } from "../src/client.js";
 import { surfaceHint, ValidationError, WARNING_HINTS } from "../src/errors.js";
 import { pyRepr } from "../src/internal/py.js";
+import { checkLlmConfig } from "../src/llm/index.js";
 import {
   bindParams,
   buildLlm,
@@ -184,7 +185,8 @@ describe("built CLI against Kuzu", () => {
       [
         ["--llm-provider", "anthropic", "--llm-model", "gemini/x"],
         {},
-        "error[invalid_setting]: provider 'anthropic' conflicts with model prefix 'gemini'\n",
+        "error[invalid_setting]: llm_provider 'anthropic' conflicts with model prefix 'gemini'; " +
+          "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model\n",
       ],
       [["--llm-provider", "nonesuch", "--llm-model", "m"], {}, "unknown LLM provider 'nonesuch'"],
       [["--llm-provider", "nonesuch"], {}, "an LLM needs a model"],
@@ -673,6 +675,11 @@ describe("CLI settings", () => {
       [{ store: "neo4j" }, "pass the uri option (or SELFGRAPH_URI)", "pass --uri (or SELFGRAPH_URI)"],
       [{ llm_provider: "gemini" }, "pass the llm_model option (or SELFGRAPH_LLM_MODEL)", "pass --llm-model"],
       [{ uri: " " }, "omit the uri option (or SELFGRAPH_URI)", "omit --uri (or SELFGRAPH_URI)"],
+      [
+        { llm_provider: "openai", llm_model: "anthropic/claude" },
+        "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model",
+        "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model",
+      ],
     ];
     for (const [settings, library, surface] of cases) {
       let message = "";
@@ -763,9 +770,27 @@ describe("CLI settings", () => {
     expect(() => buildLlm({ ...DEFAULT_SETTINGS, llm_model: "gpt-4o-mini" })).toThrow(/provider-prefixed model/);
     const llm = (llm_provider: string, llm_model: string, llm_base_url: string | null = null) =>
       buildLlm({ ...DEFAULT_SETTINGS, llm_provider, llm_model, llm_base_url });
-    expect(() => llm("anthropic", "gemini/gemini-3.7-flash")).toThrow(
-      /^provider 'anthropic' conflicts with model prefix 'gemini'$/,
-    );
+    const failure = (fn: () => unknown) => {
+      try {
+        fn();
+      } catch (exc) {
+        const { code, field, message } = exc as ValidationError;
+        return { code, field, message };
+      }
+      return null;
+    };
+    expect(failure(() => llm("anthropic", "gemini/gemini-3.7-flash"))).toEqual({
+      code: "invalid_setting",
+      field: "llm_provider",
+      message:
+        "llm_provider 'anthropic' conflicts with model prefix 'gemini'; " +
+        "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model",
+    });
+    expect(failure(() => checkLlmConfig({ provider: "anthropic", model: "gemini/x" }))).toEqual({
+      code: "invalid_setting",
+      field: "provider",
+      message: "provider 'anthropic' conflicts with model prefix 'gemini'",
+    });
     expect(llm("gemini", "google/x")?.model).toBe("google/x");
     expect(llm("openrouter", "anthropic/claude")?.provider).toBe("openrouter");
     expect(llm("openai", "anthropic/x", "http://h")?.model).toBe("anthropic/x");

@@ -73,3 +73,72 @@ def test_336_invalid_verdict_before_writes(graph, operation, reply):
         HINTS["invalid_llm_output"],
     )
     assert str(caught.value) == "LLM client returned an invalid contradiction verdict"
+
+
+BLANK_NAME = "dropped an extracted entity: entity name cannot be empty"
+BLANK_TYPE = "dropped an extracted entity: entity type cannot be empty"
+CONTROL_NAME = "dropped an extracted entity: entity name cannot contain control or surrogate characters"
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        ({"type": "Person", "name": ""}, BLANK_NAME),
+        ({"type": "Person", "name": "   "}, BLANK_NAME),
+        ({"type": "Company", "name": "\t"}, BLANK_NAME),
+    ],
+)
+def test_333_invalid_entity_keeps_the_rest_of_the_chunk_typed(graph, bad, message):
+    graph._llm.responses.update(
+        {
+            "_EntitiesOut": {"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}, bad]},
+            "_RelationsOut": {"relations": [{"from_name": "Ann", "type": "WORKS_AT", "to_name": "Acme"}]},
+        }
+    )
+    result = run(graph.insert.text("Ann works at Acme."))
+    stored = {e.id: e.type for e in run(graph.entities.list()).items}
+    assert stored == {"person:ann": "Person", "company:acme": "Company"}
+    assert [(r.from_entity, r.type, r.to_entity) for r in result.relations] == [
+        ("person:ann", "WORKS_AT", "company:acme")
+    ]
+    assert [(w.code, w.message) for w in result.warnings] == [("extraction_partial_failure", message)]
+
+
+@pytest.mark.parametrize(
+    ("bad", "stored", "messages"),
+    [
+        ({"type": " ", "name": "Bob"}, {"thing:bob": "Thing"}, [BLANK_NAME, BLANK_TYPE]),
+        ({"type": "Person", "name": "Bob\x07"}, {}, [BLANK_NAME, CONTROL_NAME, CONTROL_NAME]),
+    ],
+)
+def test_333_relation_naming_a_dropped_entity_follows_the_unknown_name_rule(graph, bad, stored, messages):
+    graph._llm.responses.update(
+        {
+            "_EntitiesOut": {"entities": [{"type": "Person", "name": "Ann"}, {"type": "Person", "name": ""}, bad]},
+            "_RelationsOut": {"relations": [{"from_name": "Ann", "type": "KNOWS", "to_name": bad["name"]}]},
+        }
+    )
+    result = run(graph.insert.text("Ann knows Bob."))
+    types = {e.id: e.type for e in run(graph.entities.list()).items}
+    assert types == {"person:ann": "Person", **stored}
+    assert [r.to_entity for r in result.relations] == list(stored)
+    assert [w.message for w in result.warnings] == messages
+
+
+def test_333_chunk_with_only_invalid_entities_still_inserts(graph):
+    graph._llm.responses.update(
+        {
+            "_EntitiesOut": {
+                "entities": [
+                    {"type": "Person", "name": ""},
+                    {"type": " ", "name": "Ann"},
+                    {"type": "Company", "name": "  "},
+                    {"type": "", "name": "Cy"},
+                ]
+            },
+            "_RelationsOut": {"relations": [{"from_name": "Ann", "type": "WORKS_AT", "to_name": "Acme"}]},
+        }
+    )
+    result = run(graph.insert.text("Ann works at Acme."))
+    assert {e.id: e.type for e in run(graph.entities.list()).items} == {"thing:ann": "Thing", "thing:acme": "Thing"}
+    assert [w.message for w in result.warnings] == [BLANK_NAME, BLANK_TYPE, BLANK_NAME, BLANK_TYPE]

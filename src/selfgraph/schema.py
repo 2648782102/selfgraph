@@ -9,6 +9,7 @@ from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from . import _ops
 from ._serde import L_ENTITY, decode_entity
+from ._unicode import casefold
 from .errors import ValidationError
 from .ids import MAX_SAFE_INTEGER, _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
 from .models import Extraction, InputModel, InsertWarning, TopInputModel, as_input
@@ -173,8 +174,6 @@ class RelationType(InputModel):
     to: RelationEndpoint = Field(default_factory=RelationEndpoint)
     properties: list[PropertySpec] = Field(default_factory=list)
 
-    model_config = {"populate_by_name": True}
-
     _non_blank = field_validator("type")(_non_blank_name)
 
 
@@ -239,13 +238,13 @@ class Schema(TopInputModel):
         """
         names: set[str] = set()
         for i, entity in enumerate(self.entities):
-            if entity.name.casefold() in names:
+            if casefold(entity.name) in names:
                 raise _consistency_error(("entities", i, "name"), f"duplicate entity type {entity.name!r}")
-            names.add(entity.name.casefold())
-        owners = {entity.name.casefold(): i for i, entity in enumerate(self.entities)}
+            names.add(casefold(entity.name))
+        owners = {casefold(entity.name): i for i, entity in enumerate(self.entities)}
         for i, entity in enumerate(self.entities):
             for j, alias in enumerate(entity.aliases):
-                owner = owners.setdefault(alias.casefold(), i)
+                owner = owners.setdefault(casefold(alias), i)
                 if owner != i:
                     raise _consistency_error(
                         ("entities", i, "aliases", j),
@@ -289,7 +288,7 @@ class Schema(TopInputModel):
                     resolved_types: list[str] = []
                     for j, name in enumerate(end.types):
                         resolved = canonical_entity_type(name, self)
-                        if resolved.casefold() not in names:
+                        if casefold(resolved) not in names:
                             raise _consistency_error(("relations", i, side, "types", j), f"unknown type {name!r}")
                         if resolved not in resolved_types:
                             resolved_types.append(resolved)
@@ -483,8 +482,8 @@ def canonical_entity_type(etype: str, schema: Schema | None) -> str:
     if schema is None:
         return etype
     index = _entity_index(schema)
-    folded = etype.casefold()
-    matched = index.get(etype) or next((t for name, t in index.items() if name.casefold() == folded), None)
+    folded = casefold(etype)
+    matched = index.get(etype) or next((t for name, t in index.items() if casefold(name) == folded), None)
     return etype if matched is None else matched.name
 
 

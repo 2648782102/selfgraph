@@ -290,6 +290,34 @@ def test_settings_build_the_llm_config():
         _build_llm(GraphSettings(llm_model="openai/m", llm_timeout="soon"))
 
 
+def test_a_provider_prefix_conflict_from_settings_names_llm_provider(monkeypatch, capsys):
+    from selfgraph import SelfGraph
+    from selfgraph.cli import main
+
+    message = (
+        "llm_provider 'openai' conflicts with model prefix 'anthropic'; "
+        "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model"
+    )
+    with pytest.raises(ValidationError) as built:
+        _build_llm(GraphSettings(llm_provider="openai", llm_model="anthropic/claude"))
+    with pytest.raises(ValidationError) as connected:
+        SelfGraph.connect(store="kuzu", llm_provider="openai", llm_model="anthropic/claude")
+    for exc in (built, connected):
+        assert (exc.value.code, exc.value.field, str(exc.value)) == ("invalid_setting", "llm_provider", message)
+    monkeypatch.setenv("SELFGRAPH_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("SELFGRAPH_LLM_MODEL", "anthropic/claude")
+    assert main(["version"]) == 2
+    err = capsys.readouterr().err
+    assert "pass --llm-provider (or SELFGRAPH_LLM_PROVIDER) matching the model" in err
+    assert "field: llm_provider\n" in err
+    with pytest.raises(ValidationError) as direct:
+        LLMConfig(provider="openai", model="anthropic/claude")
+    assert (direct.value.field, str(direct.value)) == (
+        "provider",
+        "provider 'openai' conflicts with model prefix 'anthropic'",
+    )
+
+
 def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():
     class Gauge:
         def __init__(self, concurrency):

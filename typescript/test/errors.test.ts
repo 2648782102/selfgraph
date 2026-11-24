@@ -193,6 +193,7 @@ describe("error codes", () => {
         new SelfGraph(g.store, { prompts: { entities: { version: "v1", system: "s", user: "no placeholder" } } }),
       invalid_stored_data: () => decodeEntity({ id: "person:broken", ns: "codes" }),
       query_failed: () => g.runCypher("RETURN ("),
+      inexact_value: () => g.runCypher("RETURN cast('-0.05' AS DECIMAL(5,2))"),
       graph_closed: () => closedGraph.entities.list(),
       store_closed: () => new SelfGraph(closedStore).entities.list(),
       store_unreachable: () => new SelfGraph(new Neo4jStore(CLOSED_PORT, { auth: ["neo4j", "pw"] })).entities.list(),
