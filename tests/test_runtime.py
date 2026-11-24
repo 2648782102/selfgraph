@@ -183,6 +183,7 @@ def test_a_build_that_fails_does_not_wait_for_a_query_another_graph_runs_on_the_
 import asyncio
 from selfgraph import KuzuStore, runtime
 from selfgraph.errors import ValidationError
+from selfgraph.stores import kuzu
 
 def fail(**options):
     raise ValidationError("the LLM setup failed", code="invalid_setting")
@@ -196,12 +197,14 @@ async def main():
             runtime.build_graph(runtime.GraphSettings(store="kuzu", uri={path!r}))
         except ValidationError as exc:
             print(exc)
+        print(kuzu._OPEN_STORES.get(other._cache_key))
     await other.close()
+    print(kuzu._OPEN_STORES.get(other._cache_key))
 
 asyncio.run(main())
 """
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
-    assert (proc.returncode, proc.stdout.strip()) == (0, "the LLM setup failed"), proc.stderr
+    assert (proc.returncode, proc.stdout.splitlines()) == (0, ["the LLM setup failed", "1", "None"]), proc.stderr
 
 
 @pytest.mark.parametrize("close_fails", [False, True])
