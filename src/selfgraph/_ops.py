@@ -262,7 +262,8 @@ def parse_time(value: Any, field: str) -> datetime | None:
         parsed = _parse_iso(value)
     except ValueError as exc:
         raise ValidationError(
-            f"invalid {field}: {value!r} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)"
+            f"invalid {field}: {value!r} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)",
+            field=field,
         ) from exc
     _require_datetime(field, parsed)
     return parsed

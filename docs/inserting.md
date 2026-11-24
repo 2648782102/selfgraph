@@ -277,6 +277,10 @@ Text is split into chunks of up to 512 tokens with a 64-token overlap. Without
 `max_tokens` must be at least 1, and `overlap_tokens` from 0 to `max_tokens - 1`,
 or `chunk_text` raises `ValidationError`. Without `overlap_tokens` the overlap is
 `min(64, max_tokens // 4)`, so a small `max_tokens` works on its own.
+Both SDKs tokenize U+0085 (NEL) and U+FEFF (byte order mark) as spaces, because
+the regex engines behind tiktoken and `js-tiktoken` disagree on whether they are
+whitespace. Counts and chunk offsets then match, and chunk text keeps the original
+characters.
 `count_tokens` uses the tokenizer when installed and estimates otherwise.
 In Python, tiktoken downloads `cl100k_base` on first use. When that load fails,
 for example with no network, SelfGraph logs one warning on the `selfgraph` logger
