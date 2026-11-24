@@ -1181,6 +1181,44 @@ async def kuzu_param_errors():
     return {name: await error_of(store.run_cypher("RETURN $x AS x", params)) for name, params in calls.items()}
 
 
+async def kuzu_read_only():
+    """Read a stored graph back through a read-only store, then open a database with no tables read-only.
+
+    @return (dict): the sorted entity ids and retrieval context of the read-only read, the error code of the read on the empty database, and whether a read-write write on it then succeeded.
+    """
+    import tempfile
+
+    root = tempfile.mkdtemp(prefix="sg-conf-ro-")
+    path = os.path.join(root, "g.kuzu")
+    async with SelfGraph(store=KuzuStore(path)) as graph:
+        await graph.insert.facts(
+            {
+                "entities": [
+                    {"id": "person:ann", "type": "Person", "name": "Ann"},
+                    {"id": "company:acme", "type": "Company", "name": "Acme"},
+                ],
+                "relations": [{"from_entity": "person:ann", "type": "WORKS_AT", "to_entity": "company:acme"}],
+            }
+        )
+    async with SelfGraph(store=KuzuStore(path, read_only=True)) as graph:
+        ids = sorted(e.id for e in (await graph.entities.list()).items)
+        context = (await graph.retrieve("who works at Acme")).context
+    empty = os.path.join(root, "empty.kuzu")
+    seed = KuzuStore(empty)
+    await seed.run_cypher("RETURN 1")
+    await seed.close()
+    try:
+        async with SelfGraph(store=KuzuStore(empty, read_only=True)) as graph:
+            await graph.entities.list()
+        code = "opened"
+    except SelfGraphError as exc:
+        code = exc.code
+    async with SelfGraph(store=KuzuStore(empty)) as graph:
+        await graph.insert.facts({"entities": [{"id": "person:bob", "type": "Person", "name": "Bob"}]})
+        wrote = await graph.entities.get("person:bob") is not None
+    return {"ids": ids, "context": context, "empty_database_code": code, "write_after_failed_open": wrote}
+
+
 USES_SPEC = {
     "entities": [{"name": "Person"}, {"name": "Tool"}],
     "relations": [{"type": "USES", "from": {"types": ["Person"], "max_count": 2}}],
@@ -3244,6 +3282,9 @@ async def main():
         return
     if cmd == "kuzu_params":
         json.dump(await kuzu_param_errors(), sys.stdout, sort_keys=True, ensure_ascii=False)
+        return
+    if cmd == "kuzu_read_only":
+        json.dump(await kuzu_read_only(), sys.stdout, sort_keys=True, ensure_ascii=False)
         return
     if cmd == "token_chunks":
         json.dump(token_chunks(), sys.stdout, ensure_ascii=False)

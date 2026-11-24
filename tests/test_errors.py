@@ -134,7 +134,12 @@ def _unreadable_decimal(monkeypatch, path):
 
     result = types.SimpleNamespace(get_column_names=lambda: ["v"], has_next=lambda: True, get_next=get_next)
     connection = types.SimpleNamespace(execute=lambda query, parameters=None: result)
-    driver = types.SimpleNamespace(Database=lambda path, **options: None, Connection=lambda database: connection)
+
+    class Database:
+        def __init__(self, path, read_only=False, **options):
+            pass
+
+    driver = types.SimpleNamespace(Database=Database, Connection=lambda database: connection)
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "kuzu", driver)
         store = KuzuStore(path)

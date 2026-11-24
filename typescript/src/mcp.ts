@@ -760,7 +760,12 @@ let settings: GraphSettings | null = null;
 const graph = new Lazy(async () => {
   if (settings === null) settings = settingsFromEnv();
   const g = SelfGraph.connect(settings);
-  await g.initialize();
+  try {
+    await g.initialize();
+  } catch (exc) {
+    await g.close().catch(() => undefined);
+    throw exc;
+  }
   return g;
 });
 

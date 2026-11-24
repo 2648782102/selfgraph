@@ -381,6 +381,7 @@ class KuzuStore(AutoCommitStore):
             self._lock = _LOCKS.setdefault(key, _PathLock())
             self._write_lock = _WRITE_LOCKS.setdefault(key, _PathLock())
         self._cache_key = key
+        self._read_only = _DATABASE_OPTIONS[key]["read_only"]
         self._db = db
         self._connect = partial(kuzu.Connection, db)
         try:
@@ -491,8 +492,10 @@ class KuzuStore(AutoCommitStore):
 
     async def initialize(self) -> None:
         """Create the node, relationship, and entity key tables if they do not exist, and index entities stored
-        before the key table.
+        before the key table; a read-only store writes nothing, so it does neither.
         """
+        if self._read_only:
+            return
         for stmt in _SCHEMA:
             await self._run(stmt)
         if count_of((await self._run("MATCH (k:K) RETURN count(*) AS n")).rows):

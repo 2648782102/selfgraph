@@ -1,5 +1,8 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadTokenizer } from "../../src/chunking.js";
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
@@ -1321,6 +1324,58 @@ export async function kuzuParamErrors(): Promise<Record<string, object | string>
       ]),
     ),
   );
+}
+
+/**
+ * Read a stored graph back through a read-only store, then open a database with no tables read-only.
+ *
+ * @return (Promise<object>): the sorted entity ids and retrieval context of the read-only read, the error code of the read on the empty database, and whether a read-write write on it then succeeded.
+ */
+export async function kuzuReadOnly(): Promise<object> {
+  const root = mkdtempSync(join(tmpdir(), "sg-conf-ro-"));
+  const path = join(root, "g.kuzu");
+  const empty = join(root, "empty.kuzu");
+  try {
+    const writer = new SelfGraph(new KuzuStore(path));
+    await writer.initialize();
+    await writer.insert.facts({
+      entities: [
+        { id: "person:ann", type: "Person", name: "Ann" },
+        { id: "company:acme", type: "Company", name: "Acme" },
+      ],
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:acme" }],
+    });
+    await writer.close();
+    const reader = new SelfGraph(new KuzuStore(path, { read_only: true }));
+    await reader.initialize();
+    const ids = (await reader.entities.list()).items.map((e) => e.id).sort(comparePy);
+    const context = (await reader.retrieve("who works at Acme")).context;
+    await reader.close();
+    const seed = new KuzuStore(empty);
+    await seed.runCypher("RETURN 1");
+    await seed.close();
+    let code = "opened";
+    const refused = new SelfGraph(new KuzuStore(empty, { read_only: true }));
+    try {
+      await refused.initialize();
+      await refused.entities.list();
+    } catch (exc) {
+      if (!(exc instanceof SelfGraphError)) throw exc;
+      code = exc.code;
+    } finally {
+      await refused.close();
+    }
+    const again = new SelfGraph(new KuzuStore(empty));
+    await again.initialize();
+    await again.insert.facts({ entities: [{ id: "person:bob", type: "Person", name: "Bob" }] });
+    const wrote = (await again.entities.get("person:bob")) !== null;
+    await again.close();
+    return { ids, context, empty_database_code: code, write_after_failed_open: wrote };
+  } finally {
+    await KuzuStore.closeDatabase(path);
+    await KuzuStore.closeDatabase(empty);
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 /**
