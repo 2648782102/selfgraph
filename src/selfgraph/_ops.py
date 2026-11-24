@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable, Mapping
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from functools import partial
 from typing import Any, NamedTuple, TypeVar, get_args
@@ -1699,6 +1701,79 @@ async def list_relation_versions(runner: Any, ns: str, rid: str, *, newest_first
     return rels[::-1] if newest_first else rels
 
 
+class _Claim(NamedTuple):
+    state: list[int]
+    contended: Callable[[], bool]
+
+
+_CLAIMS: dict[tuple[Any, str, str], list[int]] = {}
+_HELD: ContextVar[dict[tuple[Any, str, str], _Claim] | None] = ContextVar("selfgraph_claims", default=None)
+
+
+@asynccontextmanager
+async def claim_scope() -> AsyncIterator[None]:
+    """Hold the relations and preferences a write attempt claims until it ends, sharing an enclosing attempt's scope.
+
+    @return (AsyncIterator[None]): nothing; the claims taken inside are released on exit.
+    """
+    if _HELD.get() is not None:
+        yield
+        return
+    held: dict[tuple[Any, str, str], _Claim] = {}
+    token = _HELD.set(held)
+    try:
+        yield
+    finally:
+        _HELD.reset(token)
+        for key, claim in held.items():
+            claim.state[0] -= 1
+            if not claim.state[0]:
+                del _CLAIMS[key]
+
+
+def _take_claim(runner: Any, ns: str, oid: str) -> _Claim:
+    """Claim a relation or preference for the running write attempt, before it is read.
+
+    On an auto-commit store the retire and the create are two statements, and writers that share an outer
+    transaction share its lock, so of the writes that find a record with no current version only the one that held
+    it first completes it, and only when no write found it current meanwhile.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param oid (str): the relation or preference id.
+    @return (_Claim): the record's [holding attempts, times one found it current], and whether another may write it.
+    """
+    held = _HELD.get()
+    key = (runner, ns, oid)
+    if key not in held:
+        state = _CLAIMS.setdefault(key, [0, 0])
+        state[0] += 1
+        first, seen = state[0] == 1, state[1]
+        held[key] = _Claim(state, lambda: not first or state[1] != seen)
+    return held[key]
+
+
+def _found_current(claim: _Claim) -> None:
+    """Record that a write attempt found a record current, so it may retire that version before writing the next.
+
+    @param claim (_Claim): the attempt's claim on the record, from _take_claim.
+    @return (None): nothing.
+    """
+    claim.state[1] += 1
+
+
+def _require_unshared(claim: _Claim, oid: str, kind: str) -> None:
+    """Raise TransientError when another write may be writing a relation or preference found with no current version.
+
+    @param claim (_Claim): the record's claim, from _take_claim.
+    @param oid (str): the relation or preference id.
+    @param kind (str): "relation" or "preference", for the error.
+    @return (None): nothing; raises TransientError for a record another write may still be writing.
+    """
+    if claim.contended():
+        raise TransientError(f"{kind} {oid!r} has no current version right now (concurrent write); retry")
+
+
 async def _write_relation_version(
     runner: Any, ns: str, from_id: str, rtype: str, to_id: str, props: dict, *, retire: dict | None
 ) -> Relation:
@@ -1785,8 +1860,9 @@ async def _lock_current(
     """Return the current version of a relation or preference, read again under its lock so no writer slips in.
 
     An object whose newest version carries invalidated_at was retired by a contradiction, which is a settled state
-    and raises ValidationError; any other object with versions but no current one is mid-write and raises
-    TransientError so the caller retries.
+    and raises ValidationError. One another write may still be writing raises TransientError (see _take_claim). Any
+    other object with versions but no current one lost its create to an interrupted write, so its newest version is
+    returned for the caller to complete.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -1795,23 +1871,41 @@ async def _lock_current(
     @param get (Callable[..., Any]): reads the current version, or None.
     @param keep (Callable[[str], bool]): predicate selecting the edge type for this object kind.
     @param lock_on (Callable): maps the current version to the (label, id) node to lock.
-    @return (Any): the current version, under the lock.
+    @return (Any): the current version under the lock, or the newest version when an interrupted update left none.
     """
-    before = await get(runner, ns, oid)
-    if before is None:
-        latest = await _newest_edge(runner, ns, oid, keep)
-        if latest is None:
-            raise NotFoundError(kind.capitalize(), oid, namespace=ns)
-        if latest["props"].get("invalidated_at"):
-            raise ValidationError(
-                f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
-            )
-        raise TransientError(f"{kind} {oid!r} has no current version right now (concurrent write); retry")
+    claim = _take_claim(runner, ns, oid)
+    before = await get(runner, ns, oid) or await _newest_unretired(runner, ns, oid, kind, keep)
     await runner.lock_node(ns, *lock_on(before))
     current = await get(runner, ns, oid)
-    if current is None:
+    if current is not None:
+        _found_current(claim)
+        return current
+    if before.is_current:
         raise TransientError(f"{kind} {oid!r} was changed concurrently; retry")
-    return current
+    _require_unshared(claim, oid, kind)
+    return await _newest_unretired(runner, ns, oid, kind, keep)
+
+
+async def _newest_unretired(
+    runner: Any, ns: str, oid: str, kind: str, keep: Callable[[str], bool]
+) -> Relation | Preference:
+    """Return the newest version of a relation or preference with no current one, unless a contradiction retired it.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param oid (str): the relation or preference id.
+    @param kind (str): "relation" or "preference", for the errors.
+    @param keep (Callable[[str], bool]): predicate selecting the edge type for this object kind.
+    @return (Relation | Preference): the newest version.
+    """
+    latest = await _newest_edge(runner, ns, oid, keep)
+    if latest is None:
+        raise NotFoundError(kind.capitalize(), oid, namespace=ns)
+    if latest["props"].get("invalidated_at"):
+        raise ValidationError(
+            f"{invalidated_note(_relation_of(latest))}; create it again to reassert it", code="relation_invalidated"
+        )
+    return (_relation_of if kind == "relation" else _preference_of)(latest)
 
 
 async def _precheck_nodes(runner: Any, ns: str, label: str, rows: list[tuple[str, dict]]) -> None:
@@ -2643,7 +2737,11 @@ async def upsert_relations(
     for eid in _relation_lock_ids(caps, [(rtype, rel.from_entity, rel.to_entity) for _, rtype, rel, _ in keyed]):
         await runner.lock_node(ns, L_ENTITY, eid)
     rids = _dedup_list(rid for rid, *_ in keyed)
+    claims = {rid: _take_claim(runner, ns, rid) for rid in rids}
     stored = await _current_relations(runner, ns, [(rid, rel) for rid, _, rel, _ in keyed])
+    for rid, edge in stored.items():
+        if edge["props"]["is_current"]:
+            _found_current(claims[rid])
     records, gained = await _plan_evidence(
         runner,
         ns,
@@ -2682,11 +2780,13 @@ async def upsert_relations(
                 rid, (edge["from_id"], edge["type"], edge["to_id"]), (rel.from_entity, rtype, rel.to_entity)
             )
             prev = _relation_of(edge)
+            if not prev.is_current and prev.invalidated_at is None:
+                _require_unshared(claims[rid], rid, "relation")
             event_time = (
                 named
                 if named is not None
                 else prev.event_time
-                if prev.is_current or contradiction == "supersede"
+                if prev.invalidated_at is None or contradiction == "supersede"
                 else None
             )
             effective = aware(event_time or created_at)
@@ -2696,7 +2796,12 @@ async def upsert_relations(
             unchanged = _json_equal(prev.properties, merged_properties) and to_iso(prev.event_time) == to_iso(
                 event_time
             )
-            if unchanged and contradiction == "supersede" and (named is None or effective == prev.invalidated_at):
+            if (
+                unchanged
+                and prev.invalidated_at is not None
+                and contradiction == "supersede"
+                and (named is None or effective == prev.invalidated_at)
+            ):
                 reassert = False
             if event_time is not None and to_iso(prev.event_time) != to_iso(event_time):
                 moved[rid] = None
@@ -2946,7 +3051,11 @@ async def update_relation(
     records, gained = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
     sources = current.source_count + gained.get(rid, 0)
 
-    if _json_equal(new_props, current.properties) and to_iso(new_event_time) == to_iso(current.event_time):
+    if (
+        current.is_current
+        and _json_equal(new_props, current.properties)
+        and to_iso(new_event_time) == to_iso(current.event_time)
+    ):
         if sources != current.source_count:
             await runner.update_current_edge(ns, rid, {"source_count": sources})
             current.source_count = sources
@@ -2970,12 +3079,17 @@ async def update_relation(
         current.type,
         current.to_entity,
         props,
-        retire=_certifications(current, created_at),
+        retire=_certifications(current, created_at) if current.is_current else None,
     )
     await _write_evidence(runner, ns, records, created_at)
     moved = to_iso(new_event_time) != to_iso(current.event_time)
-    if contradiction == "supersede" and (moved or current.certified_at is not None):
-        if current.certified_at is not None:
+    lost_certification = (
+        current.certified_at is not None
+        if current.is_current
+        else any(c.until is not None for c in current.certifications[-1:])
+    )
+    if contradiction == "supersede" and (moved or lost_certification):
+        if lost_certification:
             await _settle_uncertified(runner, ns, rel, caps, created_at)
         if moved:
             edge = {"type": rel.type, "from_id": rel.from_entity, "to_id": rel.to_entity, "props": props}
@@ -3549,6 +3663,8 @@ async def upsert_preference(
 ) -> Preference:
     """Insert-semantics upsert of a preference: merge properties, versioning on change.
 
+    A preference an interrupted update left with no current version is completed from its newest version.
+
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param pref (PreferenceInput): preference to upsert.
@@ -3563,21 +3679,27 @@ async def upsert_preference(
     await _require_preference_refs(runner, ns, pref.value_entity, pref.about_entity)
     profile_id = await _ensure_profile(runner, ns, pref.subject_entity, created_at)
 
+    claim = _take_claim(runner, ns, pid)
     await runner.lock_node(ns, L_PROFILE, profile_id)
-    current = await get_preference(runner, ns, pid)
+    latest = await _newest_edge(runner, ns, pid, _is_preference_type)
+    base = None if latest is None else _preference_of(latest)
+    current = base if base is not None and base.is_current else None
     if current is not None:
-        _require_same_preference(pid, _preference_identity(current), _preference_identity(pref))
-    if current is None:
+        _found_current(claim)
+    elif base is not None:
+        _require_unshared(claim, pid, "preference")
+    if base is None:
         event_time, strength, about_entity = named, pref.strength, pref.about_entity
     else:
-        event_time = named if named is not None else current.event_time
-        strength = current.strength if pref.strength is None else pref.strength
-        about_entity = current.about_entity if pref.about_entity is None else pref.about_entity
-    merged_props = _merge_props(current.properties if current is not None else None, pref.properties)
+        _require_same_preference(pid, _preference_identity(base), _preference_identity(pref))
+        event_time = named if named is not None else base.event_time
+        strength = base.strength if pref.strength is None else pref.strength
+        about_entity = base.about_entity if pref.about_entity is None else pref.about_entity
+    merged_props = _merge_props(base.properties if base is not None else None, pref.properties)
     props = encode_preference_props(
         ns=ns,
         id=pid,
-        revision=1 if current is None else current.revision + 1,
+        revision=1 if base is None else base.revision + 1,
         subject_entity=pref.subject_entity,
         key=_ids.normalize_text(pref.key),
         about_entity=about_entity,
@@ -3758,7 +3880,8 @@ async def update_preference(
     new_event_time = None if "event_time" in cleared else event_time if event_time is not None else current.event_time
     new_about = None if "about_entity" in cleared else current.about_entity
     if (
-        new_strength == current.strength
+        current.is_current
+        and new_strength == current.strength
         and new_about == current.about_entity
         and _json_equal(new_props, current.properties)
         and to_iso(new_event_time) == to_iso(current.event_time)
@@ -3779,7 +3902,7 @@ async def update_preference(
         about_dropped=about_dropped,
     )
     return await _write_preference_version(
-        runner, ns, current.profile_id, current.value_entity, current.stance, props, retire=True
+        runner, ns, current.profile_id, current.value_entity, current.stance, props, retire=current.is_current
     )
 
 
