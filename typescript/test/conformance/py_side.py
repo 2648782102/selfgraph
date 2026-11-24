@@ -40,7 +40,7 @@ from selfgraph.extraction.extractor import (
     _StepOut,
 )
 from selfgraph.mcp import server as mcp_server
-from selfgraph.models import validation_error
+from selfgraph.models import PreferenceInput, RelationInput, validation_error
 from selfgraph.retrieval import _tokens
 from selfgraph.runtime import (
     GraphSettings,
@@ -334,6 +334,34 @@ def llm_prefix_errors():
             out.append(_build_llm(GraphSettings(llm_provider=provider, llm_model=model)).provider)
         except ValidationError as exc:
             out.append([exc.code, exc.field, surface_hint(str(exc))])
+    return out
+
+
+DEEP_PROPERTY_DEPTHS = [63, 64, 1000]
+
+
+def deep_property_errors():
+    """Build each input model with a property nested to each depth, as dicts and as lists.
+
+    @return (list): "accepted", or the error code, field, and message, per model, depth, and shape.
+    """
+    builds = (
+        lambda p: EntityInput(type="T", name="n", properties=p),
+        lambda p: RelationInput(from_entity="t:a", type="R", to_entity="t:b", properties=p),
+        lambda p: PreferenceInput(subject_entity="t:a", key="k", value_entity="t:b", properties=p),
+    )
+    out = []
+    for build in builds:
+        for depth in DEEP_PROPERTY_DEPTHS:
+            for shape in ("dict", "list"):
+                value = 1
+                for _ in range(depth):
+                    value = {"a": value} if shape == "dict" else [value]
+                try:
+                    build({"p": value})
+                    out.append("accepted")
+                except ValidationError as exc:
+                    out.append([exc.code, exc.field, str(exc)])
     return out
 
 
@@ -813,6 +841,7 @@ def schema_warnings():
         "datetime_errors": datetime_errors(),
         "falkor_credentials": falkor_credentials(),
         "llm_prefix_errors": llm_prefix_errors(),
+        "deep_property_errors": deep_property_errors(),
         "llm_setting_errors": llm_setting_errors(),
         "iso_times": iso_times(),
         "terms_subtypes": [
