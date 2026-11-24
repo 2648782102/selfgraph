@@ -4187,14 +4187,76 @@ async def _trace_links_intact(runner: Any, ns: str, trace: DecisionTrace) -> boo
     out = await _edges_into(runner, ns, L_TRACE, L_ENTITY, "from_in", [trace.id])
     if sorted((e["type"], e["to_id"]) for e in out) != sorted(named):
         return False
+    return await _step_links_intact(runner, ns, trace)
+
+
+async def _step_links_intact(runner: Any, ns: str, trace: DecisionTrace) -> bool:
+    """Report whether the steps of a stored trace have exactly the FROM and TO links their relations name.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param trace (DecisionTrace): the stored trace, with its steps.
+    @return (bool): True when no step link is missing, extra, or repeated.
+    """
     sids = [_ids.step_id(trace.id, step.order) for step in trace.steps]
-    ends = await _edges_into(runner, ns, L_STEP, L_ENTITY, "from_in", sids) if sids else []
+    ends = await _edges_into(runner, ns, L_STEP, L_ENTITY, "from_in", sids)
     expected = [
         (kind, sid, end)
         for sid, s in zip(sids, trace.steps, strict=True)
         for kind, end in ((R_FROM, s.from_entity), (R_TO, s.to_entity))
     ]
     return sorted((e["type"], e["from_id"], e["to_id"]) for e in ends) == sorted(expected)
+
+
+async def _write_steps(runner: Any, ns: str, tid: str, steps: list[DecisionStep]) -> None:
+    """Write the steps of a decision trace, the new step nodes before the stale ones are deleted.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param tid (str): trace id.
+    @param steps (list[DecisionStep]): the ordered steps to store.
+    @return (None): nothing.
+    """
+    keyed = [(_ids.step_id(tid, step.order), step) for step in steps]
+    sids = [sid for sid, _ in keyed]
+    await runner.upsert_nodes(
+        ns,
+        L_STEP,
+        [
+            (
+                sid,
+                {
+                    "id": sid,
+                    "ns": ns,
+                    "relation_id": step.relation_id,
+                    "order": step.order,
+                    "from_entity": step.from_entity,
+                    "to_entity": step.to_entity,
+                },
+            )
+            for sid, step in keyed
+        ],
+    )
+    linked = {s["id"] for s in await runner.child_nodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP)}
+    await runner.create_edges(
+        ns,
+        L_TRACE,
+        L_STEP,
+        [(R_HAS_STEP, tid, sid, {"ns": ns, "order": step.order}) for sid, step in keyed if sid not in linked],
+    )
+    await runner.delete_nodes(ns, L_STEP, sorted(linked - set(sids)))
+    stored: dict[str, list[tuple[str, str]]] = {}
+    for edge in await _edges_into(runner, ns, L_STEP, L_ENTITY, "from_in", sids):
+        stored.setdefault(edge["from_id"], []).append((edge["type"], edge["to_id"]))
+    wanted = {sid: sorted([(R_FROM, step.from_entity), (R_TO, step.to_entity)]) for sid, step in keyed}
+    stale = [sid for sid in sids if sorted(stored.get(sid, [])) != wanted[sid]]
+    for sid in stale:
+        if sid in stored:
+            for kind in (R_FROM, R_TO):
+                await runner.delete_edges_touching_by_type(ns, L_STEP, sid, kind)
+    await runner.create_edges(
+        ns, L_STEP, L_ENTITY, [(kind, sid, end, {"ns": ns}) for sid in stale for kind, end in wanted[sid]]
+    )
 
 
 async def upsert_trace(
@@ -4281,8 +4343,12 @@ async def upsert_trace(
         updated_at=created_at,
     )
     await _precheck_nodes(runner, ns, L_TRACE, [(tid, props)])
+    keep_steps = (
+        existing is not None
+        and [s.relation_id for s in existing.steps] == [s.relation_id for s in steps]
+        and await _step_links_intact(runner, ns, existing)
+    )
     if existing is not None:
-        await _delete_steps(runner, ns, tid)
         for rtype in (R_MADE_DECISION, R_RESULTED_IN, R_CONSIDERED):
             await runner.delete_edges_touching_by_type(ns, L_TRACE, tid, rtype)
     await runner.upsert_node(ns, L_TRACE, tid, props)
@@ -4291,37 +4357,8 @@ async def upsert_trace(
     outcome = [] if outcome_entity is None else [(R_RESULTED_IN, tid, outcome_entity, {"ns": ns})]
     considered = [(R_CONSIDERED, tid, alt, {"ns": ns}) for alt in alternative_entities]
     await runner.create_edges(ns, L_TRACE, L_ENTITY, [*outcome, *considered])
-    keyed = [(_ids.step_id(tid, step.order), step) for step in steps]
-    await runner.upsert_nodes(
-        ns,
-        L_STEP,
-        [
-            (
-                sid,
-                {
-                    "id": sid,
-                    "ns": ns,
-                    "relation_id": step.relation_id,
-                    "order": step.order,
-                    "from_entity": step.from_entity,
-                    "to_entity": step.to_entity,
-                },
-            )
-            for sid, step in keyed
-        ],
-    )
-    await runner.create_edges(
-        ns, L_TRACE, L_STEP, [(R_HAS_STEP, tid, sid, {"ns": ns, "order": step.order}) for sid, step in keyed]
-    )
-    await runner.create_edges(
-        ns,
-        L_STEP,
-        L_ENTITY,
-        [
-            *((R_FROM, sid, step.from_entity, {"ns": ns}) for sid, step in keyed),
-            *((R_TO, sid, step.to_entity, {"ns": ns}) for sid, step in keyed),
-        ],
-    )
+    if not keep_steps:
+        await _write_steps(runner, ns, tid, steps)
     return decode_trace(props, steps)
 
 

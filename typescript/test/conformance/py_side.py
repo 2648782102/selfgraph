@@ -3145,8 +3145,121 @@ def exit_codes() -> list:
     return [[code, 2 if code in _USAGE_CODES else 1] for code in sorted(HINTS)]
 
 
+CUT_WRITES = (
+    "upsert_node",
+    "upsert_nodes",
+    "create_edge",
+    "create_edges",
+    "delete_node",
+    "delete_nodes",
+    "delete_nodes_by",
+    "delete_edges",
+    "delete_edges_touching_by_type",
+)
+
+
+async def cut_decision_update(graph, rels, tid, picked, cut):
+    """Update a decision with its write at an index failed, retry the update, and read the decision back.
+
+    @param graph (SelfGraph): a graph on a Kuzu store holding the entities and relations.
+    @param rels (list[Relation]): the three relations to build steps from.
+    @param tid (str): the decision id.
+    @param picked (list[int] | None): the indexes of the relations to use as steps, or None to keep the steps.
+    @param cut (int | None): the index of the store write to fail, or None to fail none.
+    @return (tuple[int, dict]): the number of store writes the first update made, and what is stored after the retry.
+    """
+    store, ns = graph.store, graph.namespace
+    await graph.decisions.create(
+        "Pick",
+        id=tid,
+        steps=[rels[0].id, rels[1].id],
+        actor_entity="team:core",
+        outcome_entity="company:hydradb",
+        alternative_entities=["company:neo4j"],
+        rationale="old",
+    )
+    change = {"rationale": "new", **({} if picked is None else {"steps": [rels[i].id for i in picked]})}
+    calls = []
+
+    def counting(name):
+        """Wrap one store write so it is counted and fails when it is the one to cut.
+
+        @param name (str): the store method.
+        @return (Callable): the wrapped method.
+        """
+        original = getattr(store, name)
+
+        async def wrapped(*args, **kwargs):
+            """Count the write, then fail it or run it.
+
+            @return (Any): what the store method returns.
+            """
+            calls.append(name)
+            if len(calls) - 1 == cut:
+                raise ConnectionError("connection lost")
+            return await original(*args, **kwargs)
+
+        return wrapped
+
+    for name in CUT_WRITES:
+        setattr(store, name, counting(name))
+    try:
+        await graph.decisions.update(tid, **change)
+    except ConnectionError:
+        pass
+    finally:
+        for name in CUT_WRITES:
+            delattr(store, name)
+    await graph.decisions.update(tid, **change)
+    decision = await graph.decisions.get(tid)
+    sids = [ids.step_id(tid, order) for order in range(3)]
+    edges = []
+    for source, target, where in (
+        (_serde.L_STEP, _serde.L_ENTITY, {"from_in": sids}),
+        (_serde.L_TRACE, _serde.L_STEP, {"from_in": [tid]}),
+        (_serde.L_TRACE, _serde.L_ENTITY, {"from_in": [tid]}),
+        (_serde.L_ENTITY, _serde.L_TRACE, {"to_in": [tid]}),
+    ):
+        edges += await store.match_edges(ns, from_label=source, to_label=target, **where)
+    return len(calls), {
+        "rationale": decision.rationale,
+        "steps": [[s.order, s.relation_id, s.from_entity, s.to_entity] for s in decision.steps],
+        "step_nodes": [sid.replace(tid, "T") for sid in sids if await store.node_exists(ns, _serde.L_STEP, sid)],
+        "links": sorted(f"{e['type']} {e['from_id']} {e['to_id']}".replace(tid, "T") for e in edges),
+    }
+
+
+async def cut_decision_updates():
+    """Cut a decision update at every store write for each kind of change, retry it, and read the decision back.
+
+    @return (dict): per change, what a clean update stores, and the indexes of the cuts whose retry stored anything else.
+    """
+    import tempfile
+
+    store = KuzuStore(os.path.join(tempfile.mkdtemp(prefix="sg-conf-cut-"), "g.kuzu"))
+    out = {}
+    for name, picked in (("text", None), ("fewer", [1]), ("swapped", [1, 0])):
+        graph = SelfGraph(store=store, namespace=name)
+        await graph.initialize()
+        for entity, kind in (("HydraDB", "Company"), ("Neo4j", "Company"), ("Temporal", "Feature"), ("Core", "Team")):
+            await graph.entities.create(entity, kind)
+        rels = [
+            await graph.relations.create("company:hydradb", "REQUIRES", "feature:temporal"),
+            await graph.relations.create("team:core", "SELECTED", "company:hydradb"),
+            await graph.relations.create("team:core", "REJECTED", "company:neo4j"),
+        ]
+        writes, whole = await cut_decision_update(graph, rels, "decision:clean", picked, None)
+        cuts = [await cut_decision_update(graph, rels, f"decision:cut{cut}", picked, cut) for cut in range(writes)]
+        out[name] = {"whole": whole, "failed_cuts": [cut for cut, (_, state) in enumerate(cuts) if state != whole]}
+    await store.close()
+    return out
+
+
 async def main():
     cmd = sys.argv[1]
+    if cmd == "kuzu_cut_update":
+        json.dump(await cut_decision_updates(), sys.stdout)
+        return
     if cmd == "exit_codes":
         json.dump(exit_codes(), sys.stdout)
         return
