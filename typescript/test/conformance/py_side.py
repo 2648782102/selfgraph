@@ -1500,6 +1500,31 @@ async def canonical_fact_ids(graph):
     }
 
 
+async def symbol_entity_ids(graph):
+    """Insert entities whose names differ only by a plus or a number sign and read back where each relation landed.
+
+    @param graph (SelfGraph): the graph whose store hosts the isolated case.
+    @return (dict): the derived ids, the stored entities, and the endpoint of each relation.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_symbol_entity_ids")
+    names = ["C++", "C#", "C", "F#", "Disney+", "Disney", "A+B", "#1", "+", "C plus plus"]
+    await g.insert.facts(
+        {
+            "entities": [{"type": "Person", "name": "Ann"}, {"type": "Person", "name": "Bob"}]
+            + [{"type": "Language", "name": name} for name in names],
+            "relations": [
+                {"from_entity": "person:ann", "type": "USES", "to_entity": ids.entity_id("Language", "C++")},
+                {"from_entity": "person:bob", "type": "USES", "to_entity": ids.entity_id("Language", "C#")},
+            ],
+        }
+    )
+    return {
+        "ids": [ids.entity_id("Language", name) for name in names],
+        "entities": [[e.id, e.name, e.aliases] for e in (await g.entities.list(type="Language")).items],
+        "relations": [[r.from_entity, r.to_entity] for r in (await g.relations.list(type="USES")).items],
+    }
+
+
 async def write(graph):
     from selfgraph.models import CypherResult
 
@@ -3017,6 +3042,7 @@ async def dump(graph, ns):
             "diff": await graph.diff("1900-01-01", "2100-01-01"),
             "diff_windows": await diff_windows(graph),
             "canonical_fact_ids": await canonical_fact_ids(graph),
+            "symbol_entity_ids": await symbol_entity_ids(graph),
             "answerable": answerable,
             "mismatched_dimensions": mismatched_dimensions,
             "shared_synonym_answerable": shared_synonym_answerable,

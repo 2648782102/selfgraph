@@ -121,15 +121,15 @@ export function jaroWinkler(a: string, b: string): number {
 }
 
 /**
- * Score two texts by the Jaccard overlap of their casefolded content tokens.
+ * Score two texts by the Jaccard overlap of their casefolded content tokens, with + and # spelled out as words.
  *
  * @param a (string): the first text.
  * @param b (string): the second text.
  * @return (number): the overlap in [0, 1], 0 when either side has no tokens.
  */
 export function tokenJaccard(a: string, b: string): number {
-  const ta = tokens(a);
-  const tb = tokens(b);
+  const ta = tokens(ids.spellSymbols(a));
+  const tb = tokens(ids.spellSymbols(b));
   if (!ta.size || !tb.size) return 0;
   let shared = 0;
   for (const t of ta) if (tb.has(t)) shared++;
@@ -172,7 +172,7 @@ function distinguishers(tokens: string[]): [string[], string[], string[]] {
  * @return (string[]): the folded letter and digit runs, in order.
  */
 function words(name: string): string[] {
-  return ids.wordRuns(folded(name));
+  return ids.wordRuns(ids.spellSymbols(folded(name)));
 }
 
 /**
