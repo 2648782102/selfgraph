@@ -3,7 +3,7 @@ import { dumps } from "./internal/json.js";
 import { comparePy, cpLen, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso, toIso } from "./internal/time.js";
 
-const MAX_JSON_DEPTH = 64;
+export const MAX_JSON_DEPTH = 64;
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const KEY_SYNONYMS: Readonly<Record<string, string>> = {
   entity_types: "entities",
@@ -347,6 +347,7 @@ export function parseTime(value: unknown, field: string): Date | null {
   } catch {
     throw new ValidationError(
       `invalid ${field}: ${pyRepr(value)} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)`,
+      { field },
     );
   }
   requireDatetime(field, parsed);
@@ -406,7 +407,8 @@ export function requireJsonMapping(name: string, value: unknown, safeInts = true
  */
 export function requireStrMapping(name: string, value: unknown): asserts value is Record<string, string> {
   requireMapping(name, value);
-  for (const item of Object.values(value)) {
+  for (const [key, item] of Object.entries(value)) {
+    if (!pyStrip(key)) throw new ValidationError(`${name} keys cannot be empty or whitespace`, { field: name });
     if (typeof item !== "string") throw new ValidationError(`${name} must map strings to strings`);
   }
 }

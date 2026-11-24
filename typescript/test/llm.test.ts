@@ -547,7 +547,7 @@ describe("LLM extraction through the AI SDK", () => {
       },
     };
     const g = open({ llm, resolver: "exact" });
-    const text = `Jane works at Acme and Globex.${" context".repeat(650)}`;
+    const text = "Jane works at Acme and Globex." + " context".repeat(650);
     expect((await loadTokenizer()).chunkText(text)).toHaveLength(2);
     const options = { source_id: "doc", replace_source: true };
     const first = await g.insert.text(text, options);
@@ -555,7 +555,7 @@ describe("LLM extraction through the AI SDK", () => {
     expect(prior).toHaveLength(2);
     phase = "partial";
     calls = 0;
-    const result = await g.insert.text(`${text} Updated.`, options);
+    const result = await g.insert.text(text + " Updated.", options);
     expect(calls).toBe(2);
     expect(result.warnings.map((w) => w.code)).toEqual(["extraction_partial_failure"]);
     expect(result.source_diff!.retired).toEqual([]);
@@ -564,7 +564,7 @@ describe("LLM extraction through the AI SDK", () => {
     expect((await g.relations.list({ include_invalidated: true })).items.every((r) => r.is_current)).toBe(true);
     phase = "complete";
     calls = 0;
-    const complete = await g.insert.text(`${text} Removed Globex.`, options);
+    const complete = await g.insert.text(text + " Removed Globex.", options);
     expect(calls).toBe(2);
     const produced = complete.relations.map((r) => r.id).sort();
     expect(complete.source_diff!.retired).toEqual(prior.filter((id) => !produced.includes(id)));
