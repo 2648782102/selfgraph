@@ -403,7 +403,7 @@ function deepPropertyErrors(): unknown[] {
           out.push("accepted");
         } catch (exc) {
           if (!(exc instanceof ValidationError)) throw exc;
-          out.push([exc.code, exc.field, exc.message]);
+          out.push([exc.code, exc.field ?? null, exc.message]);
         }
       }
     }
