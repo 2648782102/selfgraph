@@ -14,6 +14,7 @@ import {
   dump,
   exitCodes,
   kuzuParamErrors,
+  kuzuReadOnly,
   kuzuSchemeErrors,
   kuzuStatements,
   kuzuValues,
@@ -46,6 +47,7 @@ function py(
     | "kuzu_values"
     | "kuzu_scheme_errors"
     | "kuzu_params"
+    | "kuzu_read_only"
     | "token_chunks",
   store: string,
   ns: string,
@@ -196,6 +198,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     "refuses a server URI with the same code, field and store name in both languages",
     () => {
       expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
+    },
+  );
+
+  it.skipIf(!live.get("kuzu"))(
+    "reads a stored graph read-only and survives a failed read-only open the same way in both languages",
+    async () => {
+      const result = await kuzuReadOnly();
+      expect(result).toEqual(py("kuzu_read_only", "-", "-"));
+      expect(result).toEqual({
+        ids: ["company:acme", "person:ann"],
+        context: expect.stringContaining("Ann -[WORKS_AT]-> Acme"),
+        empty_database_code: "query_failed",
+        write_after_failed_open: true,
+      });
     },
   );
 

@@ -550,8 +550,10 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
   }
 
-  /** Create the node, relationship, and entity key tables if they do not exist, and index entities stored before the key table. */
+  /** Create the node, relationship, and entity key tables if they do not exist, and index entities stored before the key table; a read-only store writes nothing, so it does neither. */
   async initialize(): Promise<void> {
+    await this.conn.get();
+    if (DATABASE_OPTIONS.get(this.cacheKey)?.read_only) return;
     for (const stmt of SCHEMA) await this._run(stmt);
     if (toCount((await this._run("MATCH (k:K) RETURN count(*) AS n")).rows)) return;
     let after = "";
