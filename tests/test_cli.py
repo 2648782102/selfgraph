@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -484,6 +485,51 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
     assert raised.value.code == "invalid_argument"
     assert raised.value.field == "directory"
     assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
+
+
+def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
+    pytest.importorskip("kuzu")
+    bad = tmp_path / "schema.json"
+    bad.write_bytes(b"\xff\xfe{")
+
+    assert main(["--schema", str(bad), "entity", "list"]) == 2
+    err = capsys.readouterr().err
+    assert (
+        f"error[invalid_argument]: cannot read {str(bad)!r}: not valid UTF-8; save the file as UTF-8 and try again"
+    ) in err
+    assert "field: path" in err
+    assert "Traceback" not in err
+
+
+def test_a_non_utf8_stdin_schema_reports_a_coded_error_under_surrogateescape():
+    pytest.importorskip("kuzu")
+    import selfgraph
+
+    src = os.path.dirname(os.path.dirname(os.path.abspath(selfgraph.__file__)))
+    env = {**os.environ, "PYTHONPATH": src, "PYTHONIOENCODING": "utf-8:surrogateescape"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "selfgraph.cli",
+            "--store",
+            "kuzu",
+            "--uri",
+            ":memory:",
+            "--schema",
+            "-",
+            "entity",
+            "list",
+        ],
+        input=b"\xff\xfe{",
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 2, result.stderr
+    err = result.stderr.decode("utf-8", "replace")
+    assert "error[invalid_argument]: cannot read '-': not valid UTF-8" in err
+    assert "field: path" in err
+    assert "Traceback" not in err
 
 
 @pytest.mark.parametrize(
