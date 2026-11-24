@@ -1,7 +1,9 @@
 import argparse
+import errno
 import io
 import json
 import os
+import pathlib
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -502,6 +504,30 @@ def test_export_obsidian_reports_a_filesystem_error_with_a_code(capsys, tmp_path
     assert raised.value.code == "invalid_argument"
     assert raised.value.field == "directory"
     assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
+
+
+def test_export_obsidian_names_a_file_parent_not_a_directory_when_the_os_reports_it_as_existing(
+    capsys, monkeypatch, tmp_path
+):
+    g = fresh_graph("export-file-parent")
+    run(g.entities.create("Ada", "Person"))
+    parent = tmp_path / "notes"
+    parent.write_text("not a directory")
+    target = parent / "nested"
+    capsys.readouterr()
+
+    def parent_exists(self, *args, **kwargs):
+        raise FileExistsError(errno.EEXIST, "Cannot create a file when that file already exists", str(parent))
+
+    with monkeypatch.context() as patched:
+        patched.setattr(pathlib.Path, "mkdir", parent_exists)
+        with pytest.raises(SelfGraphError) as raised:
+            cli(g, ["export", "obsidian", str(target)], capsys)
+    assert (raised.value.code, raised.value.field) == ("invalid_argument", "directory")
+    assert str(raised.value) == f"cannot write the vault to {str(target)!r}: not a directory"
+    with pytest.raises(SelfGraphError) as raised:
+        cli(g, ["export", "obsidian", str(parent)], capsys)
+    assert str(raised.value) == f"cannot write the vault to {str(parent)!r}: file exists"
 
 
 def test_a_non_utf8_input_file_reports_a_coded_error(capsys, tmp_path):
