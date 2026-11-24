@@ -1061,7 +1061,19 @@ async def _run_with_diagnostics(args: argparse.Namespace, settings: GraphSetting
         logger.setLevel(level)
 
 
+def _utf8_stdio() -> None:
+    """Make stdout and stderr write UTF-8 whatever the locale or `PYTHONIOENCODING` chose.
+
+    Windows opens a piped stream with the ANSI code page, so a name outside it made `print` raise after the command had
+    already committed, and one inside it came out as bytes that are not UTF-8. Each stream keeps its error handler, so
+    stderr still escapes a message it cannot encode with `backslashreplace` rather than losing it.
+    """
+    sys.stdout.reconfigure(encoding="utf-8", errors=sys.stdout.errors)
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_stdio()
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
