@@ -3,7 +3,7 @@ import { dumps } from "./internal/json.js";
 import { comparePy, cpLen, isPlainObject, pyRepr, pyStrip } from "./internal/py.js";
 import { parseIso, toIso } from "./internal/time.js";
 
-const MAX_JSON_DEPTH = 64;
+export const MAX_JSON_DEPTH = 64;
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const KEY_SYNONYMS: Readonly<Record<string, string>> = {
   entity_types: "entities",

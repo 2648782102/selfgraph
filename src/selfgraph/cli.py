@@ -200,7 +200,7 @@ def _kv(pairs: list[str] | None, flag: str, *, text: bool = False) -> dict[str, 
             out[key] = value
             continue
         try:
-            out[key] = parse_json(value)
+            out[key] = parse_json(value, field=key)
         except ValidationError:
             out[key] = value
     return out
@@ -307,7 +307,7 @@ def _metadata(items: list[str] | None) -> dict[str, Any] | None:
     out: dict[str, Any] = {}
     for item in items:
         if item.lstrip().startswith("{"):
-            out.update(parse_json(item, " in --metadata"))
+            out.update(parse_json(item, " in --metadata", "metadata"))
         else:
             out.update(_kv([item], "--metadata"))
     return out
@@ -323,7 +323,7 @@ def _evidence(items: list[str] | None) -> list[Any] | None:
         return None
     out: list[Any] = []
     for item in items:
-        value = parse_json(item, " in --evidence")
+        value = parse_json(item, " in --evidence", "evidence")
         out.extend(value if isinstance(value, list) else [value])
     return out
 
@@ -358,7 +358,7 @@ def _inserted(result: Any) -> Any:
 
 
 async def _schema_import(graph, args):
-    data = read_json(args.path)
+    data = read_json(args.path, "path")
     if isinstance(data, dict) and {"entities", "relations"} & data.keys() and not set(_NEO4J_KEYS) & data.keys():
         raise ValidationError(
             f"{args.path!r} looks like a SelfGraph schema, not a Neo4j one; pass it as --schema instead"
@@ -685,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
     async def insert_facts(g, a):
         return _inserted(
             await g.insert.facts(
-                read_json(a.path),
+                read_json(a.path, "path"),
                 source_id=a.source_id,
                 event_time=a.event_time,
                 resolver=a.call_resolver,
