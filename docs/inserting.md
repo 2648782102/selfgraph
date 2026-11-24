@@ -132,7 +132,7 @@ Text longer than one chunk logs `extracting chunk 3/12` at INFO on the
 | Missing or rejected API key, denied access, or unknown model | `ExtractionError` on the first failed call. |
 | Every call fails and nothing was extracted | `ExtractionError`. No source is recorded. |
 | Some calls fail | The rest is inserted. Each failure becomes an `extraction_partial_failure` warning with an `ErrorType: message` summary, the `source_id`, and the `chunk_id`. |
-| An extracted item cannot be stored, such as a preference strength above 1 | The item is dropped with an `extraction_partial_failure` warning. |
+| An extracted item cannot be stored, such as a preference strength above 1 | The item is dropped with an `extraction_partial_failure` warning. A dropped decision or preference stores nothing it named: no steps, and no entities made only for it. |
 | A relation or decision step uses a reserved type | The item is dropped with one `dropped_reserved_relation` warning. |
 
 The reserved types are SelfGraph's own edges: `AVOIDS`, `CONSIDERED`, `FROM`,
