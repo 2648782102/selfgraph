@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import UPPERCASE from "@unicode/unicode-15.0.0/Binary_Property/Uppercase/code-points.mjs";
@@ -45,6 +46,8 @@ import { requireStr } from "../src/validate.js";
 import { captureLog, captureWarnings, storedEntity } from "./helpers.js";
 
 const fx = JSON.parse(readFileSync(new URL("./fixtures/parity.json", import.meta.url), "utf8"));
+
+const PY = process.env.SELFGRAPH_PY;
 
 /**
  * Run a function the way the fixture's Python attempt() did: the value, or {error: <class name>}.
@@ -152,6 +155,24 @@ describe("ids match Python byte for byte", () => {
     expect(MARK_RANGES).toBe(fx.mark_ranges);
     for (const [ch, expected] of Object.entries(fx.is_mark)) expect(isMark(ch), JSON.stringify(ch)).toBe(expected);
     expect(() => quoteLabel("   ")).toThrow();
+  });
+});
+
+describe.skipIf(!PY)("quote_label matches live Python", () => {
+  it("quotes trailing tab and control characters the way Python does", () => {
+    const labels = ["a\n", "Person\n", "a\t", "Person\t", "a\x01"];
+    const out = execFileSync(
+      PY!,
+      [
+        "-c",
+        "import json, sys; from selfgraph import ids; print(json.dumps({label: ids.quote_label(label) for label in json.load(sys.stdin)}))",
+      ],
+      { input: JSON.stringify(labels), encoding: "utf8" },
+    );
+    const expected = JSON.parse(out) as Record<string, string>;
+    for (const [label, want] of Object.entries(expected)) {
+      expect(quoteLabel(label), JSON.stringify(label)).toBe(want);
+    }
   });
 });
 
