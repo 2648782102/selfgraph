@@ -233,7 +233,10 @@ code.
 - Arguments that do not match a tool's schema fail as the result above, a
   `ValidationError` with code `invalid_argument` (`unknown_key` for an unknown
   argument), `field`, and one `path: message` line per problem
-  (`invalid arguments: format: expected 'selfgraph' or 'neo4j'`).
+  (`invalid arguments: format: expected 'selfgraph', 'neo4j' or 'ossie'`). Python and TypeScript give the
+  same text and `field` for the same bad argument: a count below its minimum reads
+  `invalid arguments: budget_tokens: must be >= 1`, and a number in a message has no
+  `.0` when it is whole (`min_relevance must be between 0 and 1, got 2`).
 - An unknown argument names the closest one, and lists the tool's arguments when
   there are at most eight.
 - An unknown tool name fails as the result above, a `ValidationError` with code
