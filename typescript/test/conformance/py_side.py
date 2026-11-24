@@ -2175,6 +2175,43 @@ async def write(graph):
         contradiction="supersede",
     )
     replayed = await replay_graph.insert.facts({"relations": [old]})
+    retry_graph = SelfGraph(store=graph.store, namespace=graph.namespace + "-retried-insert")
+    retry_facts = {
+        "entities": [{"type": "Person", "name": "Ann"}, {"type": "Person", "name": "Bob"}],
+        "relations": [{"from_entity": "person:ann", "type": "KNOWS", "to_entity": "person:bob"}],
+    }
+    await retry_graph.insert.facts(retry_facts, source_id="first")
+    stored_write = graph.store.upsert_nodes
+
+    async def lose_evidence(ns, label, rows, **kwargs):
+        """Write a batch of nodes, failing the evidence ones as a lost connection does.
+
+        @param ns (str): namespace.
+        @param label (str): node label.
+        @param rows (list): the rows to write.
+        @param kwargs (Any): the store's other options.
+        @return (None): nothing.
+        """
+        if label == "Evidence":
+            raise RuntimeError("connection lost")
+        return await stored_write(ns, label, rows, **kwargs)
+
+    retried_counts = {}
+    for label, facts, source_id in (
+        ("full", retry_facts, "second"),
+        ("relation_only", {"relations": retry_facts["relations"]}, "third"),
+    ):
+        with patch.object(graph.store, "upsert_nodes", lose_evidence):
+            try:
+                await retry_graph.insert.facts(facts, source_id=source_id)
+            except RuntimeError:
+                pass
+        after_retry = await retry_graph.insert.facts(facts, source_id=source_id)
+        retried_counts[label] = {
+            "entities": [[e.id, e.source_count] for e in after_retry.entities],
+            "relations": [[r.id, r.source_count] for r in after_retry.relations],
+        }
+    out["retried_insert_counts"] = retried_counts
     out["strict_retired_replay"] = {
         "relations": [(r.id, r.revision, r.is_current) for r in replayed.relations],
         "warnings": [w.code for w in replayed.warnings],
