@@ -29,6 +29,7 @@ from selfgraph._serde import json_iso
 from selfgraph._unicode import ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, casefold, lower, upper
 from selfgraph.cli import _USAGE_CODES, _kv
 from selfgraph.errors import SelfGraphError, internal_error, mask_uri, redact_uri, redact_uris, surface_hint
+from selfgraph.extraction.chunking import chunk_text, count_tokens
 from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_event_time, _RelOut
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
@@ -318,6 +319,35 @@ def llm_prefix_errors():
         except ValidationError as exc:
             out.append([exc.code, exc.field, surface_hint(str(exc))])
     return out
+
+
+TOKEN_CHUNK_TEXTS = [
+    "Line one \x85Line two",
+    "End of first file. \ufeffSecond file starts here.",
+    " \x85!",
+    " \ufeff!",
+    "\ufeffBOM at the start",
+    "after a newline\n\ufeffBOM",
+    "NEL\x85without a space",
+    "a \x85\x85 b \ufeff\ufeff c",
+    "rocket \U0001f680 \x85\U0001f680 \ufeff\U0001f680 end",
+    "\x85",
+    "\ufeff",
+]
+
+
+def token_chunks():
+    """Count tokens and split chunks of texts with a NEL or a byte order mark.
+
+    @return (list): each text's token count and chunk offsets.
+    """
+    return [
+        {
+            "tokens": count_tokens(text),
+            "chunks": [[c.start_offset, c.end_offset] for c in chunk_text(text, max_tokens=3, overlap_tokens=0)],
+        }
+        for text in TOKEN_CHUNK_TEXTS
+    ]
 
 
 def unknown_key_error(kind, value):
@@ -3008,6 +3038,9 @@ async def main():
         return
     if cmd == "kuzu_params":
         json.dump(await kuzu_param_errors(), sys.stdout, sort_keys=True, ensure_ascii=False)
+        return
+    if cmd == "token_chunks":
+        json.dump(token_chunks(), sys.stdout, ensure_ascii=False)
         return
     store_name, ns = sys.argv[2], sys.argv[3]
     kuzu_path = sys.argv[4] if len(sys.argv) > 4 else None
