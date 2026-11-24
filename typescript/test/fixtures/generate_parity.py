@@ -52,6 +52,8 @@ NAMES = [
     "\u200b",
     "Tab\tSeparated\x1cName",
     "İstanbul",
+    "İ\u0327",
+    "İ\u0327stanbul Holdings Ltd",
     "ΣΊΣΥΦΟΣ",
     "",
     "   ",
@@ -86,6 +88,7 @@ TYPES = [
     "Work",
     " Bank ",
     "U\u0308ber",
+    "İ\u0327",
 ]
 REL_TYPES = [
     "works at",
@@ -127,6 +130,8 @@ ENTITY_ID_INPUTS = [
     "doc:A:B",
     "Big Company:Acme, Inc.",
     "İstanbul:ΣΊΣΥΦΟΣ",
+    "PERSON:İ\u0327",
+    "İ\u0327:Ada",
     "no-colon",
     ":x",
     "x:",

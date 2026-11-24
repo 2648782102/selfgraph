@@ -119,13 +119,13 @@ export function normalizeText(value: string): string {
 }
 
 /**
- * Lowercase text and turn runs of whitespace into single hyphens.
+ * Lowercase text, turn runs of whitespace into single hyphens, and NFC-normalize the result.
  *
  * @param text (string): the text to slugify.
  * @return (string): the slugified text.
  */
 export function slug(text: string): string {
-  return pyCollapseWs(lower(pyStrip(text)), "-");
+  return normalizeText(pyCollapseWs(lower(pyStrip(text)), "-"));
 }
 
 /**
@@ -146,13 +146,12 @@ export function isOrgType(type: string): boolean {
  * @return (string): the canonical hyphenated form.
  */
 export function canonicalName(type: string, rawName: string): string {
-  const name = normalizeText(rawName);
-  let words = pySplit(lower(pyStrip(name.replace(FORMAT, ""))).replace(PUNCT, " "));
+  let words = pySplit(normalizeText(lower(pyStrip(rawName.replace(FORMAT, "")))).replace(PUNCT, " "));
   if (isOrgType(type)) {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);
   }
-  return words.length > 0 ? words.join("-") : slug(name);
+  return words.length > 0 ? words.join("-") : slug(rawName);
 }
 
 /** Reject the id separator in a type. @param type (string): entity type. @return (void): nothing. */
@@ -189,7 +188,7 @@ export function entityId(type: string, name: string): string {
 export function canonicalId<T>(eid: T): T {
   if (typeof eid !== "string" || !eid.includes(":")) return eid;
   const at = eid.indexOf(":");
-  return `${slug(normalizeText(eid.slice(0, at)))}:${slug(normalizeText(eid.slice(at + 1)))}` as T;
+  return `${slug(eid.slice(0, at))}:${slug(eid.slice(at + 1))}` as T;
 }
 
 /**
