@@ -1,6 +1,6 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { createHash } from "node:crypto";
-
+import { loadTokenizer } from "../../src/chunking.js";
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
 import { assembleExtraction, lenientTime } from "../../src/extraction/extractor.js";
@@ -1227,7 +1227,43 @@ const MCP_ARGUMENT_CASES: Array<[string, Record<string, unknown>]> = [
   ["maintenance_prune", { min_relevance: true }],
   ["create_preference", { subject_entity: "t:a", key: "k", value_entity: "t:b", strength: "0.5" }],
   ["create_decision", { title: "t", steps: null }],
+  ["retrieve", { query: "x", k: 0 }],
+  ["retrieve", { query: "x", max_nodes: -1 }],
+  ["retrieve", { query: "x", budget_tokens: 0 }],
+  ["check_answerable", { question: "x", depth: 0 }],
+  ["list_entities", { limit: 1.5 }],
+  ["retrieve", { query: "x", k: 9007199254740992 }],
+  ["list_entities", { limit: -9007199254740992 }],
+  ["insert_facts", { facts: {}, resolver: "bogus" }],
+  ["insert_text", { text: "x", resolver: "bogus" }],
 ];
+
+const TOKEN_CHUNK_TEXTS = [
+  "Line one \x85Line two",
+  "End of first file. \ufeffSecond file starts here.",
+  " \x85!",
+  " \ufeff!",
+  "\ufeffBOM at the start",
+  "after a newline\n\ufeffBOM",
+  "NEL\x85without a space",
+  "a \x85\x85 b \ufeff\ufeff c",
+  "rocket \u{1f680} \x85\u{1f680} \ufeff\u{1f680} end",
+  "\x85",
+  "\ufeff",
+];
+
+/**
+ * Count tokens and split chunks of texts with a NEL or a byte order mark.
+ *
+ * @return (Promise<unknown[]>): each text's token count and chunk offsets.
+ */
+export async function tokenChunks(): Promise<unknown[]> {
+  const { countTokens, chunkText } = await loadTokenizer();
+  return TOKEN_CHUNK_TEXTS.map((text) => ({
+    tokens: countTokens(text),
+    chunks: chunkText(text, { max_tokens: 3, overlap_tokens: 0 }).map((c) => [c.start_offset, c.end_offset]),
+  }));
+}
 
 /**
  * Bind empty containers that Kuzu cannot type and report the error both SDKs raise.
@@ -1386,6 +1422,25 @@ async function choiceErrors(graph: SelfGraph): Promise<Record<string, object | s
     store_refused: await errorOf(() => new SelfGraph(new Neo4jStore("bolt://127.0.0.1:1")).entities.list()),
     list_limit_zero: await errorOf(() => graph.entities.list({ limit: 0 })),
     list_limit_text: await errorOf(() => graph.entities.list({ limit: "5" } as never)),
+    decay_half_life_zero: await errorOf(() => graph.maintenance.decay({ half_life_days: 0 })),
+    decay_half_life_negative: await errorOf(() => graph.maintenance.decay({ half_life_days: -2 })),
+    decay_now_text: await errorOf(() => graph.maintenance.decay({ now: "soon" })),
+    prune_relevance_whole: await errorOf(() => graph.maintenance.prune({ min_relevance: 2 })),
+    prune_relevance_fraction: await errorOf(() => graph.maintenance.prune({ min_relevance: 1.5 })),
+    prune_older_than_text: await errorOf(() => graph.maintenance.prune({ older_than: "soon" })),
+    pref_strength_whole: await errorOf(() =>
+      graph.preferences.create("person:jane-doe", "database", "database:hydradb", { strength: 2 }),
+    ),
+    evidence_confidence_whole: await errorOf(() =>
+      graph.relations.create("person:jane-doe", "KNOWS", "company:acme", {
+        evidence: [{ source_id: "s", confidence: 2 }],
+      }),
+    ),
+    diff_since_text: await errorOf(() => graph.diff("soon")),
+    schema_max_count_zero: await errorOf(() =>
+      graph.insert.facts({}, { schema: { relations: [{ type: "R", from: { max_count: 0 } }] } }),
+    ),
+    retrieve_as_of_text: await errorOf(() => graph.retrieve("x", { as_of: "soon" })),
     kuzu_error_escapes: await errorOf(async () => {
       throw kuzuError(new Error("a\tb  c\x85d\u202ee"), "Kuzu query failed");
     }),

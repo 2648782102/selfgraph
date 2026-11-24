@@ -1,6 +1,7 @@
 import asyncio
 import errno
 import re
+from dataclasses import replace
 from functools import partial
 
 import pytest
@@ -234,6 +235,33 @@ def test_token_chunks_end_on_the_token_edge_after_a_literal_replacement_characte
     chunks = chunk_text(" \ufffd" * 50, max_tokens=4, overlap_tokens=1)
     assert [c.start_offset for c in chunks] == list(range(0, 97, 6))
     assert [c.text for c in chunks] == [" \ufffd" * 4] * 16 + [" \ufffd" * 2]
+
+
+def test_a_nel_or_byte_order_mark_counts_and_chunks_as_a_space():
+    pytest.importorskip("tiktoken")
+    issue = {
+        "Line one \x85Line two": (5, [(0, 9), (9, 18)]),
+        "End of first file. \ufeffSecond file starts here.": (11, [(0, 12), (12, 19), (19, 38), (38, 44)]),
+        " \x85!": (2, [(0, 3)]),
+        " \ufeff!": (2, [(0, 3)]),
+    }
+    for text, (tokens, offsets) in issue.items():
+        assert count_tokens(text) == tokens
+        chunks = chunk_text(text, max_tokens=3, overlap_tokens=0)
+        assert [(c.start_offset, c.end_offset) for c in chunks] == offsets
+        assert [c.text for c in chunks] == [text[start:end] for start, end in offsets]
+    for text in (
+        "\ufeffBOM at the start",
+        "after a newline\n\ufeffBOM",
+        "NEL\x85without a space",
+        "a \x85\x85 b \ufeff c",
+    ):
+        spaced = text.replace("\x85", " ").replace("\ufeff", " ")
+        assert count_tokens(text) == count_tokens(spaced)
+        assert chunk_text(text, max_tokens=2, overlap_tokens=0) == [
+            replace(c, text=text[c.start_offset : c.end_offset])
+            for c in chunk_text(spaced, max_tokens=2, overlap_tokens=0)
+        ]
 
 
 def test_token_chunking_and_counting_read_special_tokens_as_text():
