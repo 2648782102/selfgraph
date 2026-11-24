@@ -631,7 +631,7 @@ class DedupeResult(_PlanResult):
 
 class CypherResult(BaseModel):
     columns: list[str] = Field(default_factory=list)
-    rows: list[dict[str, JsonValue]] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
     counters: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
