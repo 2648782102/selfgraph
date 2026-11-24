@@ -33,7 +33,15 @@ from selfgraph.extraction.extractor import LLMExtractor, _EntityOut, _lenient_ev
 from selfgraph.mcp import server as mcp_server
 from selfgraph.models import validation_error
 from selfgraph.retrieval import _tokens
-from selfgraph.runtime import GraphSettings, _build_llm, _falkor_credentials, parse_json, to_jsonable
+from selfgraph.runtime import (
+    GraphSettings,
+    _build_llm,
+    _falkor_credentials,
+    _llm_concurrency,
+    _llm_timeout,
+    parse_json,
+    to_jsonable,
+)
 from selfgraph.schema import validate_against_schema
 from selfgraph.stores.kuzu import _kuzu_error
 from selfgraph.terms import expand_tokens, schema_forms
@@ -315,6 +323,72 @@ def llm_prefix_errors():
     for provider, model in LLM_PREFIX_CASES:
         try:
             out.append(_build_llm(GraphSettings(llm_provider=provider, llm_model=model)).provider)
+        except ValidationError as exc:
+            out.append([exc.code, exc.field, surface_hint(str(exc))])
+    return out
+
+
+LLM_SETTING_CASES = [
+    ("timeout", value)
+    for value in [
+        "30",
+        " 1.5 ",
+        "+2",
+        ".5",
+        "5.",
+        "1e1",
+        "1E+1",
+        "1_0",
+        "\u0665",
+        "\uff15",
+        "0x10",
+        "0b1",
+        "0o7",
+        "inf",
+        "nan",
+        "-5",
+        "0",
+        "1e400",
+        "1e-400",
+        "",
+        "  ",
+    ]
+] + [
+    ("concurrency", value)
+    for value in [
+        "7",
+        " 7 ",
+        "+7",
+        "007",
+        "0" * 5000 + "5",
+        "9007199254740991",
+        "9007199254740992",
+        "99999999999999999999",
+        "++5",
+        "+",
+        "-1",
+        "0",
+        "\u0665",
+        "\uff15",
+        "1_0",
+        "5.0",
+        "0x10",
+        "",
+        "  ",
+    ]
+]
+
+
+def llm_setting_errors():
+    """Parse the LLM timeout and concurrency settings from text.
+
+    @return (list): each case's parsed number (or default), or the error code, field, and message as the CLI words it.
+    """
+    out = []
+    for name, value in LLM_SETTING_CASES:
+        parse = _llm_timeout if name == "timeout" else _llm_concurrency
+        try:
+            out.append(parse(value))
         except ValidationError as exc:
             out.append([exc.code, exc.field, surface_hint(str(exc))])
     return out
@@ -670,6 +744,7 @@ def schema_warnings():
         "datetime_errors": datetime_errors(),
         "falkor_credentials": falkor_credentials(),
         "llm_prefix_errors": llm_prefix_errors(),
+        "llm_setting_errors": llm_setting_errors(),
         "iso_times": iso_times(),
         "terms_subtypes": [
             sorted(expand_tokens(_tokens(q), sub_schema, _tokens))

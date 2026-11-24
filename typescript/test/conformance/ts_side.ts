@@ -27,7 +27,14 @@ import { ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, lower, upper } from "../../sr
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
 import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
-import { buildLlm, DEFAULT_SETTINGS, falkorCredentials, parseJson } from "../../src/runtime.js";
+import {
+  buildLlm,
+  DEFAULT_SETTINGS,
+  falkorCredentials,
+  llmConcurrency,
+  llmTimeout,
+  parseJson,
+} from "../../src/runtime.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
 import { requireIdentifier } from "../../src/stores/cypherPrimitives.js";
 import { parseDoc } from "../../src/stores/docRows.js";
@@ -363,6 +370,71 @@ function llmPrefixErrors(): unknown[] {
   });
 }
 
+const LLM_SETTING_VALUES: Record<"timeout" | "concurrency", string[]> = {
+  timeout: [
+    "30",
+    " 1.5 ",
+    "+2",
+    ".5",
+    "5.",
+    "1e1",
+    "1E+1",
+    "1_0",
+    "\u0665",
+    "\uff15",
+    "0x10",
+    "0b1",
+    "0o7",
+    "inf",
+    "nan",
+    "-5",
+    "0",
+    "1e400",
+    "1e-400",
+    "",
+    "  ",
+  ],
+  concurrency: [
+    "7",
+    " 7 ",
+    "+7",
+    "007",
+    `${"0".repeat(5000)}5`,
+    "9007199254740991",
+    "9007199254740992",
+    "99999999999999999999",
+    "++5",
+    "+",
+    "-1",
+    "0",
+    "\u0665",
+    "\uff15",
+    "1_0",
+    "5.0",
+    "0x10",
+    "",
+    "  ",
+  ],
+};
+
+/**
+ * Parse the LLM timeout and concurrency settings from text.
+ *
+ * @return (unknown[]): each case's parsed number (or default), or the error code, field, and message as the CLI words it.
+ */
+function llmSettingErrors(): unknown[] {
+  return (["timeout", "concurrency"] as const).flatMap((name) =>
+    LLM_SETTING_VALUES[name].map((value) => {
+      try {
+        return name === "timeout" ? llmTimeout(value) : llmConcurrency(value);
+      } catch (exc) {
+        if (!(exc instanceof ValidationError)) throw exc;
+        return [exc.code, exc.field, surfaceHint(exc.message)];
+      }
+    }),
+  );
+}
+
 /**
  * Parse a value with an unknown key and return the error message.
  *
@@ -576,6 +648,7 @@ export function schemaWarnings(): {
   datetime_errors: string[];
   falkor_credentials: unknown[];
   llm_prefix_errors: unknown[];
+  llm_setting_errors: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
   neo4j_dropped: string;
@@ -785,6 +858,7 @@ export function schemaWarnings(): {
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
     falkor_credentials: falkorCredentialCases(),
     llm_prefix_errors: llmPrefixErrors(),
+    llm_setting_errors: llmSettingErrors(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {
         parseTime(text, "event_time");
