@@ -166,7 +166,8 @@ Page through evidence with `entities.evidence(id, cursor=None, limit=50)` or
 - Each piece of evidence is its own record per entity or relation, source,
   source version, chunk, and quote. Re-inserting a source adds nothing.
 - An entity or relation carries `source_count`, the number of distinct sources
-  behind it.
+  behind it. A write that adds a source sets it from the stored evidence, so
+  retrying a write that failed partway counts each source once.
 - `evidence` returns a `Page` ordered by evidence id and raises `NotFoundError`
   for an unknown id.
 - Evidence passed to `update` adds records. It never replaces them.

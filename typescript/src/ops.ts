@@ -578,10 +578,12 @@ export function viaOf(mergeIds: Iterable<string>): string {
 }
 
 /**
- * Find which evidence records are not stored yet and how many distinct sources each target gains.
+ * Find which evidence records are not stored yet and how many distinct sources each target then holds.
  *
- * Records are looked up by id first; only a target missing a record is then checked for any record from that
- * source. A target with no stored version has no stored evidence, so targets in newTargets skip both lookups.
+ * Records are looked up by id first; only a target missing a record is then read for the sources it already has.
+ * The count is the distinct sources the target's evidence will hold, not an increment on the stored count, so a
+ * write retried after one that stopped between the count and the evidence ends on the same number. A target with
+ * no stored version has no stored evidence, so targets in newTargets skip both lookups.
  * Each record also lists the statements that wrote it (see evidenceVia), so an unmerge moves exactly the rows a
  * merge carried; a stored record that gains a statement is rewritten with its original created_at.
  *
@@ -590,7 +592,8 @@ export function viaOf(mergeIds: Iterable<string>): string {
  * @param items (ReadonlyArray<readonly [string, Evidence]>): (target id, evidence) pairs to record.
  * @param newTargets (ReadonlySet<string>): targets known to have no stored evidence.
  * @param via (ReadonlyArray<readonly string[]> | null): each item's statements, as viaOf gives them; null for all direct.
- * @return ([NodeRow[], Map<string, number>]): the records to write, and the sources gained per target.
+ * @return ([NodeRow[], Map<string, number>]): the records to write, and the source count of each target that gains a
+ *   source.
  */
 async function planEvidence(
   runner: Runner,
@@ -608,21 +611,14 @@ async function planEvidence(
   });
   const known = [...pending].filter(([, [target]]) => !newTargets.has(target)).map(([evid]) => evid);
   const stored = await nodesById(runner, ns, L_EVIDENCE, known);
-  const bySource = new Map<string, Set<string>>();
-  for (const evid of known) {
-    if (stored.has(evid)) continue;
-    const [target, ev] = pending.get(evid)!;
-    const targets = bySource.get(ev.source_id) ?? new Set<string>();
-    bySource.set(ev.source_id, targets.add(target));
-  }
-  const seen = new Set<string>();
-  const pair = (target: string, sourceId: string): string => JSON.stringify([target, sourceId]);
-  for (const [sourceId, targets] of bySource) {
-    for (const props of await nodesWhere(runner, ns, L_EVIDENCE, "target_id", [...targets], { source_id: sourceId }))
-      seen.add(pair(props.target_id as string, sourceId));
+  const unstored = dedupList(known.filter((evid) => !stored.has(evid)).map((evid) => pending.get(evid)![0]));
+  const sourcesOf = new Map<string, Set<string>>();
+  for (const props of await nodesWhere(runner, ns, L_EVIDENCE, "target_id", unstored)) {
+    const target = props.target_id as string;
+    sourcesOf.set(target, (sourcesOf.get(target) ?? new Set<string>()).add(props.source_id as string));
   }
   const records: NodeRow[] = [];
-  const gained = new Map<string, number>();
+  const counts = new Map<string, number>();
   for (const [evid, [target, ev, statements]] of pending) {
     const prior = stored.get(evid);
     if (prior !== undefined) {
@@ -634,12 +630,14 @@ async function planEvidence(
     const props = encodeEvidenceProps({ ns, id: evid, target_id: target, evidence: ev });
     if (statements.size !== 1 || !statements.has(DIRECT)) props.via = [...statements];
     records.push([evid, props]);
-    if (!seen.has(pair(target, ev.source_id))) {
-      seen.add(pair(target, ev.source_id));
-      gained.set(target, (gained.get(target) ?? 0) + 1);
+    const sources = sourcesOf.get(target) ?? new Set<string>();
+    sourcesOf.set(target, sources);
+    if (!sources.has(ev.source_id)) {
+      sources.add(ev.source_id);
+      counts.set(target, sources.size);
     }
   }
-  return [records, gained];
+  return [records, counts];
 }
 
 /**
@@ -664,15 +662,16 @@ async function writeEvidence(runner: Runner, ns: string, records: readonly NodeR
 }
 
 /**
- * Take and remove a target's gained source count, so it applies to the first input naming the target.
+ * Take and remove a target's new source count, so it applies to the first input naming the target.
  *
- * @param gained (Map<string, number>): sources gained per target.
+ * @param counts (Map<string, number>): the source count of each target that gained a source.
  * @param target (string): the entity or relation id.
- * @return (number): the sources gained, or 0 once taken.
+ * @param stored (number): the count the target already has.
+ * @return (number): the new count, or the stored one when the target gained no source or the count was taken.
  */
-function takeGained(gained: Map<string, number>, target: string): number {
-  const n = gained.get(target) ?? 0;
-  gained.delete(target);
+function takeCount(counts: Map<string, number>, target: string, stored: number): number {
+  const n = counts.get(target) ?? stored;
+  counts.delete(target);
   return n;
 }
 
@@ -1004,7 +1003,7 @@ export async function upsertEntities(
   for (const eid of eids) await runner.lockNode(ns, L_ENTITY, eid);
   const stored = new Map<string, Entity>();
   for (const [eid, props] of await nodesById(runner, ns, L_ENTITY, eids)) stored.set(eid, decodeEntity(props));
-  const [records, gained] = await planEvidence(
+  const [records, counts] = await planEvidence(
     runner,
     ns,
     eids.flatMap((eid) => evidence.map((ev) => [eid, ev] as const)),
@@ -1018,7 +1017,7 @@ export async function upsertEntities(
   for (const { eid, etype: given, ename, ent } of keyed) {
     let etype = given;
     const prev = current.get(eid);
-    const sources = (prev?.source_count ?? 0) + takeGained(gained, eid);
+    const sources = takeCount(counts, eid, prev?.source_count ?? 0);
     let props: Props;
     if (prev === undefined) {
       props = encodeEntityProps({
@@ -2952,7 +2951,7 @@ export async function upsertRelations(
     keyed.map((k) => [k.rid, k.rel] as const),
   );
   for (const [rid, edge] of stored) if (edge.props.is_current) foundCurrent(claims.get(rid)!);
-  const [records, gained] = await planEvidence(
+  const [records, counts] = await planEvidence(
     runner,
     ns,
     keyed.flatMap((k) => k.evidence.map((ev) => [k.rid, ev] as const)),
@@ -2987,7 +2986,7 @@ export async function upsertRelations(
         event_time: eventTime,
         created_at: createdAt,
         is_current: true,
-        source_count: takeGained(gained, rid),
+        source_count: takeCount(counts, rid, 0),
       });
       edge = { props, from_id: rel.from_entity, to_id: rel.to_entity, type: rtype };
     } else {
@@ -2997,7 +2996,7 @@ export async function upsertRelations(
       eventTime =
         named ?? (prev.invalidated_at == null || options.contradiction === "supersede" ? prev.event_time : null);
       const effective = eventTime ?? createdAt;
-      const sources = prev.source_count + takeGained(gained, rid);
+      const sources = takeCount(counts, rid, prev.source_count);
       const mergedProperties = mergeProps(prev.properties, rel.properties);
       let reassert = reasserts(prev, effective);
       const unchanged = deepEqual(prev.properties, mergedProperties) && toIso(prev.event_time) === toIso(eventTime);
@@ -3163,7 +3162,7 @@ export async function createRelation(
     if (prior.is_current || prior.invalidated_at === null) throw new ConflictError("Relation", rid);
     requireSameEnds(rid, [prior.from_entity, prior.type, prior.to_entity], [args.from_entity, rtype, args.to_entity]);
   }
-  const [records, gained] = await planEvidence(
+  const [records, counts] = await planEvidence(
     runner,
     ns,
     args.evidence.map((ev) => [rid, ev] as const),
@@ -3178,7 +3177,7 @@ export async function createRelation(
     event_time: args.event_time ?? null,
     created_at: createdAt,
     is_current: true,
-    source_count: (prior?.source_count ?? 0) + (gained.get(rid) ?? 0),
+    source_count: counts.get(rid) ?? prior?.source_count ?? 0,
   });
   const [tracker, existing] = await contradictionCheck(runner, ns, options, [
     [rtype, args.from_entity, args.to_entity],
@@ -3343,13 +3342,13 @@ export async function updateRelation(
   );
   const newEventTime = args.event_time ?? current.event_time;
   const createdAt = new Date();
-  const [records, gained] = await planEvidence(
+  const [records, counts] = await planEvidence(
     runner,
     ns,
     (args.evidence ?? []).map((ev) => [rid, ev] as const),
     new Set(),
   );
-  const sources = current.source_count + (gained.get(rid) ?? 0);
+  const sources = counts.get(rid) ?? current.source_count;
 
   if (
     current.is_current &&

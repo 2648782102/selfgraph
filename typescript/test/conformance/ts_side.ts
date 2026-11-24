@@ -2303,6 +2303,44 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
     { contradiction: "supersede" },
   );
   const replayed = await replayGraph.insert.facts({ relations: [old] });
+  const retryGraph = new SelfGraph(graph.store, { namespace: `${graph.namespace}-retried-insert` });
+  const retryFacts = {
+    entities: [
+      { type: "Person", name: "Ann" },
+      { type: "Person", name: "Bob" },
+    ],
+    relations: [{ from_entity: "person:ann", type: "KNOWS", to_entity: "person:bob" }],
+  };
+  await retryGraph.insert.facts(retryFacts, { source_id: "first" });
+  const storedWrite = graph.store.upsertNodes.bind(graph.store);
+  /**
+   * Write a batch of nodes, failing the evidence ones as a lost connection does.
+   *
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param rows (readonly NodeRow[]): the rows to write.
+   * @param options (UpsertNodeOptions | undefined): the store's other options.
+   * @return (Promise<void>): resolves once the batch is written.
+   */
+  const loseEvidence: typeof storedWrite = async (ns, label, rows, options) => {
+    if (label === "Evidence") throw new Error("connection lost");
+    return storedWrite(ns, label, rows, options);
+  };
+  const retriedCounts: Record<string, unknown> = {};
+  for (const [label, facts, sourceId] of [
+    ["full", retryFacts, "second"],
+    ["relation_only", { relations: retryFacts.relations }, "third"],
+  ] as const) {
+    graph.store.upsertNodes = loseEvidence;
+    await retryGraph.insert.facts(facts, { source_id: sourceId }).catch(() => undefined);
+    graph.store.upsertNodes = storedWrite;
+    const afterRetry = await retryGraph.insert.facts(facts, { source_id: sourceId });
+    retriedCounts[label] = {
+      entities: afterRetry.entities.map((e) => [e.id, e.source_count]),
+      relations: afterRetry.relations.map((r) => [r.id, r.source_count]),
+    };
+  }
+  out.retried_insert_counts = retriedCounts;
   out.strict_retired_replay = {
     relations: replayed.relations.map((r) => [r.id, r.revision, r.is_current]),
     warnings: replayed.warnings.map((w) => w.code),

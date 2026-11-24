@@ -718,10 +718,12 @@ async def _plan_evidence(
     new_targets: set[str],
     via: list[list[str]] | None = None,
 ) -> tuple[list[tuple[str, dict]], dict[str, int]]:
-    """Find which evidence records are not stored yet and how many distinct sources each target gains.
+    """Find which evidence records are not stored yet and how many distinct sources each target then holds.
 
-    Records are looked up by id first; only a target missing a record is then checked for any record from that
-    source. A target with no stored version has no stored evidence, so targets in new_targets skip both lookups.
+    Records are looked up by id first; only a target missing a record is then read for the sources it already has.
+    The count is the distinct sources the target's evidence will hold, not an increment on the stored count, so a
+    write retried after one that stopped between the count and the evidence ends on the same number. A target with
+    no stored version has no stored evidence, so targets in new_targets skip both lookups.
     Each record also lists the statements that wrote it (see evidence_via), so an unmerge moves exactly the rows a
     merge carried; a stored record that gains a statement is rewritten with its original created_at.
 
@@ -730,7 +732,8 @@ async def _plan_evidence(
     @param items (list[tuple[str, Evidence]]): (target id, evidence) pairs to record.
     @param new_targets (set[str]): targets known to have no stored evidence.
     @param via (list[list[str]] | None): each item's statements, as via_of gives them; None for all direct.
-    @return (tuple[list[tuple[str, dict]], dict[str, int]]): the records to write, and the sources gained per target.
+    @return (tuple[list[tuple[str, dict]], dict[str, int]]): the records to write, and the source count of each target
+        that gains a source.
     """
     pending: dict[str, tuple[str, Evidence, dict[str, None]]] = {}
     for i, (target, ev) in enumerate(items):
@@ -740,17 +743,12 @@ async def _plan_evidence(
         pending.setdefault(evid, (target, ev, {}))[2].update(dict.fromkeys([DIRECT] if via is None else via[i]))
     known = [evid for evid, (target, *_) in pending.items() if target not in new_targets]
     stored = await _nodes_by_id(runner, ns, L_EVIDENCE, known)
-    by_source: dict[str, dict[str, None]] = {}
-    for evid in known:
-        if evid not in stored:
-            target, ev, _ = pending[evid]
-            by_source.setdefault(ev.source_id, {})[target] = None
-    seen: set[tuple[str, str]] = set()
-    for source_id, targets in by_source.items():
-        rows = await _nodes_where(runner, ns, L_EVIDENCE, "target_id", list(targets), equals={"source_id": source_id})
-        seen |= {(props["target_id"], source_id) for props in rows}
+    unstored = _dedup_list(pending[evid][0] for evid in known if evid not in stored)
+    sources_of: dict[str, set[str]] = {}
+    for props in await _nodes_where(runner, ns, L_EVIDENCE, "target_id", unstored):
+        sources_of.setdefault(props["target_id"], set()).add(props["source_id"])
     records: list[tuple[str, dict]] = []
-    gained: dict[str, int] = {}
+    counts: dict[str, int] = {}
     for evid, (target, ev, statements) in pending.items():
         if evid in stored:
             held = evidence_via(stored[evid])
@@ -762,10 +760,11 @@ async def _plan_evidence(
         if list(statements) != [DIRECT]:
             props["via"] = list(statements)
         records.append((evid, props))
-        if (target, ev.source_id) not in seen:
-            seen.add((target, ev.source_id))
-            gained[target] = gained.get(target, 0) + 1
-    return records, gained
+        sources = sources_of.setdefault(target, set())
+        if ev.source_id not in sources:
+            sources.add(ev.source_id)
+            counts[target] = len(sources)
+    return records, counts
 
 
 async def _write_evidence(runner: Any, ns: str, records: list[tuple[str, dict]], known: datetime) -> None:
@@ -1095,7 +1094,7 @@ async def upsert_entities(
     for eid in eids:
         await runner.lock_node(ns, L_ENTITY, eid)
     stored = {eid: decode_entity(p) for eid, p in (await _nodes_by_id(runner, ns, L_ENTITY, eids)).items()}
-    records, gained = await _plan_evidence(
+    records, counts = await _plan_evidence(
         runner,
         ns,
         [(eid, ev) for eid in eids for ev in evidence],
@@ -1108,7 +1107,7 @@ async def upsert_entities(
     out: list[Entity] = []
     for eid, etype, ename, ent in keyed:
         prev = current.get(eid)
-        sources = (prev.source_count if prev is not None else 0) + gained.pop(eid, 0)
+        sources = counts.pop(eid, prev.source_count if prev is not None else 0)
         if prev is None:
             props = encode_entity_props(
                 ns=ns,
@@ -2824,7 +2823,7 @@ async def upsert_relations(
     for rid, edge in stored.items():
         if edge["props"]["is_current"]:
             _found_current(claims[rid])
-    records, gained = await _plan_evidence(
+    records, counts = await _plan_evidence(
         runner,
         ns,
         [(rid, ev) for rid, _, _, evidence in keyed for ev in evidence],
@@ -2854,7 +2853,7 @@ async def upsert_relations(
                 event_time=event_time,
                 created_at=created_at,
                 is_current=True,
-                source_count=gained.pop(rid, 0),
+                source_count=counts.pop(rid, 0),
             )
             edge = {"props": props, "from_id": rel.from_entity, "to_id": rel.to_entity, "type": rtype}
         else:
@@ -2872,7 +2871,7 @@ async def upsert_relations(
                 else None
             )
             effective = aware(event_time or created_at)
-            sources = prev.source_count + gained.pop(rid, 0)
+            sources = counts.pop(rid, prev.source_count)
             merged_properties = _merge_props(prev.properties, rel.properties)
             reassert = _reasserts(prev, effective)
             unchanged = _json_equal(prev.properties, merged_properties) and to_iso(prev.event_time) == to_iso(
@@ -3034,7 +3033,7 @@ async def create_relation(
         if prior.is_current or prior.invalidated_at is None:
             raise ConflictError("Relation", rid)
         _require_same_ends(rid, (prior.from_entity, prior.type, prior.to_entity), (from_entity, rtype, to_entity))
-    records, gained = await _plan_evidence(
+    records, counts = await _plan_evidence(
         runner, ns, [(rid, ev) for ev in evidence], new_targets=set() if prior else {rid}
     )
     created_at = now()
@@ -3046,7 +3045,7 @@ async def create_relation(
         event_time=event_time,
         created_at=created_at,
         is_current=True,
-        source_count=(prior.source_count if prior else 0) + gained.get(rid, 0),
+        source_count=counts.get(rid, prior.source_count if prior else 0),
     )
     tracker, existing = await _contradiction_check(runner, ns, contradiction, caps, [(rtype, from_entity, to_entity)])
     retires = []
@@ -3138,8 +3137,8 @@ async def update_relation(
         await schema_check(runner, Extraction(relations=[subject]), Extraction(relations=[stored]))
     new_event_time = event_time if event_time is not None else current.event_time
     created_at = now()
-    records, gained = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
-    sources = current.source_count + gained.get(rid, 0)
+    records, counts = await _plan_evidence(runner, ns, [(rid, ev) for ev in evidence or []], new_targets=set())
+    sources = counts.get(rid, current.source_count)
 
     if (
         current.is_current
