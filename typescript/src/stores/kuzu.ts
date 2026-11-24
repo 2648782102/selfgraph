@@ -1,7 +1,15 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, maskUri, SelfGraphError, StoreError, splitScheme, ValidationError } from "../errors.js";
+import {
+  errorMessage,
+  escapeControls,
+  maskUri,
+  SelfGraphError,
+  StoreError,
+  splitScheme,
+  ValidationError,
+} from "../errors.js";
 import { BLANK, blankLexicalTokens } from "../internal/cypherGuard.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
@@ -216,7 +224,9 @@ const SCHEME_STORES: Record<string, string> = {
  * @return (StoreError): the error to throw.
  */
 export function kuzuError(exc: unknown, prefix: string): StoreError {
-  const detail = errorMessage(exc).split(/\s+/).join(" ").trim();
+  const detail = escapeControls(errorMessage(exc))
+    .replace(/[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, " ")
+    .trim();
   if (detail.includes("Could not set lock on file")) {
     return new StoreError(
       `${prefix}: another process (an MCP server or script) has this Kuzu database open; Kuzu allows one process at a time`,

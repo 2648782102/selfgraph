@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Iterable, Mapping
@@ -15,7 +16,7 @@ from typing import Any
 
 from .._ops import _batches
 from .._serde import L_ENTITY, decode_entity
-from ..errors import SelfGraphError, StoreError, ValidationError, mask_uri, split_scheme
+from ..errors import SelfGraphError, StoreError, ValidationError, escape_controls, mask_uri, split_scheme
 from ..ids import quote_label, require_identifier
 from ..models import CypherResult, JsonValue, check_options
 from ..resolution import match_keys
@@ -153,6 +154,9 @@ def _empty_container(value: Any, path: str) -> tuple[str, str] | None:
     return None
 
 
+_WS_RUN = re.compile("[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
+
+
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     """Map a Kuzu error to a StoreError, adding what to do for the lock and mmap failures.
 
@@ -166,7 +170,7 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
             "process at a time",
             code="store_locked",
         )
-    message = f"{prefix}: {' '.join(str(exc).split())}"
+    message = f"{prefix}: {_WS_RUN.sub(' ', escape_controls(str(exc))).strip()}"
     if "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)
