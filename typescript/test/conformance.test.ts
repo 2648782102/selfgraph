@@ -10,6 +10,7 @@ import { ids, KuzuStore, SelfGraph } from "../src/index.js";
 import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
+  cutDecisionUpdates,
   dump,
   exitCodes,
   kuzuParamErrors,
@@ -41,6 +42,7 @@ function py(
     | "exit_codes"
     | "pinned_unicode"
     | "kuzu_statements"
+    | "kuzu_cut_update"
     | "kuzu_values"
     | "kuzu_scheme_errors"
     | "kuzu_params"
@@ -225,6 +227,19 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     });
     expect(py("kuzu_statements", "-", "-")).toEqual(result);
   });
+
+  it.skipIf(!live.get("kuzu"))(
+    "keeps the steps of a decision update cut off at any write in both languages",
+    async () => {
+      const result = await cutDecisionUpdates(tempKuzu("selfgraph-conf-cut-"));
+      for (const run of Object.values(result)) {
+        expect(run.whole.rationale).toBe("new");
+        expect(run.failed_cuts).toEqual([]);
+      }
+      expect(py("kuzu_cut_update", "-", "-")).toEqual(result);
+    },
+    180_000,
+  );
 
   it.skipIf(!live.get("kuzu"))("returns the same run_cypher values in both languages", async () => {
     const fromTs = await kuzuValues(tempKuzu("selfgraph-conf-values-"));

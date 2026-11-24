@@ -1,10 +1,11 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { loadTokenizer } from "../../src/chunking.js";
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
 import { assembleExtraction, lenientTime, type RawPreference } from "../../src/extraction/extractor.js";
-import type { Evidence, GraphStore, Page } from "../../src/index.js";
+import type { Evidence, GraphStore, Page, Relation } from "../../src/index.js";
 import {
   FalkorDBStore,
   fromNeo4jOntology,
@@ -1225,6 +1226,140 @@ export async function kuzuStatements(path: string): Promise<{ outcomes: unknown[
   await graph.close();
   await KuzuStore.closeDatabase(path);
   return { outcomes, ids };
+}
+
+const CUT_WRITES = [
+  "upsertNode",
+  "upsertNodes",
+  "createEdge",
+  "createEdges",
+  "deleteNode",
+  "deleteNodes",
+  "deleteNodesBy",
+  "deleteEdges",
+  "deleteEdgesTouchingByType",
+] as const;
+
+interface CutState {
+  rationale: string | null;
+  steps: unknown[][];
+  step_nodes: string[];
+  links: string[];
+}
+
+/**
+ * Update a decision with its write at an index failed, retry the update, and read the decision back.
+ *
+ * @param graph (SelfGraph): a graph on a Kuzu store holding the entities and relations.
+ * @param rels (Relation[]): the three relations to build steps from.
+ * @param tid (string): the decision id.
+ * @param picked (number[] | null): the indexes of the relations to use as steps, or null to keep the steps.
+ * @param cut (number | null): the index of the store write to fail, or null to fail none.
+ * @return (Promise<[number, CutState]>): the number of store writes the first update made, and what is stored after the retry.
+ */
+async function cutDecisionUpdate(
+  graph: SelfGraph,
+  rels: Relation[],
+  tid: string,
+  picked: number[] | null,
+  cut: number | null,
+): Promise<[number, CutState]> {
+  const ns = graph.namespace;
+  const store = graph.store;
+  await graph.decisions.create("Pick", {
+    id: tid,
+    steps: [rels[0]!.id, rels[1]!.id],
+    actor_entity: "team:core",
+    outcome_entity: "company:hydradb",
+    alternative_entities: ["company:neo4j"],
+    rationale: "old",
+  });
+  const change = { rationale: "new", ...(picked === null ? {} : { steps: picked.map((i) => rels[i]!.id) }) };
+  const calls: string[] = [];
+  const target = store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const originals = CUT_WRITES.map((name) => target[name]!.bind(store));
+  CUT_WRITES.forEach((name, k) => {
+    target[name] = async (...args: unknown[]) => {
+      calls.push(name);
+      if (calls.length - 1 === cut) throw new Error("connection lost");
+      return originals[k]!(...args);
+    };
+  });
+  try {
+    await graph.decisions.update(tid, change);
+  } catch (exc) {
+    if (!(exc instanceof Error) || exc.message !== "connection lost") throw exc;
+  } finally {
+    for (const name of CUT_WRITES) delete target[name];
+  }
+  await graph.decisions.update(tid, change);
+  const decision = (await graph.decisions.get(tid))!;
+  const sids = [0, 1, 2].map((order) => ids.stepId(tid, order));
+  const edges = [];
+  for (const [from_label, to_label, where] of [
+    ["DecisionStep", "Entity", { from_in: sids }],
+    ["DecisionTrace", "DecisionStep", { from_in: [tid] }],
+    ["DecisionTrace", "Entity", { from_in: [tid] }],
+    ["Entity", "DecisionTrace", { to_in: [tid] }],
+  ] as const) {
+    edges.push(...(await store.matchEdges(ns, { from_label, to_label, ...where })));
+  }
+  const stored: string[] = [];
+  for (const sid of sids) if (await store.nodeExists(ns, "DecisionStep", sid)) stored.push(sid.replaceAll(tid, "T"));
+  return [
+    calls.length,
+    {
+      rationale: decision.rationale,
+      steps: decision.steps.map((s) => [s.order, s.relation_id, s.from_entity, s.to_entity]),
+      step_nodes: stored,
+      links: edges.map((e) => `${e.type} ${e.from_id} ${e.to_id}`.replaceAll(tid, "T")).sort(),
+    },
+  ];
+}
+
+/**
+ * Cut a decision update at every store write for each kind of change, retry it, and read the decision back.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<Record<string, { whole: CutState; failed_cuts: number[] }>>): per change, what a clean update stores, and the indexes of the cuts whose retry stored anything else.
+ */
+export async function cutDecisionUpdates(
+  path: string,
+): Promise<Record<string, { whole: CutState; failed_cuts: number[] }>> {
+  const store = new KuzuStore(path);
+  const out: Record<string, { whole: CutState; failed_cuts: number[] }> = {};
+  const cases: Array<[string, number[] | null]> = [
+    ["text", null],
+    ["fewer", [1]],
+    ["swapped", [1, 0]],
+  ];
+  for (const [name, picked] of cases) {
+    const graph = new SelfGraph(store, { namespace: name });
+    await graph.initialize();
+    for (const [entity, kind] of [
+      ["HydraDB", "Company"],
+      ["Neo4j", "Company"],
+      ["Temporal", "Feature"],
+      ["Core", "Team"],
+    ] as const) {
+      await graph.entities.create(entity, kind);
+    }
+    const rels = [
+      await graph.relations.create("company:hydradb", "REQUIRES", "feature:temporal"),
+      await graph.relations.create("team:core", "SELECTED", "company:hydradb"),
+      await graph.relations.create("team:core", "REJECTED", "company:neo4j"),
+    ];
+    const [writes, whole] = await cutDecisionUpdate(graph, rels, "decision:clean", picked, null);
+    const failed_cuts: number[] = [];
+    for (let cut = 0; cut < writes; cut++) {
+      const [, state] = await cutDecisionUpdate(graph, rels, `decision:cut${cut}`, picked, cut);
+      if (!isDeepStrictEqual(state, whole)) failed_cuts.push(cut);
+    }
+    out[name] = { whole, failed_cuts };
+  }
+  await store.close();
+  await KuzuStore.closeDatabase(path);
+  return out;
 }
 
 /**

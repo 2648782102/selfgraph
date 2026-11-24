@@ -4410,7 +4410,6 @@ async function writeTraceStructure(
     actor_entity: string | null;
     outcome_entity: string | null;
     alternative_entities: string[];
-    steps: DecisionStep[];
   },
 ): Promise<void> {
   const { tid } = args;
@@ -4419,7 +4418,20 @@ async function writeTraceStructure(
   const outcome: EdgeWrite[] = args.outcome_entity === null ? [] : [[R_RESULTED_IN, tid, args.outcome_entity, { ns }]];
   const considered = args.alternative_entities.map((alt): EdgeWrite => [R_CONSIDERED, tid, alt, { ns }]);
   await runner.createEdges(ns, L_TRACE, L_ENTITY, [...outcome, ...considered]);
-  const keyed = args.steps.map((step) => [ids.stepId(tid, step.order), step] as const);
+}
+
+/**
+ * Write the steps of a decision trace, the new step nodes before the stale ones are deleted.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param tid (string): the trace id.
+ * @param steps (DecisionStep[]): the ordered steps to store.
+ * @return (Promise<void>): resolves once the steps are stored.
+ */
+async function writeSteps(runner: Runner, ns: string, tid: string, steps: DecisionStep[]): Promise<void> {
+  const keyed = steps.map((step) => [ids.stepId(tid, step.order), step] as const);
+  const sids = keyed.map(([sid]) => sid);
   await runner.upsertNodes(
     ns,
     L_STEP,
@@ -4437,20 +4449,41 @@ async function writeTraceStructure(
       ],
     ),
   );
+  const linked = new Set((await runner.childNodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP)).map(idOf));
   await runner.createEdges(
     ns,
     L_TRACE,
     L_STEP,
-    keyed.map(([sid, step]): EdgeWrite => [R_HAS_STEP, tid, sid, { ns, order: step.order }]),
+    keyed
+      .filter(([sid]) => !linked.has(sid))
+      .map(([sid, step]): EdgeWrite => [R_HAS_STEP, tid, sid, { ns, order: step.order }]),
   );
-  await runner.createEdges(ns, L_STEP, L_ENTITY, [
-    ...keyed.map(([sid, step]): EdgeWrite => [R_FROM, sid, step.from_entity, { ns }]),
-    ...keyed.map(([sid, step]): EdgeWrite => [R_TO, sid, step.to_entity, { ns }]),
-  ]);
+  await runner.deleteNodes(ns, L_STEP, [...linked].filter((sid) => !sids.includes(sid)).sort());
+  const stored = new Map<string, string[]>();
+  for (const edge of await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids)) {
+    stored.set(edge.from_id, [...(stored.get(edge.from_id) ?? []), `${edge.type}\u0000${edge.to_id}`]);
+  }
+  const wanted = new Map(
+    keyed.map(([sid, step]) => [sid, [`${R_FROM}\u0000${step.from_entity}`, `${R_TO}\u0000${step.to_entity}`].sort()]),
+  );
+  const stale = sids.filter((sid) => !deepEqual((stored.get(sid) ?? []).sort(), wanted.get(sid)));
+  for (const sid of stale.filter((s) => stored.has(s))) {
+    for (const kind of [R_FROM, R_TO]) await runner.deleteEdgesTouchingByType(ns, L_STEP, sid, kind);
+  }
+  await runner.createEdges(
+    ns,
+    L_STEP,
+    L_ENTITY,
+    keyed
+      .filter(([sid]) => stale.includes(sid))
+      .flatMap(([sid, step]): EdgeWrite[] => [
+        [R_FROM, sid, step.from_entity, { ns }],
+        [R_TO, sid, step.to_entity, { ns }],
+      ]),
+  );
 }
 
 async function clearTraceStructure(runner: Runner, ns: string, tid: string): Promise<void> {
-  await deleteSteps(runner, ns, tid);
   for (const rtype of [R_MADE_DECISION, R_RESULTED_IN, R_CONSIDERED]) {
     await runner.deleteEdgesTouchingByType(ns, L_TRACE, tid, rtype);
   }
@@ -4489,10 +4522,20 @@ async function traceLinksIntact(runner: Runner, ns: string, trace: DecisionTrace
   if (trace.outcome_entity !== null) named.push(`${R_RESULTED_IN}\u0000${trace.outcome_entity}`);
   const out = await edgesAt(runner, ns, { from_label: L_TRACE, to_label: L_ENTITY }, "from_in", [trace.id]);
   if (!deepEqual(out.map((e) => `${e.type}\u0000${e.to_id}`).sort(), named.sort())) return false;
+  return stepLinksIntact(runner, ns, trace);
+}
+
+/**
+ * Report whether the steps of a stored trace have exactly the FROM and TO links their relations name.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param trace (DecisionTrace): the stored trace, with its steps.
+ * @return (boolean): true when no step link is missing, extra, or repeated.
+ */
+async function stepLinksIntact(runner: Runner, ns: string, trace: DecisionTrace): Promise<boolean> {
   const sids = trace.steps.map((step) => ids.stepId(trace.id, step.order));
-  const ends = sids.length
-    ? await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids)
-    : [];
+  const ends = await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids);
   const expected = trace.steps.flatMap((step, k) => [
     `${R_FROM}\u0000${sids[k]}\u0000${step.from_entity}`,
     `${R_TO}\u0000${sids[k]}\u0000${step.to_entity}`,
@@ -4564,6 +4607,13 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     updated_at: args.created_at,
   });
   precheckNodes(runner, ns, L_TRACE, [[tid, props]]);
+  const keepSteps =
+    existing !== null &&
+    deepEqual(
+      existing.steps.map((s) => s.relation_id),
+      steps.map((s) => s.relation_id),
+    ) &&
+    (await stepLinksIntact(runner, ns, existing));
   if (existing !== null) await clearTraceStructure(runner, ns, tid);
   await runner.upsertNode(ns, L_TRACE, tid, props);
   await writeTraceStructure(runner, ns, {
@@ -4571,8 +4621,8 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     actor_entity: args.actor_entity,
     outcome_entity: args.outcome_entity,
     alternative_entities: alternatives,
-    steps,
   });
+  if (!keepSteps) await writeSteps(runner, ns, tid, steps);
   return decodeTrace(props, steps);
 }
 
