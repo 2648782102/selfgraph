@@ -26,7 +26,14 @@ import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
 import { ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, lower, upper } from "../../src/internal/unicode.js";
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
-import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
+import {
+  EntityInput,
+  Extraction,
+  type InsertWarning,
+  PreferenceInput,
+  parseOrThrow,
+  RelationInput,
+} from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import {
   buildLlm,
@@ -371,6 +378,40 @@ function llmPrefixErrors(): unknown[] {
   });
 }
 
+const DEEP_PROPERTY_DEPTHS = [63, 64, 1000];
+
+/**
+ * Build each input model with a property nested to each depth, as objects and as arrays.
+ *
+ * @return (unknown[]): "accepted", or the error code, field, and message, per model, depth, and shape.
+ */
+function deepPropertyErrors(): unknown[] {
+  const builds = [
+    (p: Record<string, unknown>) => EntityInput.parse({ type: "T", name: "n", properties: p }),
+    (p: Record<string, unknown>) =>
+      RelationInput.parse({ from_entity: "t:a", type: "R", to_entity: "t:b", properties: p }),
+    (p: Record<string, unknown>) =>
+      PreferenceInput.parse({ subject_entity: "t:a", key: "k", value_entity: "t:b", properties: p }),
+  ];
+  const out: unknown[] = [];
+  for (const build of builds) {
+    for (const depth of DEEP_PROPERTY_DEPTHS) {
+      for (const shape of ["dict", "list"]) {
+        let value: unknown = 1;
+        for (let i = 0; i < depth; i++) value = shape === "dict" ? { a: value } : [value];
+        try {
+          build({ p: value });
+          out.push("accepted");
+        } catch (exc) {
+          if (!(exc instanceof ValidationError)) throw exc;
+          out.push([exc.code, exc.field ?? null, exc.message]);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 const LLM_SETTING_VALUES: Record<"timeout" | "concurrency", string[]> = {
   timeout: [
     "30",
@@ -681,6 +722,7 @@ export function schemaWarnings(): {
   datetime_errors: string[];
   falkor_credentials: unknown[];
   llm_prefix_errors: unknown[];
+  deep_property_errors: unknown[];
   llm_setting_errors: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
@@ -892,6 +934,7 @@ export function schemaWarnings(): {
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
     falkor_credentials: falkorCredentialCases(),
     llm_prefix_errors: llmPrefixErrors(),
+    deep_property_errors: deepPropertyErrors(),
     llm_setting_errors: llmSettingErrors(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {

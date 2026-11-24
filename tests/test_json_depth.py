@@ -3,6 +3,7 @@ import json
 import pytest
 
 from selfgraph.errors import ValidationError
+from selfgraph.models import EntityInput, PreferenceInput, RelationInput
 from selfgraph.runtime import parse_json, read_json
 
 
@@ -38,3 +39,26 @@ def test_a_deep_file_names_its_path(tmp_path):
         read_json(str(path))
     assert raised.value.field == "path"
     assert f"invalid JSON in {str(path)!r}: nested too deeply" in str(raised.value)
+
+
+@pytest.mark.parametrize("kind", ["dict", "list"])
+def test_a_property_deeper_than_the_validator_can_recurse_is_a_coded_error(kind):
+    value = 1
+    for _ in range(1000):
+        value = {"a": value} if kind == "dict" else [value]
+    builds = (
+        (lambda: EntityInput(type="T", name="n", properties={"p": value}), "entity property and external id"),
+        (
+            lambda: RelationInput(from_entity="t:a", type="R", to_entity="t:b", properties={"p": value}),
+            "relation property",
+        ),
+        (
+            lambda: PreferenceInput(subject_entity="t:a", key="k", value_entity="t:b", properties={"p": value}),
+            "preference property",
+        ),
+    )
+    for build, label in builds:
+        with pytest.raises(ValidationError) as raised:
+            build()
+        assert raised.value.code == "invalid_argument"
+        assert str(raised.value) == f"{label} is nested too deeply; keep it under 64 levels"

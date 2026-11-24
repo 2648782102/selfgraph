@@ -73,6 +73,25 @@ export function rejectProtoKeys(value: unknown): void {
 }
 
 /**
+ * Bound the nesting of a raw JSON value without recursing, so it can run before the schema parser walks the value.
+ *
+ * @param name (string): the field name for error messages.
+ * @param value (unknown): the raw input, traversed through arrays and plain objects.
+ */
+export function requireJsonDepth(name: string, value: unknown): void {
+  const pending: Array<[unknown, number]> = [[value, 0]];
+  while (pending.length) {
+    const [item, depth] = pending.pop()!;
+    if (depth > MAX_JSON_DEPTH) {
+      throw new ValidationError(`${name} is nested too deeply; keep it under ${MAX_JSON_DEPTH} levels`);
+    }
+    if (Array.isArray(item) || isPlainObject(item)) {
+      for (const child of Object.values(item)) pending.push([child, depth + 1]);
+    }
+  }
+}
+
+/**
  * Validate a stored JSON value: bounded nesting, clean string keys, UTF-8-emittable strings, safe integers, no Dates.
  *
  * @param name (string): the field name for error messages.
