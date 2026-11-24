@@ -40,7 +40,7 @@ from selfgraph.extraction.extractor import (
     _StepOut,
 )
 from selfgraph.mcp import server as mcp_server
-from selfgraph.models import validation_error
+from selfgraph.models import PreferenceInput, RelationInput, validation_error
 from selfgraph.retrieval import _tokens
 from selfgraph.runtime import (
     GraphSettings,
@@ -334,6 +334,34 @@ def llm_prefix_errors():
             out.append(_build_llm(GraphSettings(llm_provider=provider, llm_model=model)).provider)
         except ValidationError as exc:
             out.append([exc.code, exc.field, surface_hint(str(exc))])
+    return out
+
+
+DEEP_PROPERTY_DEPTHS = [63, 64, 1000]
+
+
+def deep_property_errors():
+    """Build each input model with a property nested to each depth, as dicts and as lists.
+
+    @return (list): "accepted", or the error code, field, and message, per model, depth, and shape.
+    """
+    builds = (
+        lambda p: EntityInput(type="T", name="n", properties=p),
+        lambda p: RelationInput(from_entity="t:a", type="R", to_entity="t:b", properties=p),
+        lambda p: PreferenceInput(subject_entity="t:a", key="k", value_entity="t:b", properties=p),
+    )
+    out = []
+    for build in builds:
+        for depth in DEEP_PROPERTY_DEPTHS:
+            for shape in ("dict", "list"):
+                value = 1
+                for _ in range(depth):
+                    value = {"a": value} if shape == "dict" else [value]
+                try:
+                    build({"p": value})
+                    out.append("accepted")
+                except ValidationError as exc:
+                    out.append([exc.code, exc.field, str(exc)])
     return out
 
 
@@ -813,6 +841,7 @@ def schema_warnings():
         "datetime_errors": datetime_errors(),
         "falkor_credentials": falkor_credentials(),
         "llm_prefix_errors": llm_prefix_errors(),
+        "deep_property_errors": deep_property_errors(),
         "llm_setting_errors": llm_setting_errors(),
         "iso_times": iso_times(),
         "terms_subtypes": [
@@ -2638,6 +2667,68 @@ async def supersede(graph):
         ]
         for rid in (stark, ids.relation_id("person:judy", "WORKS_AT", "company:wonka"))
     }
+    out["parallel_retirement"] = {}
+    for name, caps, arrivals in (
+        (
+            "chronological",
+            (2, 1),
+            (("old", "initech", 1), ("new", "initech", 2), ("other", "acme", 12)),
+        ),
+        (
+            "other_end_unread",
+            (2, 2),
+            (("f0", "initech", 3), ("f1", "acme", 4), ("f3", "initech", 11), ("f2", "initech", 12)),
+        ),
+    ):
+        parallel = SelfGraph(
+            graph.store,
+            namespace=f"{graph.namespace}-parallel-{name}",
+            schema={
+                "entities": SUPERSEDE_SCHEMA["entities"],
+                "relations": [
+                    {
+                        "type": "WORKS_AT",
+                        "from": {"types": ["Person"], "max_count": caps[0]},
+                        "to": {"types": ["Company"], "max_count": caps[1]},
+                    }
+                ],
+            },
+            contradiction="supersede",
+        )
+        await parallel.initialize()
+        await parallel.insert.facts(
+            {
+                "entities": [
+                    *({"type": "Person", "name": n} for n in ("Ann", "Bob")),
+                    *({"type": "Company", "name": n} for n in ("Initech", "Acme")),
+                ]
+            }
+        )
+        for rid, company, month in arrivals:
+            person = "person:bob" if rid == "f2" else "person:ann"
+            await parallel.insert.facts(
+                {
+                    "relations": [
+                        {
+                            "id": f"relation:{rid}",
+                            "from_entity": person,
+                            "type": "WORKS_AT",
+                            "to_entity": f"company:{company}",
+                            "event_time": datetime(2020, month, 15, tzinfo=timezone.utc),
+                        }
+                    ]
+                }
+            )
+        listed = await parallel.relations.list(include_invalidated=True)
+        out["parallel_retirement"][name] = {
+            r.id: [
+                r.revision,
+                r.is_current,
+                r.invalidated_by,
+                _serde.json_iso(r.invalidated_at) if r.invalidated_at else None,
+            ]
+            for r in listed.items
+        }
     kim = [{"type": "Person", "name": "Kim"}, *({"type": "Company", "name": n} for n in ("Massive", "Nakatomi"))]
     await graph.insert.facts({"entities": kim})
     for company, year in (("massive", 2020), ("nakatomi", 2022)):
@@ -2664,6 +2755,32 @@ async def supersede(graph):
     ]
     held_mia = await graph.retrieve("Mia", as_of=datetime(2015, 1, 1, tzinfo=timezone.utc))
     out["moved_earlier_gap_valid"] = sorted(r.id for r in held_mia.subgraph.relations)
+    ron = [{"type": "Person", "name": n} for n in ("Ola", "Pat", "Quin")]
+    await graph.insert.facts({"entities": [*ron, *({"type": "Company", "name": n} for n in ("Rune", "Sage"))]})
+    for rid, person, company, when in (
+        ("y", "quin", "sage", datetime(2020, 8, 28, tzinfo=timezone.utc)),
+        ("b", "pat", "rune", datetime(2020, 5, 30, tzinfo=timezone.utc)),
+        ("z", "ola", "rune", datetime(2020, 9, 27, tzinfo=timezone.utc)),
+        ("x", "quin", "rune", datetime(2020, 4, 30, tzinfo=timezone.utc)),
+        ("b", "pat", "rune", datetime(2020, 3, 1, tzinfo=timezone.utc)),
+    ):
+        await graph.relations.create(
+            f"person:{person}", "WORKS_AT", f"company:{company}", id=f"relation:{rid}", event_time=when
+        )
+    out["reasserted_earlier"] = {
+        rid: [
+            [
+                v.revision,
+                v.is_current,
+                v.invalidated_by,
+                _serde.json_iso(v.invalidated_at) if v.invalidated_at else None,
+            ]
+            for v in await graph.relations.versions(f"relation:{rid}")
+        ]
+        for rid in ("b", "x")
+    }
+    held_quin = await graph.retrieve("Quin", as_of=datetime(2020, 9, 1, tzinfo=timezone.utc))
+    out["reasserted_earlier_valid"] = sorted(r.id for r in held_quin.subgraph.relations)
     lee = [{"type": "Person", "name": "Lee"}, {"type": "Company", "name": "Umbrella"}]
     await graph.insert.facts({"entities": lee, "relations": [link("lee", "umbrella", 2020)]})
     umbrella = ids.relation_id("person:lee", "WORKS_AT", "company:umbrella")
@@ -3183,8 +3300,121 @@ def exit_codes() -> list:
     return [[code, 2 if code in _USAGE_CODES else 1] for code in sorted(HINTS)]
 
 
+CUT_WRITES = (
+    "upsert_node",
+    "upsert_nodes",
+    "create_edge",
+    "create_edges",
+    "delete_node",
+    "delete_nodes",
+    "delete_nodes_by",
+    "delete_edges",
+    "delete_edges_touching_by_type",
+)
+
+
+async def cut_decision_update(graph, rels, tid, picked, cut):
+    """Update a decision with its write at an index failed, retry the update, and read the decision back.
+
+    @param graph (SelfGraph): a graph on a Kuzu store holding the entities and relations.
+    @param rels (list[Relation]): the three relations to build steps from.
+    @param tid (str): the decision id.
+    @param picked (list[int] | None): the indexes of the relations to use as steps, or None to keep the steps.
+    @param cut (int | None): the index of the store write to fail, or None to fail none.
+    @return (tuple[int, dict]): the number of store writes the first update made, and what is stored after the retry.
+    """
+    store, ns = graph.store, graph.namespace
+    await graph.decisions.create(
+        "Pick",
+        id=tid,
+        steps=[rels[0].id, rels[1].id],
+        actor_entity="team:core",
+        outcome_entity="company:hydradb",
+        alternative_entities=["company:neo4j"],
+        rationale="old",
+    )
+    change = {"rationale": "new", **({} if picked is None else {"steps": [rels[i].id for i in picked]})}
+    calls = []
+
+    def counting(name):
+        """Wrap one store write so it is counted and fails when it is the one to cut.
+
+        @param name (str): the store method.
+        @return (Callable): the wrapped method.
+        """
+        original = getattr(store, name)
+
+        async def wrapped(*args, **kwargs):
+            """Count the write, then fail it or run it.
+
+            @return (Any): what the store method returns.
+            """
+            calls.append(name)
+            if len(calls) - 1 == cut:
+                raise ConnectionError("connection lost")
+            return await original(*args, **kwargs)
+
+        return wrapped
+
+    for name in CUT_WRITES:
+        setattr(store, name, counting(name))
+    try:
+        await graph.decisions.update(tid, **change)
+    except ConnectionError:
+        pass
+    finally:
+        for name in CUT_WRITES:
+            delattr(store, name)
+    await graph.decisions.update(tid, **change)
+    decision = await graph.decisions.get(tid)
+    sids = [ids.step_id(tid, order) for order in range(3)]
+    edges = []
+    for source, target, where in (
+        (_serde.L_STEP, _serde.L_ENTITY, {"from_in": sids}),
+        (_serde.L_TRACE, _serde.L_STEP, {"from_in": [tid]}),
+        (_serde.L_TRACE, _serde.L_ENTITY, {"from_in": [tid]}),
+        (_serde.L_ENTITY, _serde.L_TRACE, {"to_in": [tid]}),
+    ):
+        edges += await store.match_edges(ns, from_label=source, to_label=target, **where)
+    return len(calls), {
+        "rationale": decision.rationale,
+        "steps": [[s.order, s.relation_id, s.from_entity, s.to_entity] for s in decision.steps],
+        "step_nodes": [sid.replace(tid, "T") for sid in sids if await store.node_exists(ns, _serde.L_STEP, sid)],
+        "links": sorted(f"{e['type']} {e['from_id']} {e['to_id']}".replace(tid, "T") for e in edges),
+    }
+
+
+async def cut_decision_updates():
+    """Cut a decision update at every store write for each kind of change, retry it, and read the decision back.
+
+    @return (dict): per change, what a clean update stores, and the indexes of the cuts whose retry stored anything else.
+    """
+    import tempfile
+
+    store = KuzuStore(os.path.join(tempfile.mkdtemp(prefix="sg-conf-cut-"), "g.kuzu"))
+    out = {}
+    for name, picked in (("text", None), ("fewer", [1]), ("swapped", [1, 0])):
+        graph = SelfGraph(store=store, namespace=name)
+        await graph.initialize()
+        for entity, kind in (("HydraDB", "Company"), ("Neo4j", "Company"), ("Temporal", "Feature"), ("Core", "Team")):
+            await graph.entities.create(entity, kind)
+        rels = [
+            await graph.relations.create("company:hydradb", "REQUIRES", "feature:temporal"),
+            await graph.relations.create("team:core", "SELECTED", "company:hydradb"),
+            await graph.relations.create("team:core", "REJECTED", "company:neo4j"),
+        ]
+        writes, whole = await cut_decision_update(graph, rels, "decision:clean", picked, None)
+        cuts = [await cut_decision_update(graph, rels, f"decision:cut{cut}", picked, cut) for cut in range(writes)]
+        out[name] = {"whole": whole, "failed_cuts": [cut for cut, (_, state) in enumerate(cuts) if state != whole]}
+    await store.close()
+    return out
+
+
 async def main():
     cmd = sys.argv[1]
+    if cmd == "kuzu_cut_update":
+        json.dump(await cut_decision_updates(), sys.stdout)
+        return
     if cmd == "exit_codes":
         json.dump(exit_codes(), sys.stdout)
         return

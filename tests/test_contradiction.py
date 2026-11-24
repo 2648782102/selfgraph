@@ -920,6 +920,44 @@ def test_a_relation_capped_at_both_ends_is_reinstated_only_when_neither_end_disp
     assert (valid_at(g, 2019), valid_at(g, 2023)) == ({ann_globex}, {ann_acme})
 
 
+def test_restating_a_retired_relation_earlier_by_create_settles_the_other_end_it_sat_at():
+    people = [{"type": "Person", "name": n} for n in ("Ann", "Bob", "Cy")]
+    people += [{"type": "Company", "name": n} for n in ("Globex", "Initech")]
+
+    def settled(how):
+        g = fresh_graph("contra", schema=BOTH_ENDS_SPEC, contradiction="supersede")
+        run(g.insert.facts({"entities": people}))
+        for rid, person, company, when in (
+            ("y", "cy", "initech", (2020, 8, 28)),
+            ("b", "bob", "globex", (2020, 5, 30)),
+            ("z", "ann", "globex", (2020, 9, 27)),
+            ("x", "cy", "globex", (2020, 4, 30)),
+        ):
+            run(
+                g.relations.create(
+                    f"person:{person}", "WORKS_AT", f"company:{company}", id=f"relation:{rid}", event_time=utc(*when)
+                )
+            )
+        if how == "insert":
+            insert(g, {**works_at("globex", person="bob"), "id": "relation:b", "event_time": utc(2020, 3, 1)})
+        else:
+            run(
+                g.relations.create(
+                    "person:bob", "WORKS_AT", "company:globex", id="relation:b", event_time=utc(2020, 3, 1)
+                )
+            )
+        x = run(g.relations.versions("relation:x"))[0]
+        return (
+            (x.is_current, x.invalidated_by, x.invalidated_at),
+            {r.id for r in run(g.retrieve("Cy", as_of=utc(2020, 9, 1))).subgraph.relations},
+            {r.id for r in run(g.relations.list()).items},
+        )
+
+    created = settled("create")
+    assert created == settled("insert")
+    assert created == ((False, "relation:y", utc(2020, 8, 28)), {"relation:y"}, {"relation:y", "relation:z"})
+
+
 @pytest.mark.parametrize("dated", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
 def test_same_time_batch_replay_is_idempotent(dated, reverse):
@@ -935,3 +973,89 @@ def test_same_time_batch_replay_is_idempotent(dated, reverse):
         run(g.insert.facts(facts, **kwargs))
         after = sorted((r.id, r.revision, r.is_current) for r in run(g.relations.list(include_invalidated=True)).items)
         assert after == before
+
+
+def capped_graph(from_max, to_max):
+    spec = {
+        "entities": [{"name": "Person"}, {"name": "Company"}],
+        "relations": [
+            {
+                "type": "WORKS_AT",
+                "from": {"types": ["Person"], "max_count": from_max},
+                "to": {"types": ["Company"], "max_count": to_max},
+            }
+        ],
+    }
+    g = fresh_graph("contra", schema=spec, contradiction="supersede")
+    run(g.insert.facts({"entities": PEOPLE}))
+    return g
+
+
+def retirements(g):
+    return {
+        r.id: (r.is_current, r.invalidated_by, r.invalidated_at)
+        for r in run(g.relations.list(include_invalidated=True, limit=100)).items
+    }
+
+
+@pytest.mark.parametrize("how", ["insert", "create"])
+def test_a_later_displacement_at_one_end_keeps_a_parallel_relations_earlier_retirement(how):
+    g = capped_graph(2, 1)
+    for rid, company, month in (("old", "initech", 1), ("new", "initech", 2), ("other", "acme", 12)):
+        rel = {**works_at(company), "id": f"relation:{rid}", "event_time": utc(2020, month, 15)}
+        if how == "insert":
+            insert(g, rel)
+        else:
+            run(
+                g.relations.create(
+                    rel["from_entity"], "WORKS_AT", rel["to_entity"], id=rel["id"], event_time=rel["event_time"]
+                )
+            )
+    old = run(g.relations.versions("relation:old"))[0]
+    assert (old.is_current, old.invalidated_by, old.invalidated_at) == (False, "relation:new", utc(2020, 2, 15))
+    assert {r.id for r in run(g.retrieve("Ann", as_of=utc(2020, 3, 1))).subgraph.relations} == {"relation:new"}
+
+
+PARALLEL_ARRIVALS = {
+    "three-parallel": (1, 2, [("f4", "ann", "acme", 10), ("f0", "ann", "acme", 11), ("f1", "ann", "acme", 12)]),
+    "other-end-unread": (
+        2,
+        2,
+        [
+            ("f0", "ann", "initech", 3),
+            ("f1", "ann", "acme", 4),
+            ("f3", "ann", "initech", 11),
+            ("f2", "bob", "initech", 12),
+        ],
+    ),
+    "pair-at-third-relation": (
+        2,
+        2,
+        [("f0", "bob", "acme", 6), ("f2", "bob", "initech", 3), ("f4", "bob", "acme", 1), ("f5", "ann", "acme", 9)],
+    ),
+    "limit-two-from": (
+        2,
+        1,
+        [("f0", "ann", "acme", 7), ("f1", "ann", "acme", 3), ("f2", "ann", "acme", 4), ("f4", "ann", "initech", 2)],
+    ),
+    "mixed-ends": (
+        2,
+        1,
+        [("f1", "ann", "acme", 7), ("f2", "ann", "acme", 5), ("f3", "ann", "initech", 8)],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", PARALLEL_ARRIVALS)
+def test_parallel_relations_retire_at_the_earliest_end_whatever_the_arrival_order(case):
+    from_max, to_max, facts = PARALLEL_ARRIVALS[case]
+    rels = [
+        {**works_at(company, person=person), "id": f"relation:{rid}", "event_time": utc(2020, month, 15)}
+        for rid, person, company, month in facts
+    ]
+    arrived = capped_graph(from_max, to_max)
+    for rel in rels:
+        insert(arrived, rel)
+    batch = capped_graph(from_max, to_max)
+    insert(batch, *rels)
+    assert retirements(arrived) == retirements(batch)

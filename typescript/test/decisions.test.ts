@@ -1,9 +1,75 @@
 import { expect, it } from "vitest";
 import { ids, ValidationError } from "../src/index.js";
-import { forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
+import { L_ENTITY, L_STEP, L_TRACE } from "../src/labels.js";
+import { countStoreWrites, forEachStore, freshGraphs, type StoreSpec } from "./helpers.js";
 
 function suite(spec: StoreSpec): void {
   const open = freshGraphs(spec, "step-ids");
+  for (const steps of [null, [1], [0, 1, 2], [1, 0]]) {
+    it.runIf(!spec.transactional)(
+      `keeps the steps of a decision update cut off at any write after a retry, steps ${JSON.stringify(steps)}`,
+      async () => {
+        const build = async () => {
+          const g = open();
+          for (const [name, type] of [
+            ["HydraDB", "Company"],
+            ["Neo4j", "Company"],
+            ["Temporal", "Feature"],
+            ["Core", "Team"],
+          ] as const) {
+            await g.entities.create(name, type);
+          }
+          const rels = [
+            await g.relations.create("company:hydradb", "REQUIRES", "feature:temporal"),
+            await g.relations.create("team:core", "SELECTED", "company:hydradb"),
+            await g.relations.create("team:core", "REJECTED", "company:neo4j"),
+          ];
+          await g.decisions.create("Pick", {
+            id: "decision:d1",
+            steps: [rels[0]!.id, rels[1]!.id],
+            actor_entity: "team:core",
+            outcome_entity: "company:hydradb",
+            alternative_entities: ["company:neo4j"],
+            rationale: "old",
+          });
+          const picked = steps === null ? {} : { steps: steps.map((i) => rels[i]!.id) };
+          return { g, change: { rationale: "new", ...picked } };
+        };
+        const state = async (g: ReturnType<typeof open>) => {
+          const edges = [];
+          for (const [from_label, to_label] of [
+            [L_STEP, L_ENTITY],
+            [L_TRACE, L_STEP],
+            [L_TRACE, L_ENTITY],
+            [L_ENTITY, L_TRACE],
+          ] as const) {
+            edges.push(...(await g.store.matchEdges(g.namespace, { from_label, to_label })));
+          }
+          const { created_at, updated_at, ...decision } = (await g.decisions.get("decision:d1"))!;
+          return {
+            decision,
+            step_nodes: (await g.store.matchNodes(g.namespace, L_STEP)).map((n) => n.id as string).sort(),
+            links: edges.map((e) => `${e.type} ${e.from_id} ${e.to_id}`).sort(),
+          };
+        };
+        const clean = await build();
+        const writes = await countStoreWrites(clean.g, null, async () => {
+          await clean.g.decisions.update("decision:d1", clean.change);
+        });
+        const whole = await state(clean.g);
+        expect(whole.decision.rationale).toBe("new");
+        expect(whole.decision.steps).toHaveLength(steps === null ? 2 : steps.length);
+        for (let cut = 0; cut < writes.length; cut++) {
+          const { g, change } = await build();
+          await countStoreWrites(g, cut, async () => {
+            await expect(g.decisions.update("decision:d1", change)).rejects.toThrow("connection lost");
+          });
+          await g.decisions.update("decision:d1", change);
+          expect(await state(g), `cut at write ${cut}: ${writes[cut]}`).toEqual(whole);
+        }
+      },
+    );
+  }
   it("keeps every step when a page of decisions holds more than a thousand", async () => {
     const g = open();
     await g.insert.facts({

@@ -85,6 +85,24 @@ def _reject_proto_keys(value: Any) -> Any:
     return value
 
 
+def _require_json_depth(name: str, value: object) -> None:
+    """Bound the nesting of a raw JSON value without recursing, so it can run before pydantic walks the value.
+
+    @param name (str): the field name for error messages.
+    @param value (object): the raw input, traversed through mappings and sequences.
+    @return (None): nothing; raises ValidationError past the depth that _require_clean_json allows.
+    """
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > _MAX_JSON_DEPTH:
+            raise ValidationError(f"{name} is nested too deeply; keep it under {_MAX_JSON_DEPTH} levels")
+        if isinstance(item, Mapping):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list | tuple):
+            pending.extend((child, depth + 1) for child in item)
+
+
 def _require_clean_json(name: str, value: object, depth: int = 0, *, safe_ints: bool = True) -> None:
     """Validate a stored JSON value: bounded nesting, clean string keys, and UTF-8-emittable string values.
 

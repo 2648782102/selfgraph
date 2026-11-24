@@ -2277,6 +2277,37 @@ export class Contradictions {
     return [by, effective];
   }
 
+  /**
+   * The earliest displacement of a retired relation across the endpoints its retiring relation shares with it.
+   *
+   * @param rid (string): the retired relation id.
+   * @param by (string): the relation that retired it.
+   * @param found ([string, Date]): the displacing relation id and time at the endpoint being settled.
+   * @param key (string): the endpoint being settled, as JSON.
+   * @param retired (ReadonlyMap<string, [string, Date]>): pending retirements from the current settle run.
+   * @return ([string, Date]): the displacing relation id and the earliest displacement time.
+   */
+  private sharedDisplacement(
+    rid: string,
+    by: string,
+    found: [string, Date],
+    key: string,
+    retired: ReadonlyMap<string, [string, Date]>,
+  ): [string, Date] {
+    const version = this.versions.get(rid)!.at(-1)!;
+    for (const [slot, limit] of capSlots(this.caps, version.type, version.from_entity, version.to_entity)) {
+      const other = JSON.stringify(slot);
+      const facts = new Map([...(this.past.get(other) ?? []), ...(this.groups.get(other) ?? [])]);
+      if (other === key || !facts.has(by)) continue;
+      const newer = this.newer(facts, rid);
+      if (newer.length < limit) continue;
+      const windows = new Map([...facts.keys()].map((fact) => [fact, this.factWindows(fact, retired)]));
+      const displaced = this.displacedAt(newer, limit, rid, windows);
+      if (epochMicros(displaced[1]) < epochMicros(found[1])) found = displaced;
+    }
+    return found;
+  }
+
   private seat(slot: Slot, rid: string, rank: Rank, effective: Date): void {
     const key = JSON.stringify(slot);
     const group = this.groups.get(key) ?? new Map<string, Rank>();
@@ -2412,7 +2443,13 @@ export class Contradictions {
         const newer = this.newer(facts, rid);
         const ended = retired.get(rid) ?? this.ended.get(rid);
         if (ended === undefined || newer.length < limit) continue;
-        const [by, at] = this.displacedAt(newer, limit, rid, windows);
+        const [by, at] = this.sharedDisplacement(
+          rid,
+          ended[0],
+          this.displacedAt(newer, limit, rid, windows),
+          key,
+          retired,
+        );
         if (
           (by !== ended[0] || epochMicros(at) !== epochMicros(ended[1])) &&
           (facts.has(ended[0]) || epochMicros(at) < epochMicros(ended[1]))
@@ -2463,7 +2500,8 @@ export class Contradictions {
  * @param ns (string): the namespace.
  * @param caps (ReadonlyMap<string, RelationCap>): the max_count limits by normalized relation type and alias.
  * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) of each write.
- * @param every (Map<string, EdgeRow[]> | undefined): receives every version read, by relation id, when given.
+ * @param every (Map<string, EdgeRow[]>): receives every version read, by relation id.
+ * @param twins (boolean): also read, and lock, the other endpoint of a relation retired by one with the same endpoints.
  * @return ([Map<string, EdgeRow>, Map<string, EdgeRow>]): each current relation's edge row by id, in read order, and the newest version of each relation a contradiction retired there by id.
  */
 async function constrainedCurrent(
@@ -2471,9 +2509,34 @@ async function constrainedCurrent(
   ns: string,
   caps: ReadonlyMap<string, RelationCap>,
   ends: Iterable<readonly [string, string, string]>,
-  every?: Map<string, EdgeRow[]>,
+  every: Map<string, EdgeRow[]>,
+  twins: boolean,
 ): Promise<[Map<string, EdgeRow>, Map<string, EdgeRow>]> {
-  const rows = [...(await endpointEdges(runner, ns, caps, ends, every)).values()];
+  const writes = [...ends];
+  const seen = new Set<string>();
+  const found = await endpointEdges(runner, ns, caps, writes, every, seen);
+  if (twins) {
+    const shared: Array<[string, string, string]> = [];
+    for (const e of found.values()) {
+      const twin = typeof e.props.invalidated_by === "string" ? found.get(e.props.invalidated_by) : undefined;
+      if (
+        !e.props.is_current &&
+        twin?.from_id === e.from_id &&
+        twin.to_id === e.to_id &&
+        capSlots(caps, e.type, e.from_id, e.to_id).length > 1
+      ) {
+        shared.push([e.type, e.from_id, e.to_id]);
+      }
+    }
+    const locked = new Set(relationLockIds(caps, writes));
+    for (const eid of relationLockIds(caps, shared)) {
+      if (!locked.has(eid)) await runner.lockNode(ns, L_ENTITY, eid);
+    }
+    for (const [rid, edge] of await endpointEdges(runner, ns, caps, shared, every, seen)) {
+      if (!found.has(rid)) found.set(rid, edge);
+    }
+  }
+  const rows = [...found.values()];
   return [
     new Map(rows.filter((e) => e.props.is_current).map((e) => [idOf(e.props), e])),
     new Map(
@@ -2497,6 +2560,7 @@ async function constrainedCurrent(
  * @param caps (ReadonlyMap<string, RelationCap>): the schema's max_count limits by relation type.
  * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) of each relation.
  * @param every (Map<string, EdgeRow[]> | undefined): receives every version read, by relation id, when given.
+ * @param seen (Set<string>): the reads already made, as JSON [side, endpoint, stored type], which are skipped and added to.
  * @return (Map<string, EdgeRow>): each relation's newest edge row by id, in read order.
  */
 async function endpointEdges(
@@ -2505,9 +2569,9 @@ async function endpointEdges(
   caps: ReadonlyMap<string, RelationCap>,
   ends: Iterable<readonly [string, string, string]>,
   every?: Map<string, EdgeRow[]>,
+  seen = new Set<string>(),
 ): Promise<Map<string, EdgeRow>> {
   const found = new Map<string, EdgeRow>();
-  const seen = new Set<string>();
   for (const [rtype, fromEntity, toEntity] of ends) {
     const cap = caps.get(rtype);
     for (const [side] of cap?.limits ?? []) {
@@ -2621,6 +2685,9 @@ export interface ContradictionOptions {
 /**
  * Prepare the contradiction check for a write, reading the current relations it can conflict with.
  *
+ * Under supersede it also reads, and locks, the other endpoint of each relation that a relation with the same
+ * endpoints retired, since that endpoint can have displaced it earlier.
+ *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param options (ContradictionOptions): the mode and the max_count limits.
@@ -2636,7 +2703,7 @@ async function contradictionCheck(
   const { contradiction = "off", caps } = options;
   if (contradiction === "off" || !caps?.size) return [null, new Map()];
   const every = new Map<string, EdgeRow[]>();
-  const [existing, history] = await constrainedCurrent(runner, ns, caps, ends, every);
+  const [existing, history] = await constrainedCurrent(runner, ns, caps, ends, every, contradiction === "supersede");
   const tracker = new Contradictions(
     caps,
     contradiction,
@@ -3123,7 +3190,9 @@ export interface CreateRelationArgs {
  * Creating an invalidated relation again reasserts it as a new current revision with exactly the given properties,
  * nothing carried over from the retired one, and adds a "relation_reasserted" warning. Without event_time the effective
  * time is the creation time. The new version is written before any relation it supersedes is retired; in supersede
- * mode one older than the current relations it conflicts with is written already invalidated.
+ * mode one older than the current relations it conflicts with is written already invalidated. A reassertion in
+ * supersede mode then settles its max_count endpoints again (see resettleEndpoints), as an insert that moves the
+ * relation does.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -3218,6 +3287,11 @@ export async function createRelation(
           "with exactly the given properties",
       ),
     );
+  }
+  if (prior !== null && options.contradiction === "supersede") {
+    const edge = { type: rtype, from_id: args.from_entity, to_id: args.to_entity, props: written };
+    await resettleEndpoints(runner, ns, [edge], options.caps, createdAt);
+    return (await newestRelation(runner, ns, rid))!;
   }
   return rel;
 }
@@ -4409,7 +4483,6 @@ async function writeTraceStructure(
     actor_entity: string | null;
     outcome_entity: string | null;
     alternative_entities: string[];
-    steps: DecisionStep[];
   },
 ): Promise<void> {
   const { tid } = args;
@@ -4418,7 +4491,20 @@ async function writeTraceStructure(
   const outcome: EdgeWrite[] = args.outcome_entity === null ? [] : [[R_RESULTED_IN, tid, args.outcome_entity, { ns }]];
   const considered = args.alternative_entities.map((alt): EdgeWrite => [R_CONSIDERED, tid, alt, { ns }]);
   await runner.createEdges(ns, L_TRACE, L_ENTITY, [...outcome, ...considered]);
-  const keyed = args.steps.map((step) => [ids.stepId(tid, step.order), step] as const);
+}
+
+/**
+ * Write the steps of a decision trace, the new step nodes before the stale ones are deleted.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param tid (string): the trace id.
+ * @param steps (DecisionStep[]): the ordered steps to store.
+ * @return (Promise<void>): resolves once the steps are stored.
+ */
+async function writeSteps(runner: Runner, ns: string, tid: string, steps: DecisionStep[]): Promise<void> {
+  const keyed = steps.map((step) => [ids.stepId(tid, step.order), step] as const);
+  const sids = keyed.map(([sid]) => sid);
   await runner.upsertNodes(
     ns,
     L_STEP,
@@ -4436,20 +4522,41 @@ async function writeTraceStructure(
       ],
     ),
   );
+  const linked = new Set((await runner.childNodes(ns, L_TRACE, tid, R_HAS_STEP, L_STEP)).map(idOf));
   await runner.createEdges(
     ns,
     L_TRACE,
     L_STEP,
-    keyed.map(([sid, step]): EdgeWrite => [R_HAS_STEP, tid, sid, { ns, order: step.order }]),
+    keyed
+      .filter(([sid]) => !linked.has(sid))
+      .map(([sid, step]): EdgeWrite => [R_HAS_STEP, tid, sid, { ns, order: step.order }]),
   );
-  await runner.createEdges(ns, L_STEP, L_ENTITY, [
-    ...keyed.map(([sid, step]): EdgeWrite => [R_FROM, sid, step.from_entity, { ns }]),
-    ...keyed.map(([sid, step]): EdgeWrite => [R_TO, sid, step.to_entity, { ns }]),
-  ]);
+  await runner.deleteNodes(ns, L_STEP, [...linked].filter((sid) => !sids.includes(sid)).sort());
+  const stored = new Map<string, string[]>();
+  for (const edge of await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids)) {
+    stored.set(edge.from_id, [...(stored.get(edge.from_id) ?? []), `${edge.type}\u0000${edge.to_id}`]);
+  }
+  const wanted = new Map(
+    keyed.map(([sid, step]) => [sid, [`${R_FROM}\u0000${step.from_entity}`, `${R_TO}\u0000${step.to_entity}`].sort()]),
+  );
+  const stale = sids.filter((sid) => !deepEqual((stored.get(sid) ?? []).sort(), wanted.get(sid)));
+  for (const sid of stale.filter((s) => stored.has(s))) {
+    for (const kind of [R_FROM, R_TO]) await runner.deleteEdgesTouchingByType(ns, L_STEP, sid, kind);
+  }
+  await runner.createEdges(
+    ns,
+    L_STEP,
+    L_ENTITY,
+    keyed
+      .filter(([sid]) => stale.includes(sid))
+      .flatMap(([sid, step]): EdgeWrite[] => [
+        [R_FROM, sid, step.from_entity, { ns }],
+        [R_TO, sid, step.to_entity, { ns }],
+      ]),
+  );
 }
 
 async function clearTraceStructure(runner: Runner, ns: string, tid: string): Promise<void> {
-  await deleteSteps(runner, ns, tid);
   for (const rtype of [R_MADE_DECISION, R_RESULTED_IN, R_CONSIDERED]) {
     await runner.deleteEdgesTouchingByType(ns, L_TRACE, tid, rtype);
   }
@@ -4488,10 +4595,20 @@ async function traceLinksIntact(runner: Runner, ns: string, trace: DecisionTrace
   if (trace.outcome_entity !== null) named.push(`${R_RESULTED_IN}\u0000${trace.outcome_entity}`);
   const out = await edgesAt(runner, ns, { from_label: L_TRACE, to_label: L_ENTITY }, "from_in", [trace.id]);
   if (!deepEqual(out.map((e) => `${e.type}\u0000${e.to_id}`).sort(), named.sort())) return false;
+  return stepLinksIntact(runner, ns, trace);
+}
+
+/**
+ * Report whether the steps of a stored trace have exactly the FROM and TO links their relations name.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param trace (DecisionTrace): the stored trace, with its steps.
+ * @return (boolean): true when no step link is missing, extra, or repeated.
+ */
+async function stepLinksIntact(runner: Runner, ns: string, trace: DecisionTrace): Promise<boolean> {
   const sids = trace.steps.map((step) => ids.stepId(trace.id, step.order));
-  const ends = sids.length
-    ? await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids)
-    : [];
+  const ends = await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids);
   const expected = trace.steps.flatMap((step, k) => [
     `${R_FROM}\u0000${sids[k]}\u0000${step.from_entity}`,
     `${R_TO}\u0000${sids[k]}\u0000${step.to_entity}`,
@@ -4563,6 +4680,13 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     updated_at: args.created_at,
   });
   precheckNodes(runner, ns, L_TRACE, [[tid, props]]);
+  const keepSteps =
+    existing !== null &&
+    deepEqual(
+      existing.steps.map((s) => s.relation_id),
+      steps.map((s) => s.relation_id),
+    ) &&
+    (await stepLinksIntact(runner, ns, existing));
   if (existing !== null) await clearTraceStructure(runner, ns, tid);
   await runner.upsertNode(ns, L_TRACE, tid, props);
   await writeTraceStructure(runner, ns, {
@@ -4570,8 +4694,8 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     actor_entity: args.actor_entity,
     outcome_entity: args.outcome_entity,
     alternative_entities: alternatives,
-    steps,
   });
+  if (!keepSteps) await writeSteps(runner, ns, tid, steps);
   return decodeTrace(props, steps);
 }
 

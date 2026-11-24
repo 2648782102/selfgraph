@@ -10,6 +10,7 @@ import { ids, KuzuStore, SelfGraph } from "../src/index.js";
 import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
+  cutDecisionUpdates,
   dump,
   exitCodes,
   kuzuParamErrors,
@@ -42,6 +43,7 @@ function py(
     | "exit_codes"
     | "pinned_unicode"
     | "kuzu_statements"
+    | "kuzu_cut_update"
     | "kuzu_values"
     | "kuzu_scheme_errors"
     | "kuzu_params"
@@ -242,6 +244,19 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     expect(py("kuzu_statements", "-", "-")).toEqual(result);
   });
 
+  it.skipIf(!live.get("kuzu"))(
+    "keeps the steps of a decision update cut off at any write in both languages",
+    async () => {
+      const result = await cutDecisionUpdates(tempKuzu("selfgraph-conf-cut-"));
+      for (const run of Object.values(result)) {
+        expect(run.whole.rationale).toBe("new");
+        expect(run.failed_cuts).toEqual([]);
+      }
+      expect(py("kuzu_cut_update", "-", "-")).toEqual(result);
+    },
+    180_000,
+  );
+
   it.skipIf(!live.get("kuzu"))("returns the same run_cypher values in both languages", async () => {
     const fromTs = await kuzuValues(tempKuzu("selfgraph-conf-values-"));
     const fromPy = py("kuzu_values", "-", "-") as typeof fromTs;
@@ -309,10 +324,20 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       const moved = fromTs as { moved_later: unknown[][]; moved_later_valid: string[] };
       expect(moved.moved_later).toEqual([[1, false, nakatomi, "2022-01-01T00:00:00Z"]]);
       expect(moved.moved_later_valid).toEqual([nakatomi]);
+      const parallel = (fromTs as { parallel_retirement: Record<string, Record<string, unknown[]>> })
+        .parallel_retirement;
+      expect(parallel.chronological!["relation:old"]).toEqual([1, false, "relation:new", "2020-02-15T00:00:00Z"]);
+      expect(parallel.other_end_unread!["relation:f0"]).toEqual([1, false, "relation:f3", "2020-11-15T00:00:00Z"]);
       const apertureMia = ids.relationId("person:mia", "WORKS_AT", "company:aperture");
       const gap = fromTs as { moved_earlier_gap: unknown[][]; moved_earlier_gap_valid: string[] };
       expect(gap.moved_earlier_gap).toEqual([[1, false, apertureMia, "2014-01-01T00:00:00Z"]]);
       expect(gap.moved_earlier_gap_valid).toEqual([apertureMia]);
+      const reasserted = fromTs as {
+        reasserted_earlier: Record<string, unknown[][]>;
+        reasserted_earlier_valid: string[];
+      };
+      expect(reasserted.reasserted_earlier.x![0]).toEqual([3, false, "relation:y", "2020-08-28T00:00:00Z"]);
+      expect(reasserted.reasserted_earlier_valid).toEqual(["relation:y"]);
     });
 
     it.skipIf(!live.get(store))(`${store}: unmerging a merge with no source agrees in both languages`, async () => {

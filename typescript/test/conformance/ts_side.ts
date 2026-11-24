@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { loadTokenizer } from "../../src/chunking.js";
 import { exitCodeFor, kv } from "../../src/cli.js";
 import { HINTS, internalError, maskUri, redactUri, redactUris, surfaceHint } from "../../src/errors.js";
 import { assembleExtraction, lenientTime, type RawPreference } from "../../src/extraction/extractor.js";
-import type { Evidence, GraphStore, Page } from "../../src/index.js";
+import type { Evidence, GraphStore, Page, Relation } from "../../src/index.js";
 import {
   FalkorDBStore,
   fromNeo4jOntology,
@@ -28,7 +29,14 @@ import { comparePy } from "../../src/internal/py.js";
 import { jsonIso } from "../../src/internal/time.js";
 import { ALNUM_CLASS, DECIMAL_CLASS, LETTER_CLASS, lower, upper } from "../../src/internal/unicode.js";
 import { callTool, isBlockedQuery } from "../../src/mcp.js";
-import { Extraction, type InsertWarning, parseOrThrow } from "../../src/models.js";
+import {
+  EntityInput,
+  Extraction,
+  type InsertWarning,
+  PreferenceInput,
+  parseOrThrow,
+  RelationInput,
+} from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import {
   buildLlm,
@@ -373,6 +381,40 @@ function llmPrefixErrors(): unknown[] {
   });
 }
 
+const DEEP_PROPERTY_DEPTHS = [63, 64, 1000];
+
+/**
+ * Build each input model with a property nested to each depth, as objects and as arrays.
+ *
+ * @return (unknown[]): "accepted", or the error code, field, and message, per model, depth, and shape.
+ */
+function deepPropertyErrors(): unknown[] {
+  const builds = [
+    (p: Record<string, unknown>) => EntityInput.parse({ type: "T", name: "n", properties: p }),
+    (p: Record<string, unknown>) =>
+      RelationInput.parse({ from_entity: "t:a", type: "R", to_entity: "t:b", properties: p }),
+    (p: Record<string, unknown>) =>
+      PreferenceInput.parse({ subject_entity: "t:a", key: "k", value_entity: "t:b", properties: p }),
+  ];
+  const out: unknown[] = [];
+  for (const build of builds) {
+    for (const depth of DEEP_PROPERTY_DEPTHS) {
+      for (const shape of ["dict", "list"]) {
+        let value: unknown = 1;
+        for (let i = 0; i < depth; i++) value = shape === "dict" ? { a: value } : [value];
+        try {
+          build({ p: value });
+          out.push("accepted");
+        } catch (exc) {
+          if (!(exc instanceof ValidationError)) throw exc;
+          out.push([exc.code, exc.field ?? null, exc.message]);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 const LLM_SETTING_VALUES: Record<"timeout" | "concurrency", string[]> = {
   timeout: [
     "30",
@@ -683,6 +725,7 @@ export function schemaWarnings(): {
   datetime_errors: string[];
   falkor_credentials: unknown[];
   llm_prefix_errors: unknown[];
+  deep_property_errors: unknown[];
   llm_setting_errors: unknown[];
   iso_times: string[];
   terms_subtypes: unknown[];
@@ -894,6 +937,7 @@ export function schemaWarnings(): {
     terms: TERM_QUESTIONS.map((q) => [...expandTokens(tokens(q), terms, tokens)].sort(comparePy)),
     falkor_credentials: falkorCredentialCases(),
     llm_prefix_errors: llmPrefixErrors(),
+    deep_property_errors: deepPropertyErrors(),
     llm_setting_errors: llmSettingErrors(),
     datetime_errors: ["0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-02:00"].map((text) => {
       try {
@@ -1228,6 +1272,140 @@ export async function kuzuStatements(path: string): Promise<{ outcomes: unknown[
   await graph.close();
   await KuzuStore.closeDatabase(path);
   return { outcomes, ids };
+}
+
+const CUT_WRITES = [
+  "upsertNode",
+  "upsertNodes",
+  "createEdge",
+  "createEdges",
+  "deleteNode",
+  "deleteNodes",
+  "deleteNodesBy",
+  "deleteEdges",
+  "deleteEdgesTouchingByType",
+] as const;
+
+interface CutState {
+  rationale: string | null;
+  steps: unknown[][];
+  step_nodes: string[];
+  links: string[];
+}
+
+/**
+ * Update a decision with its write at an index failed, retry the update, and read the decision back.
+ *
+ * @param graph (SelfGraph): a graph on a Kuzu store holding the entities and relations.
+ * @param rels (Relation[]): the three relations to build steps from.
+ * @param tid (string): the decision id.
+ * @param picked (number[] | null): the indexes of the relations to use as steps, or null to keep the steps.
+ * @param cut (number | null): the index of the store write to fail, or null to fail none.
+ * @return (Promise<[number, CutState]>): the number of store writes the first update made, and what is stored after the retry.
+ */
+async function cutDecisionUpdate(
+  graph: SelfGraph,
+  rels: Relation[],
+  tid: string,
+  picked: number[] | null,
+  cut: number | null,
+): Promise<[number, CutState]> {
+  const ns = graph.namespace;
+  const store = graph.store;
+  await graph.decisions.create("Pick", {
+    id: tid,
+    steps: [rels[0]!.id, rels[1]!.id],
+    actor_entity: "team:core",
+    outcome_entity: "company:hydradb",
+    alternative_entities: ["company:neo4j"],
+    rationale: "old",
+  });
+  const change = { rationale: "new", ...(picked === null ? {} : { steps: picked.map((i) => rels[i]!.id) }) };
+  const calls: string[] = [];
+  const target = store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const originals = CUT_WRITES.map((name) => target[name]!.bind(store));
+  CUT_WRITES.forEach((name, k) => {
+    target[name] = async (...args: unknown[]) => {
+      calls.push(name);
+      if (calls.length - 1 === cut) throw new Error("connection lost");
+      return originals[k]!(...args);
+    };
+  });
+  try {
+    await graph.decisions.update(tid, change);
+  } catch (exc) {
+    if (!(exc instanceof Error) || exc.message !== "connection lost") throw exc;
+  } finally {
+    for (const name of CUT_WRITES) delete target[name];
+  }
+  await graph.decisions.update(tid, change);
+  const decision = (await graph.decisions.get(tid))!;
+  const sids = [0, 1, 2].map((order) => ids.stepId(tid, order));
+  const edges = [];
+  for (const [from_label, to_label, where] of [
+    ["DecisionStep", "Entity", { from_in: sids }],
+    ["DecisionTrace", "DecisionStep", { from_in: [tid] }],
+    ["DecisionTrace", "Entity", { from_in: [tid] }],
+    ["Entity", "DecisionTrace", { to_in: [tid] }],
+  ] as const) {
+    edges.push(...(await store.matchEdges(ns, { from_label, to_label, ...where })));
+  }
+  const stored: string[] = [];
+  for (const sid of sids) if (await store.nodeExists(ns, "DecisionStep", sid)) stored.push(sid.replaceAll(tid, "T"));
+  return [
+    calls.length,
+    {
+      rationale: decision.rationale,
+      steps: decision.steps.map((s) => [s.order, s.relation_id, s.from_entity, s.to_entity]),
+      step_nodes: stored,
+      links: edges.map((e) => `${e.type} ${e.from_id} ${e.to_id}`.replaceAll(tid, "T")).sort(),
+    },
+  ];
+}
+
+/**
+ * Cut a decision update at every store write for each kind of change, retry it, and read the decision back.
+ *
+ * @param path (string): a fresh Kuzu database path.
+ * @return (Promise<Record<string, { whole: CutState; failed_cuts: number[] }>>): per change, what a clean update stores, and the indexes of the cuts whose retry stored anything else.
+ */
+export async function cutDecisionUpdates(
+  path: string,
+): Promise<Record<string, { whole: CutState; failed_cuts: number[] }>> {
+  const store = new KuzuStore(path);
+  const out: Record<string, { whole: CutState; failed_cuts: number[] }> = {};
+  const cases: Array<[string, number[] | null]> = [
+    ["text", null],
+    ["fewer", [1]],
+    ["swapped", [1, 0]],
+  ];
+  for (const [name, picked] of cases) {
+    const graph = new SelfGraph(store, { namespace: name });
+    await graph.initialize();
+    for (const [entity, kind] of [
+      ["HydraDB", "Company"],
+      ["Neo4j", "Company"],
+      ["Temporal", "Feature"],
+      ["Core", "Team"],
+    ] as const) {
+      await graph.entities.create(entity, kind);
+    }
+    const rels = [
+      await graph.relations.create("company:hydradb", "REQUIRES", "feature:temporal"),
+      await graph.relations.create("team:core", "SELECTED", "company:hydradb"),
+      await graph.relations.create("team:core", "REJECTED", "company:neo4j"),
+    ];
+    const [writes, whole] = await cutDecisionUpdate(graph, rels, "decision:clean", picked, null);
+    const failed_cuts: number[] = [];
+    for (let cut = 0; cut < writes; cut++) {
+      const [, state] = await cutDecisionUpdate(graph, rels, `decision:cut${cut}`, picked, cut);
+      if (!isDeepStrictEqual(state, whole)) failed_cuts.push(cut);
+    }
+    out[name] = { whole, failed_cuts };
+  }
+  await store.close();
+  await KuzuStore.closeDatabase(path);
+  return out;
 }
 
 /**
@@ -3265,6 +3443,68 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
       v.invalidated_at ? jsonIso(v.invalidated_at) : null,
     ]);
   }
+  const parallel_retirement: Record<string, unknown> = {};
+  for (const [name, [fromMax, toMax], arrivals] of [
+    [
+      "chronological",
+      [2, 1],
+      [
+        ["old", "initech", 1],
+        ["new", "initech", 2],
+        ["other", "acme", 12],
+      ],
+    ],
+    [
+      "other_end_unread",
+      [2, 2],
+      [
+        ["f0", "initech", 3],
+        ["f1", "acme", 4],
+        ["f3", "initech", 11],
+        ["f2", "initech", 12],
+      ],
+    ],
+  ] as const) {
+    const capped = new SelfGraph(graph.store, {
+      namespace: `${graph.namespace}-parallel-${name}`,
+      schema: {
+        entities: SUPERSEDE_SCHEMA.entities,
+        relations: [
+          {
+            type: "WORKS_AT",
+            from: { types: ["Person"], max_count: fromMax },
+            to: { types: ["Company"], max_count: toMax },
+          },
+        ],
+      },
+      contradiction: "supersede",
+    });
+    await capped.initialize();
+    await capped.insert.facts({
+      entities: [
+        ...["Ann", "Bob"].map((n) => ({ type: "Person", name: n })),
+        ...["Initech", "Acme"].map((n) => ({ type: "Company", name: n })),
+      ],
+    });
+    for (const [rid, company, month] of arrivals) {
+      await capped.insert.facts({
+        relations: [
+          {
+            id: `relation:${rid}`,
+            from_entity: rid === "f2" ? "person:bob" : "person:ann",
+            type: "WORKS_AT",
+            to_entity: `company:${company}`,
+            event_time: new Date(Date.UTC(2020, month - 1, 15)),
+          },
+        ],
+      });
+    }
+    const states: Record<string, unknown> = {};
+    for (const r of (await capped.relations.list({ include_invalidated: true })).items) {
+      states[r.id] = [r.revision, r.is_current, r.invalidated_by, r.invalidated_at ? jsonIso(r.invalidated_at) : null];
+    }
+    parallel_retirement[name] = states;
+  }
   await graph.insert.facts({
     entities: [{ type: "Person", name: "Kim" }, ...["Massive", "Nakatomi"].map((name) => ({ type: "Company", name }))],
   });
@@ -3305,6 +3545,35 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
   const moved_earlier_gap_valid = heldMia.subgraph.relations.map((r) => r.id).sort();
   await graph.insert.facts({
     entities: [
+      ...["Ola", "Pat", "Quin"].map((name) => ({ type: "Person", name })),
+      ...["Rune", "Sage"].map((name) => ({ type: "Company", name })),
+    ],
+  });
+  for (const [rid, person, company, when] of [
+    ["y", "quin", "sage", new Date(Date.UTC(2020, 7, 28))],
+    ["b", "pat", "rune", new Date(Date.UTC(2020, 4, 30))],
+    ["z", "ola", "rune", new Date(Date.UTC(2020, 8, 27))],
+    ["x", "quin", "rune", new Date(Date.UTC(2020, 3, 30))],
+    ["b", "pat", "rune", new Date(Date.UTC(2020, 2, 1))],
+  ] as const) {
+    await graph.relations.create(`person:${person}`, "WORKS_AT", `company:${company}`, {
+      id: `relation:${rid}`,
+      event_time: when,
+    });
+  }
+  const reasserted_earlier: Record<string, unknown> = {};
+  for (const rid of ["b", "x"]) {
+    reasserted_earlier[rid] = (await graph.relations.versions(`relation:${rid}`)).map((v) => [
+      v.revision,
+      v.is_current,
+      v.invalidated_by,
+      v.invalidated_at ? jsonIso(v.invalidated_at) : null,
+    ]);
+  }
+  const heldQuin = await graph.retrieve("Quin", { as_of: new Date(Date.UTC(2020, 8, 1)) });
+  const reasserted_earlier_valid = heldQuin.subgraph.relations.map((r) => r.id).sort();
+  await graph.insert.facts({
+    entities: [
       { type: "Person", name: "Lee" },
       { type: "Company", name: "Umbrella" },
     ],
@@ -3335,10 +3604,13 @@ export async function supersede(graph: SelfGraph): Promise<Record<string, unknow
     subms,
     undated_correction,
     certified_update,
+    parallel_retirement,
     moved_later,
     moved_later_valid,
     moved_earlier_gap,
     moved_earlier_gap_valid,
+    reasserted_earlier,
+    reasserted_earlier_valid,
     certified_history,
   };
 }
