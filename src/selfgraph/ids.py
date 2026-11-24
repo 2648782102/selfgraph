@@ -8,7 +8,8 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from ._marks import MARK_CLASS
+from ._marks import FORMAT_CLASS, MARK_CLASS
+from ._unicode import WORD_CLASS, lower, upper
 from .errors import ValidationError
 
 __all__ = [
@@ -205,8 +206,9 @@ def _require_no_control(label: str, value: str) -> None:
 _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARK = re.compile(f"[{MARK_CLASS}]")
-_PUNCT = re.compile(rf"[^\w\s{MARK_CLASS}]+")
-_NON_IDENT = re.compile(rf"[^\w{MARK_CLASS}]+")
+_FORMAT = re.compile(f"[{FORMAT_CLASS}]")
+_PUNCT = re.compile(rf"[^{WORD_CLASS}\s{MARK_CLASS}]+")
+_NON_IDENT = re.compile(rf"[^{WORD_CLASS}{MARK_CLASS}]+")
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _DIGIT_LETTER = re.compile(r"(?<=[0-9])(?=[A-Z])")
 _ENTITY_SUFFIXES = frozenset(
@@ -306,7 +308,16 @@ def slug(text: str) -> str:
     @param text (str): the text to slugify.
     @return (str): the slugified text.
     """
-    return normalize_text(_WS.sub("-", text.strip().lower()))
+    return normalize_text(_WS.sub("-", lower(text.strip())))
+
+
+def _is_org_type(type: str) -> bool:
+    """Report whether an entity type gets organisation-style name canonicalisation.
+
+    @param type (str): the entity type.
+    @return (bool): True when the type is organisation-like.
+    """
+    return slug(normalize_text(type)) in _ORG_TYPES
 
 
 def _canonical_name(type: str, name: str) -> str:
@@ -316,13 +327,21 @@ def _canonical_name(type: str, name: str) -> str:
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
     """
-    words = _PUNCT.sub(" ", normalize_text(name.strip().lower())).split()
-    if slug(type) in _ORG_TYPES:
+    words = _PUNCT.sub(" ", normalize_text(lower(_FORMAT.sub("", name).strip()))).split()
+    if _is_org_type(type):
         if words and words[0] == "the":
             words = words[1:]
         while len(words) > 1 and words[-1] in _ENTITY_SUFFIXES:
             words = words[:-1]
     return "-".join(words) if words else slug(name)
+
+
+def _reject_type_colon(type: str) -> None:
+    """Reject the id separator in a type. @param type (str): entity type. @return (None): nothing."""
+    if ":" in type:
+        raise ValidationError(
+            f"entity type {type!r} cannot contain ':', which separates an entity id's type and name", field="type"
+        )
 
 
 def entity_id(type: str, name: str) -> str:
@@ -334,6 +353,8 @@ def entity_id(type: str, name: str) -> str:
     """
     _require_str("entity type", type)
     _require_str("entity name", name)
+    _reject_type_colon(type)
+    type = normalize_text(type)
     return f"{slug(type)}:{_canonical_name(type, name)}"
 
 
@@ -385,7 +406,7 @@ def normalize_rel_type(type: str) -> str:
     @return (str): the canonical relation type.
     """
     _require_str("relation type", type)
-    normalized = _NON_IDENT.sub("_", _CAMEL.sub("_", normalize_text(type).strip()).lower()).strip("_").upper()
+    normalized = upper(_NON_IDENT.sub("_", lower(_CAMEL.sub("_", normalize_text(type).strip()))).strip("_"))
     normalized = normalize_text(_DIGIT_LETTER.sub("_", normalized))
     if not normalized:
         raise ValidationError("relation type cannot be empty; use a verb phrase, e.g. 'works at' or 'WORKS_AT'")

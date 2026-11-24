@@ -11,6 +11,11 @@ import type { Schema } from "../src/schema.js";
 import {
   conformanceStore,
   dump,
+  exitCodes,
+  kuzuSchemeErrors,
+  kuzuStatements,
+  kuzuValues,
+  pinnedUnicode,
   SUPERSEDE_SCHEMA,
   schemaWarnings,
   supersede,
@@ -24,7 +29,18 @@ const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url
 const KUZU = tempKuzu("selfgraph-conf-");
 
 function py(
-  cmd: "write" | "dump" | "schema" | "supersede" | "unmerge" | "kuzu_isolation",
+  cmd:
+    | "write"
+    | "dump"
+    | "schema"
+    | "supersede"
+    | "unmerge"
+    | "kuzu_isolation"
+    | "exit_codes"
+    | "pinned_unicode"
+    | "kuzu_statements"
+    | "kuzu_values"
+    | "kuzu_scheme_errors",
   store: string,
   ns: string,
 ): unknown {
@@ -77,7 +93,8 @@ function mask(value: unknown): unknown {
       Object.entries(value).map(([k, v]) => {
         if (k === "invalidated_at" && String((value as Record<string, unknown>).invalidated_by).startsWith("sv:"))
           return [k, "<ts>"];
-        if (["created_at", "updated_at", "invalidated_known_at", "since", "until"].includes(k)) return [k, "<ts>"];
+        if (["created_at", "updated_at", "invalidated_known_at", "reverted_at", "since", "until"].includes(k))
+          return [k, "<ts>"];
         if (k === "ns") return [k, "<ns>"];
         if (k === "message") return [k, "<message>"];
         if (k === "evidence_json" && typeof v === "string") return [k, mask(v)];
@@ -135,9 +152,82 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
     expect(py("kuzu_isolation", "-", "-")).toEqual(result);
   });
 
+  it.skipIf(!live.get("kuzu"))(
+    "refuses a server URI with the same code, field and store name in both languages",
+    () => {
+      expect(kuzuSchemeErrors()).toEqual(py("kuzu_scheme_errors", "-", "-"));
+    },
+  );
+
+  it("derives ids, relation types, and tokens from the pinned Unicode tables in both languages", () => {
+    const pinned = pinnedUnicode();
+    expect(pinned.entity_ids.slice(0, 4)).toEqual(["person:王", "company:王", "person:王", "company:王"]);
+    expect(pinned).toEqual(py("pinned_unicode", "-", "-"));
+  });
+
+  it("gives every error code the same CLI exit code in both languages", () => {
+    expect(exitCodes()).toEqual(py("exit_codes", "-", "-"));
+  });
+
+  it.skipIf(!live.get("kuzu"))("rejects a multi-statement run_cypher identically in both languages", async () => {
+    const result = await kuzuStatements(tempKuzu("selfgraph-conf-stmt-"));
+    const multi = {
+      error: "Kuzu runs one statement per query; pass one statement, not several joined by ';'",
+      code: "query_failed",
+    };
+    expect(result).toEqual({
+      outcomes: [multi, multi, { rows: [{ s: "a; b" }] }, { rows: [{ c: 2 }] }],
+      ids: ["t:a", "t:b"],
+    });
+    expect(py("kuzu_statements", "-", "-")).toEqual(result);
+  });
+
+  it.skipIf(!live.get("kuzu"))("returns the same run_cypher values in both languages", async () => {
+    const fromTs = await kuzuValues(tempKuzu("selfgraph-conf-values-"));
+    const fromPy = py("kuzu_values", "-", "-") as typeof fromTs;
+    const one = (v: unknown) => ({ rows: [{ v }] });
+    expect(fromTs.agree).toEqual(fromPy.agree);
+    expect(fromPy.wide).toEqual([
+      one("9007199254740993"),
+      one("-9223372036854775808"),
+      one("18446744073709551615"),
+      one("123456789012345678.5"),
+      one("99999999999999999999999999999999999999"),
+      one("1.50000000000000000000"),
+      one([1, "9007199254740993"]),
+      one({ a: "9007199254740993" }),
+      one({ 1: "9007199254740993" }),
+      one("9007199254740993"),
+      { rows: [{ w: { pk: 1, big: "9007199254740993", u: 1.5, _label: "W", _id: { offset: 0, table: 7 } } }] },
+      one(1.5),
+    ]);
+    expect(fromTs.wide.map((outcome) => (outcome as { code: string }).code)).toEqual(
+      fromPy.wide.map(() => "inexact_value"),
+    );
+    expect(fromPy.subsecond).toEqual([
+      one("2024-01-01T12:34:56.789123Z"),
+      one("1969-12-31T23:59:59.999999Z"),
+      one("2024-01-01T12:34:56.789123Z"),
+      one("PT0.000001S"),
+    ]);
+    expect(fromTs.subsecond).toEqual([
+      one("2024-01-01T12:34:56.789000Z"),
+      one("1970-01-01T00:00:00Z"),
+      one("2024-01-01T12:34:56.789000Z"),
+      one("PT0S"),
+    ]);
+  });
+
   it("schema validation produces identical warnings in both languages", () => {
     const warnings = schemaWarnings();
     expect(warnings).toEqual(py("schema", "-", "-"));
+    expect(warnings.consistency_errors.map((error) => error.field)).toEqual([
+      "entities[1].name",
+      "entities[0].parent",
+      "relations[0].to.types[0]",
+      "relations[1].type",
+      "relations[0].from.max_count",
+    ]);
     expect(warnings.ossie.warnings).toContain("the OneToMany multiplicity of relation LEADS are left out");
   });
 
@@ -251,6 +341,13 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
         }
         for (const ops of [pyOps, tsOps]) {
           expect((ops as { large_document: unknown }).large_document).toEqual({ entity: 40_000, relation: 40_000 });
+        }
+        for (const ops of [pyOps, tsOps]) {
+          const plural = (ops as { retrieval_plural_seeds: Record<string, { seeds: string[]; verdict: string }> })
+            .retrieval_plural_seeds;
+          expect(Object.values(plural).map((row) => [row.seeds.length > 0, row.verdict])).toEqual(
+            Object.keys(plural).map(() => [true, "answerable"]),
+          );
         }
         rmSync(evidence, { recursive: true, force: true });
       },
