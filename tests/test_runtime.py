@@ -203,7 +203,9 @@ async def main():
 
 asyncio.run(main())
 """
-    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    src = os.path.dirname(os.path.dirname(runtime.__file__))
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src, os.environ.get("PYTHONPATH")]))}
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, env=env)
     assert (proc.returncode, proc.stdout.splitlines()) == (0, ["the LLM setup failed", "1", "None"]), proc.stderr
 
 
