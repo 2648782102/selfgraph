@@ -569,6 +569,17 @@ class KuzuStore(AutoCommitStore):
             await self._run("MATCH (k:K) WHERE k.pk IN $pks DELETE k", {"pks": batch})
         return list(found.values())
 
+    def _discard(self) -> None:
+        """Close a store no query has run on, without waiting for the path lock, which only queries hold.
+
+        @return (None): nothing.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._conn.close()
+        _release_store(self._cache_key)
+
     async def close(self) -> None:
         """Close the connection, and the database once no other store in this process holds it.
 
