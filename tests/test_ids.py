@@ -197,6 +197,14 @@ def test_format_characters_follow_one_pinned_table():
     assert {cp for cp in range(sys.maxunicode + 1) if ids._FORMAT.match(chr(cp))} == formats
 
 
+def test_a_name_of_only_format_characters_is_rejected():
+    for name in ["\u200b", "\u2060", "\ufeff", "\u200b\u2060"]:
+        with pytest.raises(ValidationError) as caught:
+            ids.entity_id("Person", name)
+        assert (caught.value.code, caught.value.field) == ("invalid_argument", "name")
+        assert "format characters" in str(caught.value)
+
+
 def test_require_identifier_accepts_plain_identifiers():
     for name in ("id", "sid", "index", "external_ids", "name", "k_Entity_1"):
         assert ids.require_identifier(name) == name

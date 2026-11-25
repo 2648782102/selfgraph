@@ -921,10 +921,23 @@ def pinned_unicode():
     return {
         "digest": digest.hexdigest(),
         "entity_ids": [ids.entity_id(kind, text) for text in PINNED_UNICODE_TEXTS for kind in ("Person", "Company")],
+        "zero_width_only_names": [_entity_id_error(text) for text in ("\u200b", "\u2060", "\ufeff")],
         "relation_types": [ids.normalize_rel_type(text) for text in PINNED_UNICODE_TEXTS],
         "lowered": [lower(text) for text in PINNED_UNICODE_TEXTS],
         "tokens": [sorted(_tokens(text)) for text in PINNED_UNICODE_TEXTS],
     }
+
+
+def _entity_id_error(name):
+    """Derive an id and report the error fields, so a name only format characters leave empty matches across SDKs.
+
+    @param name (str): the entity name to try.
+    @return (dict): the error code and field, or the derived id when none is raised.
+    """
+    try:
+        return {"id": ids.entity_id("Person", name)}
+    except ValidationError as exc:
+        return {"code": exc.code, "field": exc.field}
 
 
 def datetime_errors():

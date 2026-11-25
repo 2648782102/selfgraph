@@ -1024,10 +1024,26 @@ export function pinnedUnicode(): {
   return {
     digest: digest.digest("hex"),
     entity_ids: PINNED_UNICODE_TEXTS.flatMap((text) => ["Person", "Company"].map((kind) => ids.entityId(kind, text))),
+    zero_width_only_names: ["\u200b", "\u2060", "\ufeff"].map((text) => entityIdError(text)),
     relation_types: PINNED_UNICODE_TEXTS.map((text) => ids.normalizeRelType(text)),
     lowered: PINNED_UNICODE_TEXTS.map(lower),
     tokens: PINNED_UNICODE_TEXTS.map((text) => [...tokens(text)].sort(comparePy)),
   };
+}
+
+/**
+ * Derive an id and report the error fields, so a name only format characters leave empty matches Python.
+ *
+ * @param name (string): the entity name to try.
+ * @return (object): the error code and field, or the derived id when none is raised.
+ */
+function entityIdError(name: string): { id: string } | { code: string; field?: string } {
+  try {
+    return { id: ids.entityId("Person", name) };
+  } catch (exc) {
+    if (exc instanceof ValidationError) return { code: exc.code, field: exc.field };
+    throw exc;
+  }
 }
 
 const ZOE = ids.entityId("Person", "Zoë Ångström");

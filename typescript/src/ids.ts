@@ -155,6 +155,11 @@ export function spellSymbols(text: string): string {
 /**
  * Canonicalise an entity name so cross-document surface variants collapse.
  *
+ * A name that leaves no words still holds text, so it falls back to a slug.
+ * Format characters are stripped on that path too: a name of only them would
+ * otherwise become an id that renders as an empty name, the case #341 left open
+ * when it stripped them inside a name. Such a name is rejected as empty.
+ *
  * @param type (string): the entity type, which scopes suffix and article stripping.
  * @param rawName (string): the raw entity name.
  * @return (string): the canonical hyphenated form.
@@ -165,7 +170,15 @@ export function canonicalName(type: string, rawName: string): string {
     if (words.length > 0 && words[0] === "the") words = words.slice(1);
     while (words.length > 1 && ENTITY_SUFFIXES.has(words[words.length - 1]!)) words = words.slice(0, -1);
   }
-  return words.length > 0 ? words.join("-") : slug(rawName);
+  if (words.length > 0) return words.join("-");
+  const stripped = slug(rawName.replace(FORMAT, ""));
+  if (!stripped) {
+    throw new ValidationError(
+      "entity name cannot be empty after removing format characters; give it at least one visible character",
+      { field: "name" },
+    );
+  }
+  return stripped;
 }
 
 /** Reject the id separator in a type. @param type (string): entity type. @return (void): nothing. */

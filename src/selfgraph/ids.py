@@ -368,6 +368,11 @@ def _spell_symbols(text: str) -> str:
 def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
 
+    A name that leaves no words still holds text, so it falls back to a slug.
+    Format characters are stripped on that path too: a name of only them would
+    otherwise become an id that renders as an empty name, the case #341 left open
+    when it stripped them inside a name. Such a name is rejected as empty.
+
     @param type (str): the entity type, which scopes suffix and article stripping.
     @param name (str): the raw entity name.
     @return (str): the canonical hyphenated form.
@@ -378,7 +383,15 @@ def _canonical_name(type: str, name: str) -> str:
             words = words[1:]
         while len(words) > 1 and words[-1] in _ENTITY_SUFFIXES:
             words = words[:-1]
-    return "-".join(words) if words else slug(name)
+    if words:
+        return "-".join(words)
+    stripped = slug(_FORMAT.sub("", name))
+    if not stripped:
+        raise ValidationError(
+            "entity name cannot be empty after removing format characters; give it at least one visible character",
+            field="name",
+        )
+    return stripped
 
 
 def _reject_type_colon(type: str) -> None:
