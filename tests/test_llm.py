@@ -422,7 +422,7 @@ def test_a_provider_prefix_conflict_from_settings_names_llm_provider(monkeypatch
 
     message = (
         "llm_provider 'openai' conflicts with model prefix 'anthropic'; "
-        "pass llm_provider= (or SELFGRAPH_LLM_PROVIDER) matching the model"
+        "pass the llm_provider option (or SELFGRAPH_LLM_PROVIDER) matching the model"
     )
     with pytest.raises(ValidationError) as built:
         _build_llm(GraphSettings(llm_provider="openai", llm_model="anthropic/claude"))
