@@ -1,6 +1,6 @@
 import type { FalkorDB, FalkorDBOptions, Graph, GraphReply, QueryParams } from "falkordb";
 
-import { connectionReason, errorMessage, StoreError, TransientError } from "../errors.js";
+import { connectionReason, errorMessage, escapeControls, StoreError, TransientError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { type CypherResult, checkResultDepth, type JsonValue } from "../models.js";
@@ -71,6 +71,7 @@ function isGraphEntity(value: Record<string, unknown>): boolean {
  */
 function toJson(value: unknown): unknown {
   if (value === null || value === undefined) return null;
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
   if (typeof value === "bigint")
     return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
   if (Array.isArray(value)) return value.map(toJson);
@@ -145,7 +146,7 @@ export class FalkorDBStore extends autoCommit(CypherPrimitives) implements Graph
       if (TRANSIENT_MARKERS.some((k) => message.toLowerCase().includes(k))) {
         throw new TransientError(`FalkorDB transient error: ${message}`, { cause: exc, code: "store_busy" });
       }
-      throw new StoreError(`FalkorDB query failed: ${message}`, { cause: exc });
+      throw new StoreError(`FalkorDB query failed: ${escapeControls(message)}`, { cause: exc });
     }
     const columns = res.headers ?? [];
     const rows = (res.data ?? []).map((row) => {

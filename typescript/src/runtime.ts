@@ -4,6 +4,7 @@ import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
 import {
+  MALFORMED_USERINFO_ESCAPE,
   maskUri,
   NotFoundError,
   needsLlm,
@@ -26,6 +27,7 @@ import { scanEntities, scanRelations } from "./maintenance.js";
 import {
   asInput,
   type CypherResult,
+  conflictingPrefix,
   ExtractionInstructions,
   ExtractionPrompts,
   type InsertResult,
@@ -34,7 +36,6 @@ import {
   type LLMConfig,
   type PruneResult,
   type Relation,
-  requireMatchingPrefix,
 } from "./models.js";
 import { invalidatedNote } from "./ops.js";
 import type { GraphStore } from "./protocols.js";
@@ -53,7 +54,7 @@ import { FalkorDBStore } from "./stores/falkordb.js";
 import { HydraDBStore } from "./stores/hydradb.js";
 import { KuzuStore } from "./stores/kuzu.js";
 import { clamp, type Level, PRESETS, requireLevel } from "./tiers.js";
-import { checkOptions, requireNamespace } from "./validate.js";
+import { checkOptions, MAX_JSON_DEPTH, requireCleanJson, requireNamespace } from "./validate.js";
 
 export { version } from "../package.json";
 export { parseTime } from "./validate.js";
@@ -171,14 +172,26 @@ export function settingsFromEnv(
  *
  * @param text (string): the JSON text.
  * @param where (string): appended to "invalid JSON" in the error, e.g. " in 'graph.json'".
+ * @param field (string | undefined): the argument or key at fault, when one is.
  * @return (unknown): the parsed value.
  */
-export function parseJson(text: string, where: string): unknown {
+export function parseJson(text: string, where: string, field?: string): unknown {
+  let value: unknown;
   try {
-    return JSON.parse(text);
+    value = JSON.parse(text);
   } catch (exc) {
-    throw new ValidationError(`invalid JSON${where}: ${(exc as Error).message}`);
+    throw new ValidationError(`invalid JSON${where}: ${(exc as Error).message}`, field === undefined ? {} : { field });
   }
+  try {
+    requireCleanJson("JSON", value, 0, false);
+  } catch (exc) {
+    if (!(exc instanceof ValidationError) || !exc.message.includes("nested too deeply")) throw exc;
+    throw new ValidationError(
+      `invalid JSON${where}: nested too deeply; keep it under ${MAX_JSON_DEPTH} levels`,
+      field === undefined ? {} : { field },
+    );
+  }
+  return value;
 }
 
 /**
@@ -189,8 +202,17 @@ export function parseJson(text: string, where: string): unknown {
  */
 export function readText(path: string): string {
   try {
-    return readFileSync(path === "-" ? 0 : path, "utf8");
+    const input = path === "-" ? 0 : path;
+    const bytes = readFileSync(input);
+    const text = bytes.toString("utf8");
+    if (text.includes("\uFFFD") && !bytes.equals(Buffer.from(text, "utf8"))) {
+      throw new ValidationError(`cannot read ${pyRepr(path)}: not valid UTF-8; save the file as UTF-8 and try again`, {
+        field: "path",
+      });
+    }
+    return text;
   } catch (exc) {
+    if (exc instanceof ValidationError) throw exc;
     throw new ValidationError(`cannot read ${pyRepr(path)}: ${(exc as Error).message}`);
   }
 }
@@ -384,6 +406,36 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
 }
 
 /**
+ * Decode the percent escapes of a URL user or password, rejecting a malformed escape as the Python SDK does.
+ *
+ * @param text (string): the user or password as written in the URL.
+ * @return (string): the decoded text; throws ValidationError for a % not followed by two hex digits or escapes that are not UTF-8, without quoting the text.
+ */
+function urlUnquote(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    throw new ValidationError(MALFORMED_USERINFO_ESCAPE, { code: "invalid_setting", field: "uri" });
+  }
+}
+
+/**
+ * The user name and password a FalkorDB store logs in with: auth, else the URL's, percent-decoded.
+ *
+ * @param uri (string): the address.
+ * @param auth (GraphSettings["auth"] | undefined): the auth setting.
+ * @return ([string | null, string | null]): the user name and password, null when empty.
+ */
+export function falkorCredentials(
+  uri: string,
+  auth: GraphSettings["auth"] | undefined,
+): [string | null, string | null] {
+  const { url } = falkorAddress(uri);
+  const [username, password] = parseAuth(auth, "") ?? [urlUnquote(url.username), urlUnquote(url.password)];
+  return [username || null, password || null];
+}
+
+/**
  * A FalkorDB store from "host:port" or a redis:// style URL; auth, else the URL credentials, logs in.
  *
  * @param uri (string): the address.
@@ -393,10 +445,7 @@ function falkorAddress(uri: string): { url: URL; tls: boolean } {
 function falkorStore(uri: string, settings: GraphSettings): GraphStore {
   const { url, tls } = falkorAddress(uri);
   const host = url.hostname.replace(/^\[|\]$/g, "") || "localhost";
-  const [username, password] = parseAuth(settings.auth, "") ?? [
-    decodeURIComponent(url.username),
-    decodeURIComponent(url.password),
-  ];
+  const [username, password] = falkorCredentials(uri, settings.auth);
   return new FalkorDBStore(host, url.port ? Number(url.port) : 6379, {
     graph: settings.database || "selfgraph",
     ...(username ? { username } : {}),
@@ -490,6 +539,8 @@ export function buildStore(settings: GraphSettings): GraphStore {
   return server.build(settings.uri!, settings);
 }
 
+const LLM_TIMEOUT_NUMBER = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+
 /**
  * Parse the LLM timeout setting: seconds as a positive number, default 120.
  *
@@ -498,7 +549,8 @@ export function buildStore(settings: GraphSettings): GraphStore {
  */
 export function llmTimeout(value: number | string | null): number {
   if (value === null || value === "") return LLM_DEFAULTS.timeout;
-  const seconds = typeof value === "number" ? value : pyStrip(value) ? Number(pyStrip(value)) : Number.NaN;
+  const text = typeof value === "string" ? pyStrip(value) : value;
+  const seconds = typeof text === "string" ? (LLM_TIMEOUT_NUMBER.test(text) ? Number(text) : Number.NaN) : text;
   if (!(seconds > 0) || !Number.isFinite(seconds)) {
     throw new ValidationError(`llm_timeout must be a positive number of seconds, got ${pyRepr(value)}`, {
       code: "invalid_setting",
@@ -550,7 +602,14 @@ export function buildLlm(settings: GraphSettings): LLMConfig | null {
       { code: "invalid_setting", field: "llm_provider" },
     );
   }
-  requireMatchingPrefix(provider, settings.llm_model, settings.llm_base_url);
+  const prefix = conflictingPrefix(provider, settings.llm_model, settings.llm_base_url);
+  if (prefix !== null) {
+    throw new ValidationError(
+      `llm_provider ${pyRepr(provider)} conflicts with model prefix ${pyRepr(prefix)}; ` +
+        `pass ${settingHint("llm_provider")} matching the model`,
+      { code: "invalid_setting", field: "llm_provider" },
+    );
+  }
   return {
     provider,
     model: settings.llm_model,
