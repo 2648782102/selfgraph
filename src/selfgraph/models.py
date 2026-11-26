@@ -285,15 +285,8 @@ class TopInputModel(InputModel):
         Only top-level inputs override __init__: pydantic calls a custom __init__ for nested models too, which
         would cut the path of an error inside them.
 
-        A key that is not a string never reaches the before-validator, because ``**data`` itself rejects it
-        with a bare TypeError. Checking the raw keys first turns that into the same coded error a bad key one
-        level down already gets.
-
         @param data (Any): the model fields.
         """
-        found = _unknown_key(self.__class__, data, self.input_label)
-        if found:
-            raise found
         try:
             super().__init__(**data)
         except PydanticValidationError as exc:
